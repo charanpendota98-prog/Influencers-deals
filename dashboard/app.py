@@ -79,6 +79,10 @@ def quick_add():
     price_filt = request.form.get("price_filter", "all").strip()
     allowed_src = request.form.get("allowed_sources", "").strip()
     bitly_key = request.form.get("bitly_api_key", "").strip()
+    categories_list = request.form.getlist("categories")
+    categories = ",".join(c.strip() for c in categories_list if c.strip())
+    schedule = request.form.get("posting_schedule", "").strip()
+
     approval_tg = request.form.get("approval_tg", "").strip()
     broadcast_tg = request.form.get("broadcast_tg", "").strip()
     whatsapp_id = request.form.get("whatsapp_id", "").strip()
@@ -89,13 +93,14 @@ def quick_add():
 
     iid = db.add_influencer(name, tag, handle=handle, insta_id=insta,
                             phone_number=phone, price_filter=price_filt,
-                            allowed_sources=allowed_src, bitly_api_key=bitly_key)
+                            allowed_sources=allowed_src, bitly_api_key=bitly_key,
+                            categories=categories, posting_schedule=schedule)
 
     # 1. Approval Channel
     if approval_tg:
         ident = clean_identifier(approval_tg)
         db.add_channel(iid, "telegram", ident, role="approval", status="ready",
-                       allowed_sources=allowed_src)
+                       allowed_sources=allowed_src, categories=categories, posting_schedule=schedule)
 
     # 2. Broadcast Channel
     if broadcast_tg:
@@ -103,14 +108,16 @@ def quick_add():
         db.add_channel(iid, "telegram", ident, role="broadcast", status="ready",
                        strip_amazon=strip_amz_all,
                        price_filter=price_filt if price_filt != "all" else "",
-                       allowed_sources=allowed_src, bitly_api_key=bitly_key)
+                       allowed_sources=allowed_src, bitly_api_key=bitly_key,
+                       categories=categories, posting_schedule=schedule)
 
     # 3. WhatsApp Channel/Group
     if whatsapp_id:
         db.add_channel(iid, "whatsapp_group", whatsapp_id, role="whatsapp", status="ready",
                        strip_amazon=strip_amz_all,
                        price_filter=price_filt if price_filt != "all" else "",
-                       allowed_sources=allowed_src, bitly_api_key=bitly_key)
+                       allowed_sources=allowed_src, bitly_api_key=bitly_key,
+                       categories=categories, posting_schedule=schedule)
 
     return redirect(url_for("influencer_detail", inf_id=iid))
 
@@ -125,6 +132,9 @@ def update_profile(inf_id):
     price_filt = request.form.get("price_filter", "").strip()
     allowed_src = request.form.get("allowed_sources", "").strip()
     bitly_key = request.form.get("bitly_api_key", "").strip()
+    categories_list = request.form.getlist("categories")
+    categories = ",".join(c.strip() for c in categories_list if c.strip()) if categories_list else request.form.get("categories", "").strip()
+    schedule = request.form.get("posting_schedule", "").strip()
     notes = request.form.get("notes", "").strip()
     active_str = request.form.get("active")
     active = (active_str == "1") if active_str is not None else None
@@ -139,6 +149,8 @@ def update_profile(inf_id):
         price_filter=price_filt if price_filt else None,
         allowed_sources=allowed_src if allowed_src is not None else None,
         bitly_api_key=bitly_key if bitly_key is not None else None,
+        categories=categories if categories is not None else None,
+        posting_schedule=schedule if schedule is not None else None,
         notes=notes if notes else None,
         active=active,
     )
@@ -155,6 +167,8 @@ def update_channel_route(channel_id):
     allowed_src = request.form.get("allowed_sources", "").strip()
     wa_key = request.form.get("wa_session_key", "").strip()
     bitly_key = request.form.get("bitly_api_key", "").strip()
+    categories = request.form.get("categories", "").strip()
+    schedule = request.form.get("posting_schedule", "").strip()
     strip_amz = request.form.get("strip_amazon") == "1"
 
     if ident:
@@ -170,6 +184,8 @@ def update_channel_route(channel_id):
         allowed_sources=allowed_src,
         wa_session_key=wa_key,
         bitly_api_key=bitly_key,
+        categories=categories,
+        posting_schedule=schedule,
     )
     if inf_id:
         return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
@@ -187,6 +203,8 @@ def add_manual_channel(inf_id):
     allowed_src = request.form.get("allowed_sources", "").strip()
     wa_key = request.form.get("wa_session_key", "").strip()
     bitly_key = request.form.get("bitly_api_key", "").strip()
+    categories = request.form.get("categories", "").strip()
+    schedule = request.form.get("posting_schedule", "").strip()
     strip_amz = request.form.get("strip_amazon") == "1"
 
     if raw_ident:
@@ -204,6 +222,8 @@ def add_manual_channel(inf_id):
             allowed_sources=allowed_src,
             wa_session_key=wa_key,
             bitly_api_key=bitly_key,
+            categories=categories,
+            posting_schedule=schedule,
         )
 
     return redirect(url_for("influencer_detail", inf_id=inf_id))
@@ -245,6 +265,8 @@ def bulk_import():
                 "price_filter": (r.get("price_filter") or "all").strip(),
                 "allowed_sources": (r.get("allowed_sources") or "").strip(),
                 "bitly_api_key": (r.get("bitly_api_key") or r.get("bitly_key") or "").strip(),
+                "categories": (r.get("categories") or "").strip(),
+                "posting_schedule": (r.get("posting_schedule") or r.get("schedule") or "").strip(),
                 "wa_session_key": (r.get("wa_session_key") or "").strip(),
                 "approval_tg": clean_identifier(r.get("approval_tg", "")),
                 "broadcast_tg": clean_identifier(r.get("broadcast_tg", "")),

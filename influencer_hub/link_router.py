@@ -381,6 +381,102 @@ def clean_source_post(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", result)
 
 
+# Category Keyword Mappings
+CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "clothing": [
+        "shirt", "tshirt", "t-shirt", "jeans", "trousers", "dress", "kurta", "saree", "shoes", "sneakers",
+        "sandals", "slippers", "hoodie", "jacket", "trackpant", "bra", "brief", "leggings", "watch", "footwear",
+        "clothing", "wear", "ethnic", "fashion", "handbag", "wallet", "sunglasses", "top", "pant", "suit",
+    ],
+    "electronics": [
+        "phone", "mobile", "smartphone", "laptop", "earbuds", "earphone", "headphones", "neckband", "tv",
+        "television", "smartwatch", "charger", "powerbank", "cable", "tablet", "ipad", "camera", "speaker",
+        "soundbar", "mouse", "keyboard", "ssd", "ram", "processor", "trimmer", "iron", "electronics",
+    ],
+    "home": [
+        "bedsheet", "curtain", "blanket", "pillow", "cookware", "pan", "bottle", "flask", "mop", "cleaner",
+        "container", "storage", "towel", "mattress", "kitchen", "lamp", "lights", "decor", "home", "living",
+        "sofa", "chair", "cushion", "plate", "glass", "dinnerware",
+    ],
+    "daily": [
+        "shampoo", "soap", "toothpaste", "facewash", "cream", "serum", "lotion", "perfume", "deodorant",
+        "sunscreen", "diaper", "wipes", "oil", "ghee", "tea", "coffee", "biscuit", "grocery", "snack",
+        "detergent", "powder", "health", "supplement", "daily", "essentials",
+    ],
+}
+
+
+def classify_deal_category(text: str) -> list[str]:
+    """Identify which categories (clothing, electronics, home, daily) a deal belongs to."""
+    lower = text.lower()
+    matched = []
+    for cat, kws in CATEGORY_KEYWORDS.items():
+        if any(re.search(rf"\b{re.escape(kw)}\b", lower) for kw in kws):
+            matched.append(cat)
+    return matched or ["other"]
+
+
+def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> bool:
+    """Return True if the deal belongs to any of the allowed categories.
+    allowed_categories_spec: comma-separated list like 'clothing,electronics' or empty/all for all.
+    """
+    s = (allowed_categories_spec or "").strip().lower()
+    if not s or s == "all":
+        return True
+    allowed_set = {x.strip() for x in s.split(",") if x.strip()}
+    deal_cats = set(classify_deal_category(deal_text))
+    # If the deal matches any allowed category, return True
+    if deal_cats.intersection(allowed_set):
+        return True
+    # If deal has uncategorized items, let it pass if 'other' is in allowed or allow graceful pass
+    if "other" in deal_cats and ("all" in allowed_set or not allowed_set):
+        return True
+    return False
+
+
+def is_time_in_schedule(schedule_spec: str, current_time: str | None = None) -> bool:
+    """Check if the current time (or given HH:MM in IST / local) falls within the allowed windows.
+    schedule_spec: comma-separated windows like '06:00-09:00,18:00-23:00'
+    Empty schedule_spec means active 24/7 (always True).
+    """
+    spec = (schedule_spec or "").strip()
+    if not spec or spec.lower() == "all" or spec.lower() == "24/7":
+        return True
+
+    from datetime import datetime
+    import zoneinfo
+
+    if current_time:
+        now_str = current_time
+    else:
+        try:
+            tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+            now_dt = datetime.now(tz)
+        except Exception:
+            now_dt = datetime.now()
+        now_str = f"{now_dt.hour:02d}:{now_dt.minute:02d}"
+
+    windows = [w.strip() for w in spec.split(",") if w.strip()]
+    for window in windows:
+        parts = window.split("-")
+        if len(parts) == 2:
+            start, end = parts[0].strip(), parts[1].strip()
+            # Normalize single digits like 6:00 to 06:00
+            if len(start) == 4 and start[1] == ":":
+                start = "0" + start
+            if len(end) == 4 and end[1] == ":":
+                end = "0" + end
+            if start <= end:
+                if start <= now_str <= end:
+                    return True
+            else:
+                # Overnight window (e.g. 22:00-04:00)
+                if now_str >= start or now_str <= end:
+                    return True
+    return False
+
+
+
 
 def deal_signature(text: str) -> str:
     """A stable signature for dedup:

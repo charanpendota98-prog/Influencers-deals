@@ -28,10 +28,59 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
     return await earnkaro.convert_links(urls)
 
 
+import asyncio
+import random
+import time
+from typing import Iterable
+
+from . import bitly_client, db, earnkaro, link_router, telegram_ops, whatsapp_client
+
+WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
+
+# WhatsApp Session Safety Tracking (Per Session Key):
+# Maps session_key -> dict of {"last_post_ts": float, "hour_start_ts": float, "posts_this_hour": int}
+WA_PACING_STATE: dict[str, dict] = {}
+
+
+async def apply_whatsapp_safety_pacing(session_key: str) -> None:
+    """Enforces strict, human-like pacing for WhatsApp accounts:
+    1. Per-post random human gap: 45 to 65 seconds between consecutive posts on the same session.
+    2. Hourly safety break: After an hour of active posting or high volume, takes an extended
+       120 to 150 seconds safety cooling break so accounts never trip WhatsApp algorithmic filters.
+    """
+    now = time.time()
+    state = WA_PACING_STATE.setdefault(session_key, {
+        "last_post_ts": 0.0,
+        "hour_start_ts": now,
+        "posts_this_hour": 0,
+    })
+
+    # Check 1-hour window reset
+    if now - state["hour_start_ts"] >= 3600.0:
+        # 1 hour elapsed: take 120 - 150s extended rest before new hourly cycle
+        long_break = random.uniform(120.0, 150.0)
+        await asyncio.sleep(long_break)
+        state["hour_start_ts"] = time.time()
+        state["posts_this_hour"] = 0
+
+    # Check gap since last post
+    last_post = state["last_post_ts"]
+    if last_post > 0:
+        elapsed = now - last_post
+        target_gap = random.uniform(45.0, 65.0)
+        if elapsed < target_gap:
+            wait_time = target_gap - elapsed
+            await asyncio.sleep(wait_time)
+
+    # Update state
+    state["last_post_ts"] = time.time()
+    state["posts_this_hour"] += 1
+
+
 async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str:
     """Post `text` to one channel. Returns a status string.
 
-    WhatsApp Safety: Uses per-session random delay (2.0s - 5.5s) + anti-flood jitter
+    WhatsApp Safety: Uses per-session random delay (45s - 65s) + hourly 120s - 150s safety break
     so WhatsApp accounts (which belong to the individual influencers) remain 100% safe
     and never get flagged for robotic spamming.
 
@@ -43,12 +92,12 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
         if platform == "telegram":
             await telegram_ops.post_to_channel(channel["identifier"], text)
         elif platform in ("whatsapp_group", "whatsapp_channel"):
-            # Anti-ban Human Emulation Jitter: 2.0s to 5.5s delay
-            delay = random.uniform(2.0, 5.5)
-            await asyncio.sleep(delay)
-
             # Support separate WA session per channel if configured, else default influencer session
             key = channel.get("wa_session_key") or WA_SESSION_KEY(influencer["id"])
+
+            # Apply 45-65s gap + 120-150s hourly safety pacing
+            await apply_whatsapp_safety_pacing(key)
+
             await whatsapp_client.send_text(key, channel["identifier"], text)
         else:
             return "skipped"
@@ -112,26 +161,39 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 2. Price Specification Filter (Under 99, Under 499, etc.)
+            # 2. Timing Schedule Filter (e.g. 06:00-09:00,18:00-23:00)
+            schedule = ch.get("posting_schedule") or inf.get("posting_schedule") or ""
+            if not link_router.is_time_in_schedule(schedule):
+                # Outside the influencer's requested posting window: skip!
+                per_channel[ch["id"]] = "skipped"
+                continue
+
+            # 3. Category Filter (Clothing, Electronics, Home Things, Daily Essentials)
+            cat_filter = ch.get("categories") or inf.get("categories") or ""
+            if not link_router.matches_category_filter(deal_text, cat_filter):
+                per_channel[ch["id"]] = "skipped"
+                continue
+
+            # 4. Price Specification Filter (Under 99, Under 499, etc.)
             filter_spec = ch.get("price_filter") or inf.get("price_filter") or "all"
             max_p, min_p = _parse_price_filter_spec(filter_spec)
             if not link_router.matches_price_filter(deal_text, max_price=max_p, min_price=min_p):
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 3. Approval channel only carries Amazon deals (native + #ad). Skip
+            # 5. Approval channel only carries Amazon deals (native + #ad). Skip
             # deals that have no Amazon link so we never post an empty approval.
             if role == "approval" and not link_router.has_amazon_link(deal_text):
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 4. If strip_amazon is active on this channel, and deal has ONLY Amazon links,
+            # 6. If strip_amazon is active on this channel, and deal has ONLY Amazon links,
             # skip it because nothing remains to post.
             if strip_amz and not any(link_router.classify_url(u) == "merchant" for u in link_router.find_urls(deal_text)):
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 5. Smart Dedup Guard: never post the same deal/product twice to the same channel
+            # 7. Smart Dedup Guard: never post the same deal/product twice to the same channel
             if db.already_posted(inf["id"], ch["id"], sig):
                 per_channel[ch["id"]] = "skipped"
                 continue

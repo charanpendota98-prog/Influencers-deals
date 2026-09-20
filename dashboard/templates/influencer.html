@@ -47,6 +47,14 @@
       <input name="bitly_api_key" value="{{ inf.bitly_api_key or '' }}" placeholder="Influencer's Bitly Token..." style="width: 100%; font-family: monospace;" />
     </div>
     <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#a78bfa;">🛍️ Deal Categories</label>
+      <input name="categories" value="{{ inf.categories or '' }}" placeholder="clothing,electronics,home,daily (Empty=All)" style="width: 100%; font-size: 12px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">⏰ Posting Schedule / Timings</label>
+      <input name="posting_schedule" value="{{ inf.posting_schedule or '' }}" placeholder="06:00-09:00,18:00-23:00 (Empty=24/7)" style="width: 100%; font-size: 12px;" />
+    </div>
+    <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Default Budget Filter</label>
       <select name="price_filter" style="width: 100%;">
         <option value="all" {{ 'selected' if (not inf.price_filter or inf.price_filter == 'all') else '' }}>All Loot Deals</option>
@@ -85,6 +93,7 @@
         <th>Channel Username / Invite Link</th>
         <th>Budget Limit</th>
         <th>Bitly Token / WA Session</th>
+        <th>Categories &amp; Timings</th>
         <th>Amazon Filter / Override</th>
         <th>Status</th>
         <th>Instant Test</th>
@@ -126,6 +135,10 @@
             {% endif %}
           </td>
           <td>
+            <input name="categories" value="{{ c.categories or '' }}" placeholder="clothing,electronics (All)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Allowed categories" />
+            <input name="posting_schedule" value="{{ c.posting_schedule or '' }}" placeholder="06:00-09:00 (24/7)" style="font-size: 11px; padding: 3px 5px; width: 110px;" title="Timing schedule" />
+          </td>
+          <td>
             <div>
               <label style="display: block; cursor: pointer; color: #f87171; font-weight: 600; font-size: 11px;">
                 <input type="checkbox" name="strip_amazon" value="1" {{ 'checked' if c.strip_amazon else '' }} /> 🚫 Strip Amazon
@@ -149,7 +162,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="10" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
+      <tr><td colspan="11" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -170,7 +183,9 @@
         <option value="whatsapp_channel">WhatsApp Channel</option>
       </select>
       <input name="identifier" placeholder="@channel or link / WhatsApp invite" required style="flex: 1; min-width: 180px;" />
-      <input name="bitly_api_key" placeholder="Channel Bitly Key (optional)" style="width: 160px; font-family: monospace; font-size: 12px;" />
+      <input name="bitly_api_key" placeholder="Bitly Key (optional)" style="width: 130px; font-family: monospace; font-size: 11px;" />
+      <input name="categories" placeholder="clothing,electronics (All)" style="width: 140px; font-size: 11px;" />
+      <input name="posting_schedule" placeholder="06:00-09:00 (24/7)" style="width: 130px; font-size: 11px;" />
       <select name="price_filter">
         <option value="" selected>Default Budget</option>
         <option value="under_99">🔥 Under ₹99 Only</option>
