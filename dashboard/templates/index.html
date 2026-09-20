@@ -1,22 +1,22 @@
 {% extends "layout.html" %}
-{% block title %}Influencers Hub - Instant 3-Channel Control{% endblock %}
+{% block title %}Influencers Hub - Clean &amp; Advanced{% endblock %}
 {% block content %}
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
   <div>
-    <h1 style="margin:0;">⚡ Enterprise Influencer Deals Hub</h1>
-    <p class="hint" style="margin-top:4px;">India-Level Multi-Influencer Automation Engine · Unlimited Scale</p>
+    <h1 style="margin:0; font-size: 26px;">⚡ Influencer Deals Hub</h1>
+    <p class="hint" style="margin-top:4px;">Multi-Influencer Loot Deals Network · High Performance &amp; Easy 3-Channel Control</p>
   </div>
-  <div>
-    <a class="btn" style="background:#10b981; color:white; padding:10px 18px; border-radius:8px; font-weight:700; text-decoration:none;" href="{{ url_for('onboard') }}">✨ Self-Serve Onboard Page</a>
+  <div style="display:flex; gap:10px;">
+    <a class="btn" style="background:#10b981; color:white; padding:10px 18px; border-radius:8px; font-weight:700; text-decoration:none;" href="{{ url_for('onboard') }}">✨ Self-Serve Link</a>
   </div>
 </div>
 
 <!-- SEARCH & BULK 1000+ TOOLBAR -->
-<section class="card" style="border: 1px solid #1e3a8a; background: #0f172a; padding: 16px 20px;">
+<section class="card" style="border: 1px solid #1e3a8a; background: #0f172a; padding: 14px 20px; border-radius: 10px;">
   <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
     <form method="get" action="{{ url_for('index') }}" style="display: flex; gap: 10px; align-items: center; flex:1; min-width:300px;">
       <span style="font-size: 18px;">🔍</span>
-      <input name="q" value="{{ search_query or '' }}" placeholder="Search 1000+ by Mobile Number, Name, Insta ID, Tag, or ID..." style="flex: 1; padding: 10px 14px;" />
+      <input name="q" value="{{ search_query or '' }}" placeholder="Search by Mobile Number, Name, Insta ID, Amazon Tag, or ID..." style="flex: 1; padding: 10px 14px;" />
       <button type="submit" style="background: #2563eb; color: white;">Search</button>
       {% if search_query %}
         <a class="btn" style="background: #475569; color: white;" href="{{ url_for('index') }}">Clear</a>
@@ -24,7 +24,7 @@
     </form>
     <div>
       <details style="display:inline-block;">
-        <summary style="cursor:pointer; background:#4f46e5; color:white; padding:8px 16px; border-radius:6px; font-weight:700; font-size:13px; list-style:none;">
+        <summary style="cursor:pointer; background:#4f46e5; color:white; padding:9px 16px; border-radius:8px; font-weight:700; font-size:13px; list-style:none;">
           📂 Bulk Import 1000+ CSV
         </summary>
         <div style="position:absolute; right:30px; margin-top:8px; z-index:100; background:#1e1b4b; border:1px solid #4338ca; padding:16px; border-radius:8px; width:340px; box-shadow:0 10px 25px rgba(0,0,0,0.5);">
@@ -40,67 +40,65 @@
   </div>
 </section>
 
-<!-- QUICK ADD CARD -->
-<section class="card" style="border: 2px solid #3b82f6; background: #131b2e;">
+<!-- 3-CHANNEL SETUP CARD (CLEAN & CLEAR) -->
+<section class="card" style="border: 1px solid #3b82f6; background: #131b2e; border-radius: 12px;">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="color: #60a5fa; margin: 0;">🚀 Instant Quick-Add (Zero Server Deployment Needed)</h2>
-    <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">1-CLICK LIVE</span>
+    <h2 style="color: #60a5fa; margin: 0; font-size: 18px;">⚡ Quick Onboard (Standard 3-Channel Setup)</h2>
+    <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">3-CHANNELS DIRECT</span>
   </div>
-  <p class="hint">Kotha influencer join ayinappudu valla <b>Phone Number</b>, <b>Name</b>, <b>Insta ID</b>, <b>Amazon Tag</b> &amp; <b>Price Filter</b> enter cheste ventane posts start aipothayi!</p>
+  <p class="hint">Every influencer gets 3 dedicated channels: <b>1) Approval Channel</b> (Amazon-only + #ad), <b>2) Main Channel</b> (Full loots), and <b>3) WhatsApp Channel/Group</b>.</p>
   
-  <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-top: 14px;">
+  <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 14px;">
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#cbd5e1;">Influencer / Page Name *</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Influencer Name *</label>
       <input name="name" placeholder="e.g. Ramesh Deals" required style="width: 100%;" />
     </div>
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#38bdf8;">📞 Mobile / WhatsApp Number</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📞 Mobile / WhatsApp Number</label>
       <input name="phone_number" placeholder="e.g. 919876543210" style="width: 100%; font-family: monospace;" />
     </div>
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#cbd5e1;">Amazon Associate Tag *</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Amazon Associate Tag *</label>
       <input name="tag" placeholder="e.g. mama086-21" required style="width: 100%; font-family: monospace;" />
     </div>
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#cbd5e1;">📸 Instagram ID</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">📸 Instagram ID</label>
       <input name="insta_id" placeholder="@instagram_user" style="width: 100%;" />
     </div>
+
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#fbbf24;">🎯 Deal Budget Filter</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#6ee7b7;">🛡️ 1) APPROVAL CHANNEL (TG)</label>
+      <input name="approval_tg" placeholder="@approval_channel or t.me/..." style="width: 100%; font-family: monospace;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#93c5fd;">📢 2) MAIN CHANNEL (TG Broadcast)</label>
+      <input name="broadcast_tg" placeholder="@main_channel or t.me/..." style="width: 100%; font-family: monospace;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde68a;">💬 3) WHATSAPP CHANNEL (Invite / ID)</label>
+      <input name="whatsapp_id" placeholder="https://chat.whatsapp.com/... or 120363xxx" style="width: 100%;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Deal Budget Specification</label>
       <select name="price_filter" style="width: 100%;">
-        <option value="all" selected>All Deals (No Filter)</option>
-        <option value="under_99">🔥 Under ₹99 Only (Super Budget)</option>
+        <option value="all" selected>All Loot Deals</option>
+        <option value="under_99">🔥 Under ₹99 Only</option>
         <option value="under_199">⚡ Under ₹199 Only</option>
-        <option value="under_499">🎁 Under ₹499 Only (High Conversion)</option>
+        <option value="under_499">🎁 Under ₹499 Only</option>
         <option value="under_999">🏷️ Under ₹999 Only</option>
       </select>
     </div>
-    <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#c084fc;">📡 Allowed Sources (e.g. powerloot, secretloots)</label>
-      <input name="allowed_sources" placeholder="all or powerloot, secretloots" style="width: 100%;" />
-    </div>
-    <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#6ee7b7;">🛡️ Channel 1: Approval TG Link</label>
-      <input name="approval_tg" placeholder="@approval_channel or t.me/..." style="width: 100%;" />
-    </div>
-    <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#93c5fd;">📢 Channel 2: Broadcast TG Link</label>
-      <input name="broadcast_tg" placeholder="@real_channel or t.me/..." style="width: 100%;" />
-    </div>
-    <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#fde68a;">💬 Channel 3: WhatsApp Group/ID</label>
-      <input name="whatsapp_id" placeholder="120363xxx@g.us" style="width: 100%;" />
-    </div>
-    
-    <div style="grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; background: #0d1322; padding: 12px 16px; border-radius: 8px; border: 1px solid #283759;">
+
+    <div style="grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; background: #0d1322; padding: 12px 16px; border-radius: 8px; border: 1px solid #283759; margin-top: 4px;">
       <label style="font-size: 13px; font-weight: 600; color: #f87171; cursor: pointer; display:flex; align-items:center; gap:8px;">
-        <input type="checkbox" name="strip_amazon_broadcast" value="1" /> 🚫 Amazon Completely Remove (Ee channel lo Amazon links delete chesi only Flipkart/Myntra post chey)
+        <input type="checkbox" name="strip_amazon_broadcast" value="1" /> 🚫 Strip Amazon (Amazon Theesi Kevalam Flipkart/Myntra Post Chey)
       </label>
       <button type="submit" style="background: #2563eb; color: white; padding: 10px 28px; font-weight: 700; border-radius: 8px; cursor: pointer; border: none; font-size:14px;">⚡ Save &amp; Start Live</button>
     </div>
   </form>
 </section>
 
+<!-- SYSTEM STATS -->
 <section class="card">
   <h2>Live System Overview</h2>
   <div class="stats">
@@ -111,21 +109,22 @@
       <div>CPU <span>{{ vm.cpu_pct }}%</span></div>
       <div>MEM <span>{{ vm.mem_pct }}%</span></div>
       <div>DISK <span>{{ vm.disk_pct }}%</span></div>
-      <div>Bot <span class="{% if vm.bot_running %}ok{% else %}bad{% endif %}">{% if vm.bot_running %}ACTIVE (UP){% else %}DOWN{% endif %}</span></div>
+      <div>Bot <span class="{% if vm.bot_running %}ok{% else %}bad{% endif %}">{% if vm.bot_running %}ACTIVE{% else %}DOWN{% endif %}</span></div>
     {% else %}
       <div>System: <span class="ok">ONLINE</span></div>
     {% endif %}
   </div>
 </section>
 
+<!-- INFLUENCERS LIST TABLE -->
 <section class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="margin:0;">Registered Influencers ({{ influencers|length }})</h2>
+    <h2 style="margin:0;">Active Influencers ({{ influencers|length }})</h2>
     <span class="hint">Unlimited Scale Enabled</span>
   </div>
   
   {% if not influencers %}
-    <p class="hint" style="margin-top:14px;">No influencers found matching "{{ search_query }}" — add one above using Quick-Add.</p>
+    <p class="hint" style="margin-top:14px;">No influencers found matching "{{ search_query }}" — add one above.</p>
   {% endif %}
   
   <table style="margin-top: 14px;">
@@ -135,7 +134,7 @@
         <th>Influencer &amp; Phone</th>
         <th>Instagram</th>
         <th>Amazon Tag</th>
-        <th>Deal Filter</th>
+        <th>Budget Filter</th>
         <th>TG</th>
         <th>WA</th>
         <th>Status</th>
@@ -176,7 +175,7 @@
           {% endif %}
         </td>
         <td style="text-align:right;">
-          <a class="btn" style="padding:6px 14px; font-size:13px; text-decoration:none; background:#3b82f6;" href="{{ url_for('influencer_detail', inf_id=i.id) }}">⚙️ Channels &amp; Tag Control</a>
+          <a class="btn" style="padding:6px 14px; font-size:13px; text-decoration:none; background:#3b82f6;" href="{{ url_for('influencer_detail', inf_id=i.id) }}">⚙️ Channels &amp; Test</a>
         </td>
       </tr>
       {% endfor %}

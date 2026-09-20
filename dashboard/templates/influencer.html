@@ -1,5 +1,5 @@
 {% extends "layout.html" %}
-{% block title %}{{ inf.name }} - 3-Channel Control Center{% endblock %}
+{% block title %}{{ inf.name }} - Channels Control Center{% endblock %}
 {% block content %}
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
   <div>
@@ -21,30 +21,29 @@
 <!-- INFLUENCER PROFILE EDIT FORM -->
 <section class="card" style="border: 1px solid #4338ca; background: #13172c;">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="color: #a5b4fc; margin-top: 0;">👤 Influencer Profile &amp; Real-time Changes</h2>
+    <h2 style="color: #a5b4fc; margin-top: 0; font-size:17px;">👤 Influencer Profile Settings</h2>
     <span style="font-size:11px; background:#312e81; color:#c7d2fe; padding:2px 8px; border-radius:4px;">ZERO DOWNTIME</span>
   </div>
-  <p class="hint">Name, Mobile/WhatsApp Number, Instagram ID, Amazon Tag, leda Price Budget maaruste ventane apply aipotayi:</p>
   
-  <form method="post" action="{{ url_for('update_profile', inf_id=inf.id) }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; align-items: end; margin-top: 10px;">
+  <form method="post" action="{{ url_for('update_profile', inf_id=inf.id) }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: end; margin-top: 10px;">
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#cbd5e1;">Influencer Name</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Name</label>
       <input name="name" value="{{ inf.name }}" required style="width: 100%;" />
     </div>
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#38bdf8;">📞 Mobile / WhatsApp</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📞 Mobile / WhatsApp</label>
       <input name="phone_number" value="{{ inf.phone_number or '' }}" placeholder="919876543210" style="width: 100%; font-family:monospace;" />
     </div>
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#cbd5e1;">Amazon Associate Tag</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Amazon Associate Tag</label>
       <input name="amazon_tag" value="{{ inf.amazon_tag }}" required style="width: 100%; font-family: monospace;" />
     </div>
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#cbd5e1;">📸 Instagram Handle / ID</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">📸 Instagram ID</label>
       <input name="insta_id" value="{{ inf.insta_id or '' }}" placeholder="@user" style="width: 100%;" />
     </div>
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#fbbf24;">🎯 Default Budget Filter</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Default Budget Filter</label>
       <select name="price_filter" style="width: 100%;">
         <option value="all" {{ 'selected' if (not inf.price_filter or inf.price_filter == 'all') else '' }}>All Loot Deals</option>
         <option value="under_99" {{ 'selected' if inf.price_filter == 'under_99' else '' }}>Under ₹99 Only</option>
@@ -54,60 +53,36 @@
       </select>
     </div>
     <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#c084fc;">📡 Allowed Sources Filter</label>
-      <input name="allowed_sources" value="{{ inf.allowed_sources or '' }}" placeholder="e.g. powerloot, secretloots (empty=all)" style="width: 100%;" />
-    </div>
-    <div>
-      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#cbd5e1;">Posting Switch</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Posting Status</label>
       <select name="active" style="width: 100%;">
-        <option value="1" {{ 'selected' if inf.active else '' }}>🟢 Active (Auto-Posting ON)</option>
-        <option value="0" {{ 'selected' if not inf.active else '' }}>🔴 Paused (Stop Posting)</option>
+        <option value="1" {{ 'selected' if inf.active else '' }}>🟢 Active (Posting ON)</option>
+        <option value="0" {{ 'selected' if not inf.active else '' }}>🔴 Paused (Stop)</option>
       </select>
     </div>
     <div>
-      <button type="submit" style="width: 100%; background: #4f46e5; color: white; padding: 10px; font-weight: 700; border-radius: 8px; cursor: pointer; border: none;">💾 Save Profile Changes</button>
+      <button type="submit" style="width: 100%; background: #4f46e5; color: white; padding: 10px; font-weight: 700; border-radius: 8px; cursor: pointer; border: none;">💾 Save Profile</button>
     </div>
   </form>
 </section>
 
-<!-- LIVE PREVIEW DEMO CARD -->
-<section class="card" style="background: #111b2b; border: 1px solid #1e3a8a;">
-  <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="color: #60a5fa; margin-top: 0;">✨ Live Deal Rendering Engine (Automatic Split)</h2>
-    <span style="font-size:11px; background:#172554; color:#bfdbfe; padding:2px 8px; border-radius:4px;">PREVIEW ONLY</span>
-  </div>
-  <p class="hint">Incoming deals automatically render like this for this influencer:</p>
-  
-  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top:12px;">
-    <div style="background: #0d1322; padding: 14px; border-radius: 8px; border: 1px solid #1e293b;">
-      <h3 style="margin-top:0; font-size: 14px; color: #34d399;">🛡️ Channel 1: Approval Channel Post</h3>
-      <pre style="white-space: pre-wrap; font-size: 12px; background: #070b14; padding: 10px; border-radius: 6px; color:#e2e8f0; border:1px solid #1e293b; margin:8px 0;">{{ demo_approval }}</pre>
-      <small style="color: var(--muted);">(Only Amazon + tag=<b>{{ inf.amazon_tag }}</b> + #ad disclosure — Amazon 100% Passes)</small>
-    </div>
-    <div style="background: #0d1322; padding: 14px; border-radius: 8px; border: 1px solid #1e293b;">
-      <h3 style="margin-top:0; font-size: 14px; color: #60a5fa;">📢 Channel 2 &amp; 3: Real / Broadcast Post</h3>
-      <pre style="white-space: pre-wrap; font-size: 12px; background: #070b14; padding: 10px; border-radius: 6px; color:#e2e8f0; border:1px solid #1e293b; margin:8px 0;">{{ demo_broadcast }}</pre>
-      <small style="color: var(--muted);">(Amazon with their tag + Flipkart/Myntra with our EarnKaro pubid 5478322)</small>
-    </div>
-  </div>
-</section>
-
-<!-- 3 CHANNELS LIST & CONNECT -->
+<!-- CONFIGURED CHANNELS TABLE -->
 <section class="card">
-  <h2>📺 Configured Channels for {{ inf.name }}</h2>
-  <p class="hint">Channels table with <b>🚀 Send Test Message</b> button next to each channel for instant connectivity verification:</p>
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0; font-size:18px;">📺 Configured Channels for {{ inf.name }}</h2>
+    <span class="hint">Approval Channel · Main Channel · WhatsApp Channel (+ Any Extra Channels)</span>
+  </div>
+  <p class="hint">Every channel has individual settings: Budget, Source, Amazon Tag Override, Strip Amazon, and <b>🚀 Send Test Alert</b>:</p>
   
-  <table style="margin-top: 12px; margin-bottom: 20px;">
+  <table style="margin-top: 14px; margin-bottom: 20px;">
     <thead>
       <tr>
-        <th>Role</th>
+        <th>Channel Type (Role)</th>
         <th>Platform</th>
-        <th>Channel Identifier / Username</th>
-        <th>Allowed Sources</th>
-        <th>Budget Filter</th>
-        <th>Amazon Filter</th>
+        <th>Channel Username / Invite Link</th>
+        <th>Budget Limit</th>
+        <th>Amazon Filter / Override</th>
         <th>Status</th>
-        <th>Test</th>
+        <th>Instant Test</th>
         <th>Save</th>
         <th>Delete</th>
       </tr>
@@ -118,19 +93,16 @@
         <form method="post" action="{{ url_for('update_channel_route', channel_id=c.id) }}">
           <input type="hidden" name="inf_id" value="{{ inf.id }}" />
           <td>
-            <select name="role" style="font-size: 12px; padding: 6px;">
-              <option value="approval" {{ 'selected' if c.role == 'approval' else '' }}>🛡️ Ch 1: Approval</option>
-              <option value="broadcast" {{ 'selected' if c.role == 'broadcast' else '' }}>📢 Ch 2: Broadcast</option>
-              <option value="whatsapp" {{ 'selected' if c.role == 'whatsapp' else '' }}>💬 Ch 3: WhatsApp</option>
+            <select name="role" style="font-size: 12px; padding: 6px; font-weight: bold;">
+              <option value="approval" {{ 'selected' if c.role == 'approval' else '' }}>🛡️ APPROVAL CHANNEL</option>
+              <option value="broadcast" {{ 'selected' if c.role == 'broadcast' else '' }}>📢 MAIN CHANNEL</option>
+              <option value="whatsapp" {{ 'selected' if c.role == 'whatsapp' else '' }}>💬 WHATSAPP CHANNEL</option>
             </select>
           </td>
           <td><b>{{ c.platform }}</b></td>
           <td>
             <input name="identifier" value="{{ c.identifier }}" style="font-size: 13px; padding: 6px; width: 140px; font-family: monospace;" />
             {% if c.invite_link %}<a href="{{ c.invite_link }}" target="_blank" style="font-size: 12px; margin-left: 4px; color:var(--accent);">(link)</a>{% endif %}
-          </td>
-          <td>
-            <input name="allowed_sources" value="{{ c.allowed_sources or '' }}" placeholder="all or powerloot" style="font-size: 11px; padding: 4px; width: 100px;" title="Comma separated source channels allowed" />
           </td>
           <td>
             <select name="price_filter" style="font-size: 12px; padding: 5px;">
@@ -147,20 +119,17 @@
               <label style="display: block; cursor: pointer; color: #f87171; font-weight: 600; font-size: 11px;">
                 <input type="checkbox" name="strip_amazon" value="1" {{ 'checked' if c.strip_amazon else '' }} /> 🚫 Strip Amazon
               </label>
-              <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt tag" style="font-size: 11px; padding: 3px 5px; width: 100px; margin-top: 3px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
+              <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt Tag" style="font-size: 11px; padding: 3px 5px; width: 100px; margin-top: 3px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
             </div>
           </td>
           <td><span class="ok">{{ c.status }}</span></td>
           <td>
+            <button type="submit" formaction="{{ url_for('send_test_message', channel_id=c.id) }}" style="background: #10b981; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: bold; cursor: pointer;" title="Send instant test alert message">🚀 Test</button>
+          </td>
+          <td>
             <button type="submit" style="background: #0284c7; color: white; border: none; padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;">Save</button>
           </td>
         </form>
-        <td>
-          <form method="post" action="{{ url_for('send_test_message', channel_id=c.id) }}" style="display:inline;">
-            <input type="hidden" name="inf_id" value="{{ inf.id }}" />
-            <button type="submit" style="background: #10b981; color: white; border: none; padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: bold; cursor: pointer;" title="Send instant test alert message">🚀 Test</button>
-          </form>
-        </td>
         <td>
           <form method="post" action="{{ url_for('delete_channel', channel_id=c.id) }}" style="display:inline;" onsubmit="return confirm('Remove this channel?');">
             <input type="hidden" name="inf_id" value="{{ inf.id }}" />
@@ -169,78 +138,56 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="10" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
+      <tr><td colspan="9" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 
-  <h3>➕ Connect Channel Manually (Any Existing Link / Channel)</h3>
-  <p class="hint">Influencer already create chesina channel link/username unte, ikkada enter cheste ventane connect aipotundi:</p>
-  <form method="post" action="{{ url_for('add_manual_channel', inf_id=inf.id) }}" class="row" style="margin-top: 10px;">
-    <select name="role">
-      <option value="approval">🛡️ Channel 1: Amazon Approval</option>
-      <option value="broadcast" selected>📢 Channel 2: Real / Broadcast</option>
-      <option value="whatsapp">💬 Channel 3: WhatsApp</option>
-    </select>
-    <select name="platform">
-      <option value="telegram" selected>Telegram</option>
-      <option value="whatsapp_group">WhatsApp Group</option>
-      <option value="whatsapp_channel">WhatsApp Channel</option>
-    </select>
-    <input name="identifier" placeholder="e.g. @channelname or https://t.me/..." required style="flex: 1; min-width: 160px;" />
-    <select name="price_filter">
-      <option value="" selected>Default Budget</option>
-      <option value="under_99">Under ₹99 Only</option>
-      <option value="under_199">Under ₹199 Only</option>
-      <option value="under_499">Under ₹499 Only</option>
-      <option value="under_999">Under ₹999 Only</option>
-      <option value="all">All Deals</option>
-    </select>
-    <label style="font-size: 13px; font-weight: 600; color: #f87171; cursor: pointer; display: flex; align-items: center; gap: 6px;">
-      <input type="checkbox" name="strip_amazon" value="1" /> 🚫 Strip Amazon
-    </label>
-    <button type="submit" style="background: #2563eb; color: white;">Connect Channel</button>
-  </form>
-</section>
-
-<!-- AUTO CREATE CHANNELS SECTION -->
-<section class="card">
-  <h2>🤖 Auto-Create New Channels via Bot</h2>
-  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px;">
-    <div style="background: #0d1322; border: 1px solid var(--card-border); padding: 14px; border-radius: 8px;">
-      <h3 style="margin-top:0; color:#34d399;">Create Telegram Approval Channel</h3>
-      <form method="post" action="{{ url_for('create_tg', inf_id=inf.id) }}" class="row">
-        <input type="hidden" name="role" value="approval" />
-        <input name="title" value="{{ inf.name }} Amazon Deals" style="flex:1;" />
-        <input name="about" value="Amazon Deals (Official Approval)" style="flex:1;" />
-        <button type="submit" style="background:#059669;">Auto-Create Approval TG</button>
-      </form>
-    </div>
-    <div style="background: #0d1322; border: 1px solid var(--card-border); padding: 14px; border-radius: 8px;">
-      <h3 style="margin-top:0; color:#60a5fa;">Create Telegram Broadcast Channel</h3>
-      <form method="post" action="{{ url_for('create_tg', inf_id=inf.id) }}" class="row">
-        <input type="hidden" name="role" value="broadcast" />
-        <input name="title" value="{{ inf.name }} Loots" style="flex:1;" />
-        <input name="about" value="Best Daily Deals" style="flex:1;" />
-        <button type="submit" style="background:#2563eb;">Auto-Create Broadcast TG</button>
-      </form>
-    </div>
+  <!-- ADD EXTRA CHANNELS FORM -->
+  <div style="background:#0d1322; border:1px solid #1e293b; padding:16px; border-radius:8px;">
+    <h3 style="margin-top:0; color:#cbd5e1; font-size:14px;">➕ Add Additional Channel (Extra Telegram / Extra WhatsApp Channel)</h3>
+    <p class="hint" style="font-size:12px; margin-bottom:10px;">Influencer ki inkoka WhatsApp channel unna, leda special Under 99 Telegram channel unna ikkada instant ga connect cheyachu:</p>
+    <form method="post" action="{{ url_for('add_manual_channel', inf_id=inf.id) }}" class="row">
+      <select name="role">
+        <option value="approval">🛡️ APPROVAL CHANNEL</option>
+        <option value="broadcast" selected>📢 MAIN CHANNEL</option>
+        <option value="whatsapp">💬 WHATSAPP CHANNEL</option>
+      </select>
+      <select name="platform">
+        <option value="telegram" selected>Telegram</option>
+        <option value="whatsapp_group">WhatsApp Group</option>
+        <option value="whatsapp_channel">WhatsApp Channel</option>
+      </select>
+      <input name="identifier" placeholder="@channel or link / WhatsApp invite" required style="flex: 1; min-width: 180px;" />
+      <select name="price_filter">
+        <option value="" selected>Default Budget</option>
+        <option value="under_99">🔥 Under ₹99 Only</option>
+        <option value="under_199">⚡ Under ₹199 Only</option>
+        <option value="under_499">🎁 Under ₹499 Only</option>
+        <option value="under_999">🏷️ Under ₹999 Only</option>
+        <option value="all">All Deals</option>
+      </select>
+      <label style="font-size: 12px; font-weight: 600; color: #f87171; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        <input type="checkbox" name="strip_amazon" value="1" /> 🚫 Strip Amazon
+      </label>
+      <button type="submit" style="background: #2563eb; color: white;">Connect Channel</button>
+    </form>
   </div>
 </section>
 
-<!-- WHATSAPP SECTION -->
+<!-- WHATSAPP CONNECTION SECTION -->
 <section class="card" style="border: 1px solid #16a34a; background: #0c1a14;">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="color: #4ade80; margin: 0;">💬 WhatsApp Account &amp; Dedicated Channel Linker</h2>
-    <span style="background:#064e3b; color:#86efac; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ISOLATED PER-INFLUENCER SESSION</span>
+    <h2 style="color: #4ade80; margin: 0; font-size:18px;">💬 Dedicated WhatsApp Account &amp; Channel Linker</h2>
+    <span style="background:#064e3b; color:#86efac; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ISOLATED SESSION</span>
   </div>
-  <p class="hint">Telegram lo mana Bot ni Admin ga add chestham. Kaani <b>WhatsApp lo ee influencer valla phone thoti login ayyi, valla dedicated Group/Channel ki post avvali</b>:</p>
+  <p class="hint">Influencer phone login chesi, valla phone lo unna dedicated WhatsApp Channel / Group ki connect cheyandi:</p>
   
   <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-top:14px;">
     <!-- Step 1: Login Phone -->
     <div style="background:#07120c; border:1px solid #14532d; padding:16px; border-radius:8px;">
-      <h3 style="margin-top:0; color:#86efac;">1️⃣ Login Influencer Phone (QR Scan)</h3>
-      <p class="hint" style="font-size:12px;">Start session and scan with influencer's WhatsApp (Linked Devices).</p>
+      <h3 style="margin-top:0; color:#86efac; font-size:14px;">1️⃣ Login Influencer Phone (Scan QR)</h3>
+      <p class="hint" style="font-size:12px;">Influencer mobile lo WhatsApp > Linked Devices open chesi scan cheyandi.</p>
       <form method="post" action="{{ url_for('pair_wa', inf_id=inf.id) }}">
         <button type="submit" style="background:#16a34a; width:100%; font-weight:bold;">📲 Generate Live QR Code</button>
       </form>
@@ -256,17 +203,17 @@
 
     <!-- Step 2: Auto-Connect their Channel / Group -->
     <div style="background:#07120c; border:1px solid #14532d; padding:16px; border-radius:8px;">
-      <h3 style="margin-top:0; color:#86efac;">2️⃣ Link Specific Channel to this Account</h3>
-      <p class="hint" style="font-size:12px;">Influencer phone login ayyaka groups kanipistayi, leda <b>direct ga WhatsApp Group / Channel Invite Link</b> ikkada ivvachu:</p>
+      <h3 style="margin-top:0; color:#86efac; font-size:14px;">2️⃣ Connect Channel / Group to this Account</h3>
+      <p class="hint" style="font-size:12px;">Dropdown nunchi select cheyandi, leda <b>direct ga WhatsApp Group/Channel Invite Link</b> paste cheyandi:</p>
       
       <form method="post" action="{{ url_for('wa_connect_chat', inf_id=inf.id) }}" style="display:flex; flex-direction:column; gap:10px;">
         <input type="hidden" name="role" value="whatsapp" />
 
         {% if wa_status_info.chats %}
           <div>
-            <label style="font-size:12px; font-weight:bold; color:#cbd5e1; display:block; margin-bottom:4px;">A) Select Detected Group / Channel:</label>
+            <label style="font-size:12px; font-weight:bold; color:#cbd5e1; display:block; margin-bottom:4px;">A) Detected Groups / Channels from Phone:</label>
             <select name="chat_jid" style="width:100%; padding:8px; font-size:13px;">
-              <option value="">-- Or Choose Below via Link --</option>
+              <option value="">-- Or Paste Link Below --</option>
               {% for chat in wa_status_info.chats %}
                 <option value="{{ chat.jid }}">{{ chat.name }} ({{ 'Group' if chat.isGroup else 'Channel' }})</option>
               {% endfor %}
@@ -276,22 +223,34 @@
 
         <div>
           <label style="font-size:12px; font-weight:bold; color:#cbd5e1; display:block; margin-bottom:4px;">
-            {% if wa_status_info.chats %}B) Or Paste WhatsApp Group/Channel Invite Link:{% else %}Paste WhatsApp Group/Channel Invite Link:{% endif %}
+            {% if wa_status_info.chats %}B) Or Paste WhatsApp Group/Channel Link:{% else %}Paste WhatsApp Group/Channel Link:{% endif %}
           </label>
           <input name="invite_link" placeholder="e.g. https://chat.whatsapp.com/ABC123xyz" style="width:100%; font-size:13px;" />
         </div>
 
         <button type="submit" style="background:#059669; color:white; font-weight:bold; padding:9px; border-radius:6px; cursor:pointer;">⚡ Link WhatsApp Channel to Account</button>
       </form>
+    </div>
+  </div>
+</section>
 
-      <div style="margin-top:14px; border-top:1px dashed #14532d; padding-top:10px;">
-        <h4 style="margin:0 0 6px; color:#cbd5e1; font-size:13px;">Or Create New Group Feed Automatically</h4>
-        <form method="post" action="{{ url_for('create_group', inf_id=inf.id) }}" style="display:flex; gap:6px;">
-          <input name="participant" placeholder="9198...@s.whatsapp.net" style="flex:1; font-size:12px;" />
-          <input name="subject" value="{{ inf.name }} Deals" style="flex:1; font-size:12px;" />
-          <button type="submit" style="background:#15803d; font-size:12px;">Create</button>
-        </form>
-      </div>
+<!-- LIVE PREVIEW DEMO CARD -->
+<section class="card" style="background: #111b2b; border: 1px solid #1e3a8a;">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="color: #60a5fa; margin-top: 0; font-size:16px;">✨ Live Deal Rendering Preview (Instant Inspection)</h2>
+    <span style="font-size:11px; background:#172554; color:#bfdbfe; padding:2px 8px; border-radius:4px;">SIDE-BY-SIDE</span>
+  </div>
+  
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top:12px;">
+    <div style="background: #0d1322; padding: 14px; border-radius: 8px; border: 1px solid #1e293b;">
+      <h3 style="margin-top:0; font-size: 14px; color: #34d399;">🛡️ APPROVAL CHANNEL POST</h3>
+      <pre style="white-space: pre-wrap; font-size: 12px; background: #070b14; padding: 10px; border-radius: 6px; color:#e2e8f0; border:1px solid #1e293b; margin:8px 0;">{{ demo_approval }}</pre>
+      <small style="color: var(--muted);">(Only Amazon + tag=<b>{{ inf.amazon_tag }}</b> + #ad disclosure — 100% Passes Amazon Review)</small>
+    </div>
+    <div style="background: #0d1322; padding: 14px; border-radius: 8px; border: 1px solid #1e293b;">
+      <h3 style="margin-top:0; font-size: 14px; color: #60a5fa;">📢 MAIN CHANNEL &amp; WHATSAPP POST</h3>
+      <pre style="white-space: pre-wrap; font-size: 12px; background: #070b14; padding: 10px; border-radius: 6px; color:#e2e8f0; border:1px solid #1e293b; margin:8px 0;">{{ demo_broadcast }}</pre>
+      <small style="color: var(--muted);">(Amazon with their tag + Flipkart/Myntra with our EarnKaro pubid 5478322)</small>
     </div>
   </div>
 </section>
@@ -299,7 +258,7 @@
 <!-- POST STATS -->
 <section class="card">
   <h2>📊 Posting Stats for {{ inf.name }}</h2>
-  <div class="stats" style="margin-top: 12px;">
+  <div class="stats" style="margin-top: 10px;">
     <div>posted <span>{{ stats.posted }}</span></div>
     <div>failed <span>{{ stats.failed }}</span></div>
     <div>skipped <span>{{ stats.skipped }}</span></div>
