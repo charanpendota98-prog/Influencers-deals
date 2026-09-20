@@ -302,11 +302,32 @@ def has_amazon_link(text: str) -> bool:
 
 
 def deal_signature(text: str) -> str:
-    """A stable signature for dedup: lower-cased alphanumerics of the URLs +
-    the first price-looking token. Keeps one product from posting twice per
-    influencer/channel."""
+    """A stable signature for dedup:
+    1. Extracts ASINs from Amazon links (B0...)
+    2. Extracts clean merchant URLs
+    3. Normalizes title and first price token.
+    This guarantees that even if multiple source channels (Powerloot, Secret Loots)
+    post the same product with slightly different emojis or referral tags,
+    we generate the EXACT SAME SIGNATURE so duplicate products NEVER post twice.
+    """
     import hashlib
-    urls = sorted(find_urls(text))
+    asins = sorted(set(re.findall(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{8,12})", text, re.I)))
+    if asins:
+        # High-confidence Amazon product dedup by ASIN
+        raw = "asin:" + ":".join(a.upper() for a in asins)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+    # Non-Amazon or general URLs: strip queries/tracking params to get canonical deal
+    clean_urls = []
+    for u in find_urls(text):
+        try:
+            p = urlparse(u)
+            clean = f"{p.netloc.lower()}{p.path.rstrip('/')}"
+            clean_urls.append(clean)
+        except Exception:
+            clean_urls.append(u.lower())
+    clean_urls = sorted(set(clean_urls))
+
     prices = re.findall(r"(?:₹|rs\.?|inr)\s?([\d,]{2,})", text, re.I)
-    raw = "|".join(urls) + "#" + "|".join(prices)
+    raw = "|".join(clean_urls) + "#" + "|".join(prices[:2])
     return hashlib.sha1(raw.lower().encode("utf-8")).hexdigest()[:16]

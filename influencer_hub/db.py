@@ -110,6 +110,7 @@ def migrate() -> None:
             ("insta_id", "TEXT NOT NULL DEFAULT ''"),
             ("phone_number", "TEXT NOT NULL DEFAULT ''"),
             ("price_filter", "TEXT NOT NULL DEFAULT 'all'"),
+            ("allowed_sources", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in inf_cols:
                 con.execute(f"ALTER TABLE influencers ADD COLUMN {col} {ddl}")
@@ -120,6 +121,7 @@ def migrate() -> None:
             ("amazon_override_tag", "TEXT NOT NULL DEFAULT ''"),
             ("strip_amazon", "INTEGER NOT NULL DEFAULT 0"),
             ("price_filter", "TEXT NOT NULL DEFAULT ''"),
+            ("allowed_sources", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
                 con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
@@ -139,16 +141,16 @@ def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = ""
                    use_dummy_sources: bool = False,
                    telegram_enabled: bool = True, whatsapp_enabled: bool = True,
                    insta_id: str = "", phone_number: str = "",
-                   price_filter: str = "all") -> int:
+                   price_filter: str = "all", allowed_sources: str = "") -> int:
     con = _connect()
     try:
         cur = con.execute(
             "INSERT INTO influencers "
-            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), handle.strip(), amazon_tag.strip(), notes.strip(), 1 if use_dummy_sources else 0,
              1 if telegram_enabled else 0, 1 if whatsapp_enabled else 0, insta_id.strip(),
-             phone_number.strip(), price_filter.strip() or "all"),
+             phone_number.strip(), price_filter.strip() or "all", allowed_sources.strip()),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -159,8 +161,8 @@ def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = ""
 def update_influencer(influencer_id: int, name: str | None = None,
                       amazon_tag: str | None = None, handle: str | None = None,
                       insta_id: str | None = None, phone_number: str | None = None,
-                      price_filter: str | None = None, notes: str | None = None,
-                      active: bool | None = None) -> None:
+                      price_filter: str | None = None, allowed_sources: str | None = None,
+                      notes: str | None = None, active: bool | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -183,6 +185,9 @@ def update_influencer(influencer_id: int, name: str | None = None,
         if price_filter is not None:
             updates.append("price_filter=?")
             params.append(price_filter.strip())
+        if allowed_sources is not None:
+            updates.append("allowed_sources=?")
+            params.append(allowed_sources.strip())
         if notes is not None:
             updates.append("notes=?")
             params.append(notes.strip())
@@ -260,14 +265,15 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 role: str = "broadcast",
                 amazon_override_tag: str = "",
                 strip_amazon: bool = False,
-                price_filter: str = "") -> int:
+                price_filter: str = "",
+                allowed_sources: str = "") -> int:
     con = _connect()
     try:
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
-             amazon_override_tag.strip(), 1 if strip_amazon else 0, price_filter.strip()),
+             amazon_override_tag.strip(), 1 if strip_amazon else 0, price_filter.strip(), allowed_sources.strip()),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -280,7 +286,8 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            status: str | None = None,
                            amazon_override_tag: str | None = None,
                            strip_amazon: bool | None = None,
-                           price_filter: str | None = None) -> None:
+                           price_filter: str | None = None,
+                           allowed_sources: str | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -306,6 +313,9 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if price_filter is not None:
             updates.append("price_filter=?")
             params.append(price_filter.strip())
+        if allowed_sources is not None:
+            updates.append("allowed_sources=?")
+            params.append(allowed_sources.strip())
         if updates:
             params.append(channel_id)
             con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)

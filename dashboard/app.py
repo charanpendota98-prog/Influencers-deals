@@ -77,6 +77,7 @@ def quick_add():
     insta = request.form.get("insta_id", "").strip()
     handle = request.form.get("handle", "").strip()
     price_filt = request.form.get("price_filter", "all").strip()
+    allowed_src = request.form.get("allowed_sources", "").strip()
     approval_tg = request.form.get("approval_tg", "").strip()
     broadcast_tg = request.form.get("broadcast_tg", "").strip()
     whatsapp_id = request.form.get("whatsapp_id", "").strip()
@@ -86,23 +87,29 @@ def quick_add():
         return redirect(url_for("index"))
 
     iid = db.add_influencer(name, tag, handle=handle, insta_id=insta,
-                            phone_number=phone, price_filter=price_filt)
+                            phone_number=phone, price_filter=price_filt,
+                            allowed_sources=allowed_src)
 
     # 1. Approval Channel
     if approval_tg:
         ident = clean_identifier(approval_tg)
-        db.add_channel(iid, "telegram", ident, role="approval", status="ready")
+        db.add_channel(iid, "telegram", ident, role="approval", status="ready",
+                       allowed_sources=allowed_src)
 
     # 2. Broadcast Channel
     if broadcast_tg:
         ident = clean_identifier(broadcast_tg)
         db.add_channel(iid, "telegram", ident, role="broadcast", status="ready",
-                       strip_amazon=strip_amz_all, price_filter=price_filt if price_filt != "all" else "")
+                       strip_amazon=strip_amz_all,
+                       price_filter=price_filt if price_filt != "all" else "",
+                       allowed_sources=allowed_src)
 
     # 3. WhatsApp Channel/Group
     if whatsapp_id:
         db.add_channel(iid, "whatsapp_group", whatsapp_id, role="whatsapp", status="ready",
-                       strip_amazon=strip_amz_all, price_filter=price_filt if price_filt != "all" else "")
+                       strip_amazon=strip_amz_all,
+                       price_filter=price_filt if price_filt != "all" else "",
+                       allowed_sources=allowed_src)
 
     return redirect(url_for("influencer_detail", inf_id=iid))
 
@@ -115,6 +122,7 @@ def update_profile(inf_id):
     handle = request.form.get("handle", "").strip()
     insta = request.form.get("insta_id", "").strip()
     price_filt = request.form.get("price_filter", "").strip()
+    allowed_src = request.form.get("allowed_sources", "").strip()
     notes = request.form.get("notes", "").strip()
     active_str = request.form.get("active")
     active = (active_str == "1") if active_str is not None else None
@@ -127,6 +135,7 @@ def update_profile(inf_id):
         handle=handle if handle else None,
         insta_id=insta if insta else None,
         price_filter=price_filt if price_filt else None,
+        allowed_sources=allowed_src if allowed_src is not None else None,
         notes=notes if notes else None,
         active=active,
     )
@@ -140,6 +149,7 @@ def update_channel_route(channel_id):
     role = request.form.get("role", "").strip()
     override_tag = request.form.get("amazon_override_tag", "").strip()
     price_filt = request.form.get("price_filter", "").strip()
+    allowed_src = request.form.get("allowed_sources", "").strip()
     strip_amz = request.form.get("strip_amazon") == "1"
 
     if ident:
@@ -152,6 +162,7 @@ def update_channel_route(channel_id):
         amazon_override_tag=override_tag,
         strip_amazon=strip_amz,
         price_filter=price_filt,
+        allowed_sources=allowed_src,
     )
     if inf_id:
         return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
@@ -166,6 +177,7 @@ def add_manual_channel(inf_id):
     invite = request.form.get("invite", "").strip()
     override_tag = request.form.get("amazon_override_tag", "").strip()
     price_filt = request.form.get("price_filter", "").strip()
+    allowed_src = request.form.get("allowed_sources", "").strip()
     strip_amz = request.form.get("strip_amazon") == "1"
 
     if raw_ident:
@@ -180,6 +192,7 @@ def add_manual_channel(inf_id):
             amazon_override_tag=override_tag,
             strip_amazon=strip_amz,
             price_filter=price_filt,
+            allowed_sources=allowed_src,
         )
 
     return redirect(url_for("influencer_detail", inf_id=inf_id))

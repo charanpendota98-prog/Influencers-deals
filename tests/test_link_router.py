@@ -22,6 +22,21 @@ def test_apply_amazon_tag_adds_when_missing():
     assert out == "https://www.amazon.in/dp/B0ABC123?tag=ravi099-21"
 
 
+def test_asin_based_dedup_signature():
+    deal_variant_1 = "🔥 Sony WH-1000XM4 at ₹19,990! https://www.amazon.in/dp/B0863TXGM3?tag=old-21"
+    deal_variant_2 = "⚡ Lowest price Sony Headphone ₹19,990 https://www.amazon.in/gp/product/B0863TXGM3?ref=xyz"
+    assert lr.deal_signature(deal_variant_1) == lr.deal_signature(deal_variant_2)
+
+
+def test_source_filtering():
+    from influencer_hub.pipeline import _is_source_allowed
+    assert _is_source_allowed("powerloot", "") is True  # empty allowed = all
+    assert _is_source_allowed("powerloot", "all") is True
+    assert _is_source_allowed("powerloot", "powerloot, secretloots") is True
+    assert _is_source_allowed("secretloots", "powerloot, secretloots") is True
+    assert _is_source_allowed("random_channel", "powerloot, secretloots") is False
+
+
 def test_price_filter_matching():
     deal_cheap = "Deal at ₹89 loot link: https://www.amazon.in/dp/B0123"
     deal_mid = "Portronics Fan Price: ₹399 https://www.amazon.in/dp/B0123"

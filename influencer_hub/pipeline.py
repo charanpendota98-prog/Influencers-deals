@@ -55,7 +55,20 @@ def _parse_price_filter_spec(spec: str) -> tuple[float | None, float | None]:
     return None, None
 
 
-async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | None = None) -> dict:
+def _is_source_allowed(source_name: str, allowed_spec: str) -> bool:
+    """Return True if source_name is allowed by allowed_spec (comma-separated).
+    Empty allowed_spec means ALL sources are allowed.
+    """
+    s = (allowed_spec or "").strip().lower()
+    if not s or s == "all":
+        return True
+    allowed_list = [x.strip() for x in s.split(",") if x.strip()]
+    src = (source_name or "").strip().lower()
+    return any(a in src or src in a for a in allowed_list)
+
+
+async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | None = None,
+                              source_channel: str = "") -> dict:
     """Render one deal for every active influencer and dispatch to their channels.
 
     Returns {influencer_id: {channel_id: status}}.
@@ -79,30 +92,36 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             # If channel has custom override amazon tag, use it, else default to inf tag
             effective_amz_tag = ch.get("amazon_override_tag") or amazon_tag
 
-            # Price filter hierarchy: channel price_filter overrides influencer price_filter
+            # 1. Source Specification Filter (Powerloot, Secret Loots, etc.)
+            allowed_sources = ch.get("allowed_sources") or inf.get("allowed_sources") or ""
+            if source_channel and not _is_source_allowed(source_channel, allowed_sources):
+                per_channel[ch["id"]] = "skipped"
+                continue
+
+            # 2. Price Specification Filter (Under 99, Under 499, etc.)
             filter_spec = ch.get("price_filter") or inf.get("price_filter") or "all"
             max_p, min_p = _parse_price_filter_spec(filter_spec)
-
-            # 1. Price Specification Filter (Under 99, Under 499, etc.)
             if not link_router.matches_price_filter(deal_text, max_price=max_p, min_price=min_p):
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 2. Approval channel only carries Amazon deals (native + #ad). Skip
+            # 3. Approval channel only carries Amazon deals (native + #ad). Skip
             # deals that have no Amazon link so we never post an empty approval.
             if role == "approval" and not link_router.has_amazon_link(deal_text):
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 3. If strip_amazon is active on this channel, and deal has ONLY Amazon links,
+            # 4. If strip_amazon is active on this channel, and deal has ONLY Amazon links,
             # skip it because nothing remains to post.
             if strip_amz and not any(link_router.classify_url(u) == "merchant" for u in link_router.find_urls(deal_text)):
                 per_channel[ch["id"]] = "skipped"
                 continue
 
+            # 5. Smart Dedup Guard: never post the same deal/product twice to the same channel
             if db.already_posted(inf["id"], ch["id"], sig):
                 per_channel[ch["id"]] = "skipped"
                 continue
+
             rendered = link_router.render_for_influencer(
                 deal_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz
             )
@@ -115,11 +134,17 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
     return results
 
 
-async def run_once(deals: Iterable[str], influencer_ids: Iterable[int] | None = None) -> dict:
-    """Process a batch of deal texts."""
+async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] | None = None) -> dict:
+    """Process a batch of deal items (either dict with {"text", "source"} or plain strings)."""
     all_results: dict[int, dict[int, str]] = {}
     for deal in deals:
-        res = await render_and_dispatch(deal, influencer_ids)
+        if isinstance(deal, dict):
+            d_text = deal.get("text", "")
+            d_src = deal.get("source", "")
+        else:
+            d_text = str(deal)
+            d_src = ""
+        res = await render_and_dispatch(d_text, influencer_ids, source_channel=d_src)
         for iid, chmap in res.items():
             all_results.setdefault(iid, {}).update(chmap)
     return all_results

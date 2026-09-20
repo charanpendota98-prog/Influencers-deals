@@ -54,6 +54,10 @@
       </select>
     </div>
     <div>
+      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#c084fc;">📡 Allowed Sources Filter</label>
+      <input name="allowed_sources" value="{{ inf.allowed_sources or '' }}" placeholder="e.g. powerloot, secretloots (empty=all)" style="width: 100%;" />
+    </div>
+    <div>
       <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 6px; color:#cbd5e1;">Posting Switch</label>
       <select name="active" style="width: 100%;">
         <option value="1" {{ 'selected' if inf.active else '' }}>🟢 Active (Auto-Posting ON)</option>
@@ -99,7 +103,8 @@
         <th>Role</th>
         <th>Platform</th>
         <th>Channel Identifier / Username</th>
-        <th>Budget Specification</th>
+        <th>Allowed Sources</th>
+        <th>Budget Filter</th>
         <th>Amazon Override / Filter</th>
         <th>Status</th>
         <th>Save</th>
@@ -120,17 +125,20 @@
           </td>
           <td><b>{{ c.platform }}</b></td>
           <td>
-            <input name="identifier" value="{{ c.identifier }}" style="font-size: 13px; padding: 6px; width: 150px; font-family: monospace;" />
+            <input name="identifier" value="{{ c.identifier }}" style="font-size: 13px; padding: 6px; width: 140px; font-family: monospace;" />
             {% if c.invite_link %}<a href="{{ c.invite_link }}" target="_blank" style="font-size: 12px; margin-left: 4px; color:var(--accent);">(link)</a>{% endif %}
           </td>
           <td>
+            <input name="allowed_sources" value="{{ c.allowed_sources or '' }}" placeholder="all or powerloot" style="font-size: 11px; padding: 4px; width: 110px;" title="Comma separated source channels allowed" />
+          </td>
+          <td>
             <select name="price_filter" style="font-size: 12px; padding: 5px;">
-              <option value="" {{ 'selected' if not c.price_filter else '' }}>Use Default ({{ inf.price_filter or 'All' }})</option>
+              <option value="" {{ 'selected' if not c.price_filter else '' }}>Default ({{ inf.price_filter or 'All' }})</option>
               <option value="all" {{ 'selected' if c.price_filter == 'all' else '' }}>All Deals</option>
-              <option value="under_99" {{ 'selected' if c.price_filter == 'under_99' else '' }}>🔥 Under ₹99 Only</option>
-              <option value="under_199" {{ 'selected' if c.price_filter == 'under_199' else '' }}>⚡ Under ₹199 Only</option>
-              <option value="under_499" {{ 'selected' if c.price_filter == 'under_499' else '' }}>🎁 Under ₹499 Only</option>
-              <option value="under_999" {{ 'selected' if c.price_filter == 'under_999' else '' }}>🏷️ Under ₹999 Only</option>
+              <option value="under_99" {{ 'selected' if c.price_filter == 'under_99' else '' }}>🔥 Under ₹99</option>
+              <option value="under_199" {{ 'selected' if c.price_filter == 'under_199' else '' }}>⚡ Under ₹199</option>
+              <option value="under_499" {{ 'selected' if c.price_filter == 'under_499' else '' }}>🎁 Under ₹499</option>
+              <option value="under_999" {{ 'selected' if c.price_filter == 'under_999' else '' }}>🏷️ Under ₹999</option>
             </select>
           </td>
           <td>
@@ -138,7 +146,7 @@
               <label style="display: block; cursor: pointer; color: #f87171; font-weight: 600; font-size: 12px;">
                 <input type="checkbox" name="strip_amazon" value="1" {{ 'checked' if c.strip_amazon else '' }} /> 🚫 Strip Amazon
               </label>
-              <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt tag (optional)" style="font-size: 12px; padding: 4px 6px; width: 130px; margin-top: 4px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
+              <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt tag" style="font-size: 12px; padding: 4px 6px; width: 110px; margin-top: 4px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
             </div>
           </td>
           <td><span class="ok">{{ c.status }}</span></td>
@@ -154,7 +162,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="8" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
+      <tr><td colspan="9" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
       {% endfor %}
     </tbody>
   </table>
