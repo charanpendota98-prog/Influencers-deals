@@ -64,14 +64,17 @@ def quick_add():
     """
     name = request.form.get("name", "").strip()
     tag = request.form.get("tag", "").strip()
+    insta = request.form.get("insta_id", "").strip()
+    handle = request.form.get("handle", "").strip()
     approval_tg = request.form.get("approval_tg", "").strip()
     broadcast_tg = request.form.get("broadcast_tg", "").strip()
     whatsapp_id = request.form.get("whatsapp_id", "").strip()
+    strip_amz_all = request.form.get("strip_amazon_broadcast") == "1"
 
     if not name or not tag:
         return redirect(url_for("index"))
 
-    iid = db.add_influencer(name, tag)
+    iid = db.add_influencer(name, tag, handle=handle, insta_id=insta)
 
     # 1. Approval Channel
     if approval_tg:
@@ -81,13 +84,58 @@ def quick_add():
     # 2. Broadcast Channel
     if broadcast_tg:
         ident = clean_identifier(broadcast_tg)
-        db.add_channel(iid, "telegram", ident, role="broadcast", status="ready")
+        db.add_channel(iid, "telegram", ident, role="broadcast", status="ready", strip_amazon=strip_amz_all)
 
     # 3. WhatsApp Channel/Group
     if whatsapp_id:
-        db.add_channel(iid, "whatsapp_group", whatsapp_id, role="whatsapp", status="ready")
+        db.add_channel(iid, "whatsapp_group", whatsapp_id, role="whatsapp", status="ready", strip_amazon=strip_amz_all)
 
     return redirect(url_for("influencer_detail", inf_id=iid))
+
+
+@app.route("/influencer/<int:inf_id>/update-profile", methods=["POST"])
+def update_profile(inf_id):
+    name = request.form.get("name", "").strip()
+    tag = request.form.get("amazon_tag", "").strip()
+    handle = request.form.get("handle", "").strip()
+    insta = request.form.get("insta_id", "").strip()
+    notes = request.form.get("notes", "").strip()
+    active_str = request.form.get("active")
+    active = (active_str == "1") if active_str is not None else None
+
+    db.update_influencer(
+        inf_id,
+        name=name if name else None,
+        amazon_tag=tag if tag else None,
+        handle=handle if handle else None,
+        insta_id=insta if insta else None,
+        notes=notes if notes else None,
+        active=active,
+    )
+    return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+
+@app.route("/channel/<int:channel_id>/update", methods=["POST"])
+def update_channel_route(channel_id):
+    inf_id = request.form.get("inf_id")
+    ident = request.form.get("identifier", "").strip()
+    role = request.form.get("role", "").strip()
+    override_tag = request.form.get("amazon_override_tag", "").strip()
+    strip_amz = request.form.get("strip_amazon") == "1"
+
+    if ident:
+        ident = clean_identifier(ident) if not ident.startswith("120") else ident
+
+    db.update_channel_details(
+        channel_id,
+        identifier=ident if ident else None,
+        role=role if role else None,
+        amazon_override_tag=override_tag,
+        strip_amazon=strip_amz,
+    )
+    if inf_id:
+        return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
+    return redirect(url_for("index"))
 
 
 @app.route("/influencer/<int:inf_id>/add-manual-channel", methods=["POST"])
@@ -96,10 +144,21 @@ def add_manual_channel(inf_id):
     raw_ident = request.form.get("identifier", "").strip()
     role = request.form.get("role", "broadcast").strip()
     invite = request.form.get("invite", "").strip()
+    override_tag = request.form.get("amazon_override_tag", "").strip()
+    strip_amz = request.form.get("strip_amazon") == "1"
 
     if raw_ident:
         ident = clean_identifier(raw_ident) if platform == "telegram" else raw_ident
-        db.add_channel(inf_id, platform, ident, invite_link=invite, status="ready", role=role)
+        db.add_channel(
+            inf_id,
+            platform,
+            ident,
+            invite_link=invite,
+            status="ready",
+            role=role,
+            amazon_override_tag=override_tag,
+            strip_amazon=strip_amz,
+        )
 
     return redirect(url_for("influencer_detail", inf_id=inf_id))
 

@@ -103,14 +103,24 @@ def migrate() -> None:
     """Add columns introduced after the first deploy (safe to re-run)."""
     con = _connect()
     try:
-        cols = {r["name"] for r in con.execute("PRAGMA table_info(influencers)")}
+        inf_cols = {r["name"] for r in con.execute("PRAGMA table_info(influencers)")}
         for col, ddl in (
             ("telegram_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("whatsapp_enabled", "INTEGER NOT NULL DEFAULT 1"),
-            ("role", "TEXT NOT NULL DEFAULT 'broadcast'"),
+            ("insta_id", "TEXT NOT NULL DEFAULT ''"),
         ):
-            if col not in cols:
+            if col not in inf_cols:
                 con.execute(f"ALTER TABLE influencers ADD COLUMN {col} {ddl}")
+
+        ch_cols = {r["name"] for r in con.execute("PRAGMA table_info(channels)")}
+        for col, ddl in (
+            ("role", "TEXT NOT NULL DEFAULT 'broadcast'"),
+            ("amazon_override_tag", "TEXT NOT NULL DEFAULT ''"),
+            ("strip_amazon", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if col not in ch_cols:
+                con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
+
         con.commit()
     finally:
         con.close()
@@ -124,18 +134,53 @@ def _now() -> str:
 
 def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = "",
                    use_dummy_sources: bool = False,
-                   telegram_enabled: bool = True, whatsapp_enabled: bool = True) -> int:
+                   telegram_enabled: bool = True, whatsapp_enabled: bool = True,
+                   insta_id: str = "") -> int:
     con = _connect()
     try:
         cur = con.execute(
             "INSERT INTO influencers "
-            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (name, handle, amazon_tag.strip(), notes, 1 if use_dummy_sources else 0,
-             1 if telegram_enabled else 0, 1 if whatsapp_enabled else 0),
+            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (name.strip(), handle.strip(), amazon_tag.strip(), notes.strip(), 1 if use_dummy_sources else 0,
+             1 if telegram_enabled else 0, 1 if whatsapp_enabled else 0, insta_id.strip()),
         )
         con.commit()
         return int(cur.lastrowid)
+    finally:
+        con.close()
+
+
+def update_influencer(influencer_id: int, name: str | None = None,
+                      amazon_tag: str | None = None, handle: str | None = None,
+                      insta_id: str | None = None, notes: str | None = None,
+                      active: bool | None = None) -> None:
+    con = _connect()
+    try:
+        updates = []
+        params = []
+        if name is not None:
+            updates.append("name=?")
+            params.append(name.strip())
+        if amazon_tag is not None:
+            updates.append("amazon_tag=?")
+            params.append(amazon_tag.strip())
+        if handle is not None:
+            updates.append("handle=?")
+            params.append(handle.strip())
+        if insta_id is not None:
+            updates.append("insta_id=?")
+            params.append(insta_id.strip())
+        if notes is not None:
+            updates.append("notes=?")
+            params.append(notes.strip())
+        if active is not None:
+            updates.append("active=?")
+            params.append(1 if active else 0)
+        if updates:
+            params.append(influencer_id)
+            con.execute(f"UPDATE influencers SET {', '.join(updates)} WHERE id=?", params)
+            con.commit()
     finally:
         con.close()
 
@@ -200,16 +245,54 @@ def set_use_dummy_sources(influencer_id: int, use_dummy: bool) -> None:
 
 def add_channel(influencer_id: int, platform: str, identifier: str,
                 invite_link: str = "", status: str = "pending",
-                role: str = "broadcast") -> int:
+                role: str = "broadcast",
+                amazon_override_tag: str = "",
+                strip_amazon: bool = False) -> int:
     con = _connect()
     try:
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role) "
-            "VALUES (?,?,?,?,?,?)",
-            (influencer_id, platform, identifier, invite_link, status, role),
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
+             amazon_override_tag.strip(), 1 if strip_amazon else 0),
         )
         con.commit()
         return int(cur.lastrowid)
+    finally:
+        con.close()
+
+
+def update_channel_details(channel_id: int, identifier: str | None = None,
+                           role: str | None = None, invite_link: str | None = None,
+                           status: str | None = None,
+                           amazon_override_tag: str | None = None,
+                           strip_amazon: bool | None = None) -> None:
+    con = _connect()
+    try:
+        updates = []
+        params = []
+        if identifier is not None:
+            updates.append("identifier=?")
+            params.append(identifier.strip())
+        if role is not None:
+            updates.append("role=?")
+            params.append(role.strip())
+        if invite_link is not None:
+            updates.append("invite_link=?")
+            params.append(invite_link.strip())
+        if status is not None:
+            updates.append("status=?")
+            params.append(status.strip())
+        if amazon_override_tag is not None:
+            updates.append("amazon_override_tag=?")
+            params.append(amazon_override_tag.strip())
+        if strip_amazon is not None:
+            updates.append("strip_amazon=?")
+            params.append(1 if strip_amazon else 0)
+        if updates:
+            params.append(channel_id)
+            con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)
+            con.commit()
     finally:
         con.close()
 

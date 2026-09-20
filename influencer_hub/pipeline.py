@@ -63,15 +63,28 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
         per_channel: dict[int, str] = {}
         for ch in channels:
             role = ch.get("role", "broadcast")
+            strip_amz = bool(ch.get("strip_amazon", 0))
+            # If channel has custom override amazon tag, use it, else default to inf tag
+            effective_amz_tag = ch.get("amazon_override_tag") or amazon_tag
+
             # Approval channel only carries Amazon deals (native + #ad). Skip
             # deals that have no Amazon link so we never post an empty approval.
             if role == "approval" and not link_router.has_amazon_link(deal_text):
                 per_channel[ch["id"]] = "skipped"
                 continue
+
+            # If strip_amazon is active on this channel, and deal has ONLY Amazon links,
+            # skip it because nothing remains to post.
+            if strip_amz and not any(link_router.classify_url(u) == "merchant" for u in link_router.find_urls(deal_text)):
+                per_channel[ch["id"]] = "skipped"
+                continue
+
             if db.already_posted(inf["id"], ch["id"], sig):
                 per_channel[ch["id"]] = "skipped"
                 continue
-            rendered = link_router.render_for_influencer(deal_text, amazon_tag, ek_map, role=role)
+            rendered = link_router.render_for_influencer(
+                deal_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz
+            )
             status = await dispatch_to_channel(inf, ch, rendered)
             db.record_post(inf["id"], ch["id"], sig,
                            status="posted" if status == "posted" else "failed",

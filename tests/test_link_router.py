@@ -22,6 +22,19 @@ def test_apply_amazon_tag_adds_when_missing():
     assert out == "https://www.amazon.in/dp/B0ABC123?tag=ravi099-21"
 
 
+def test_strip_amazon_render():
+    text = (
+        "🔥 Super Combo Deal\n"
+        "Amazon link: https://www.amazon.in/dp/B0H5PTMXV1?tag=old-21\n"
+        "Flipkart link: https://www.flipkart.com/p/itm123"
+    )
+    ek = {"https://www.flipkart.com/p/itm123": "https://ekaro.in/AbC123"}
+    rendered = lr.render_for_influencer(text, "mama086-21", ek, strip_amazon=True)
+    assert "amazon.in" not in rendered
+    assert "https://ekaro.in/AbC123" in rendered
+    assert "Flipkart link:" in rendered
+
+
 def test_delete_influencer_and_channels():
     iid = db.add_influencer("To Delete", "del-21")
     cid = db.add_channel(iid, "telegram", "@del_chan", role="approval")

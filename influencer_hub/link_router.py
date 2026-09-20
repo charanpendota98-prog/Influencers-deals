@@ -193,24 +193,70 @@ def _approval_render(text: str, amazon_tag: str) -> str:
     return result
 
 
+def _strip_amazon_render(text: str, ek: dict[str, str]) -> str:
+    """Produce a post where Amazon links/lines are completely REMOVED,
+    and all non-Amazon merchant links are converted to our EarnKaro."""
+    lines = text.splitlines()
+    kept_lines: list[str] = []
+
+    for line in lines:
+        urls = find_urls(line)
+        if not urls:
+            kept_lines.append(line)
+            continue
+
+        line_has_amazon = any(classify_url(u) == "amazon" for u in urls)
+        line_has_merchant = any(classify_url(u) == "merchant" for u in urls)
+
+        if line_has_amazon and not line_has_merchant:
+            # Pure Amazon line -> remove completely
+            continue
+        elif line_has_amazon and line_has_merchant:
+            # Line has both: remove amazon, rewrite merchant
+            out_line = line
+            for u in urls:
+                if classify_url(u) == "amazon":
+                    out_line = out_line.replace(u, "").strip()
+                elif classify_url(u) == "merchant":
+                    out_line = out_line.replace(u, ek.get(u, u))
+            if out_line.strip():
+                kept_lines.append(out_line)
+        else:
+            # Non-amazon line -> rewrite merchant to earnkaro
+            out_line = line
+            for u in urls:
+                if classify_url(u) == "merchant":
+                    out_line = out_line.replace(u, ek.get(u, u))
+            kept_lines.append(out_line)
+
+    result = "\n".join(kept_lines).strip()
+    return re.sub(r"\n{3,}", "\n\n", result)
+
+
 def render_for_influencer(
     text: str,
     amazon_tag: str,
     earnkaro_links: dict[str, str] | None = None,
     role: str = "broadcast",
+    strip_amazon: bool = False,
 ) -> str:
     """Render `text` for one influencer on a given channel `role`.
 
+    strip_amazon:
+      If True -> Amazon links and Amazon-only product lines are completely REMOVED.
+      Only Flipkart/Myntra/etc. (monetised through our EarnKaro) are posted.
+
     role:
-      'broadcast' / 'whatsapp' -> full deal: Amazon links retagged to THEIR tag,
-          other merchants swapped to OUR EarnKaro short link.
+      'broadcast' / 'whatsapp' -> full deal: Amazon links retagged to THEIR tag
+          (or omitted if strip_amazon=True), other merchants swapped to OUR EarnKaro.
       'approval' -> Amazon-only, posted NATIVELY (no shortener, amazon.in visible)
-          with the '#ad (paid link)' disclosure. This is the channel Amazon's
-          associate review reads, so it must show clean native amazon.in links.
+          with the '#ad (paid link)' disclosure.
     """
+    ek = earnkaro_links or {}
+    if strip_amazon:
+        return _strip_amazon_render(text, ek)
     if role == "approval":
         return _approval_render(text, amazon_tag)
-    ek = earnkaro_links or {}
     return _render_base(text, amazon_tag, ek)
 
 
