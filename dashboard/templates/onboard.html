@@ -1,0 +1,36 @@
+{% extends "layout.html" %}
+{% block title %}Onboard Influencer (3-Channel Setup){% endblock %}
+{% block content %}
+<h1>🤝 Easy One-Shot 3-Channel Influencer Onboarding</h1>
+<p class="hint">One single click sets up <b>all 3 channels</b> automatically for unlimited influencers:</p>
+<ul style="color: #64748b; margin-bottom: 20px;">
+  <li><b>Channel 1: Amazon Approval Channel (TG)</b> — Posts ONLY native <code>amazon.in</code> links with <code>#ad (paid link)</code> disclosure so Amazon's associate account approval passes 100%.</li>
+  <li><b>Channel 2: Real / Broadcast Channel (TG)</b> — Full deals: Amazon links retagged to their tag, all other merchants (Flipkart/Myntra/Ajio) converted to our EarnKaro.</li>
+  <li><b>Channel 3: WhatsApp Channel / Group</b> — Full deals broadcasted to their WhatsApp audience.</li>
+</ul>
+
+{% if result and result.error %}
+  <div class="card"><p class="bad">{{ result.error }}</p></div>
+{% endif %}
+
+{% if result and result.inf_id %}
+  <div class="card" style="border: 2px solid #22c55e;">
+    <h2>✅ {{ result.name }} onboarded with 3-Channel Setup (ID #{{ result.inf_id }})</h2>
+    <ul>{% for m in result.msgs %}<li><b>{{ m }}</b></li>{% endfor %}</ul>
+    <a class="btn" href="{{ url_for('influencer_detail', inf_id=result.inf_id) }}" style="display:inline-block; margin-top: 15px; padding: 10px 20px; background: #2563eb; color: white; border-radius: 6px; text-decoration: none;">Continue to Influencer Hub &amp; Scan WhatsApp QR →</a>
+  </div>
+{% else %}
+  <section class="card">
+    <form method="post" action="{{ url_for('onboard') }}" class="row">
+      <input name="name" placeholder="Influencer Name (e.g. Ramesh Loots)" required />
+      <input name="tag" placeholder="Amazon Associate Tag (e.g. mama086-21)" required />
+      <input name="handle" placeholder="@telegram_handle (optional)" />
+      <input name="whatsapp" placeholder="WhatsApp Number (optional)" />
+      <label><input type="checkbox" name="dummy" /> Stage with dummy sources first</label>
+      <label><input type="checkbox" name="tg" checked /> Auto-create Telegram Channels (Approval + Broadcast)</label>
+      <label><input type="checkbox" name="wa" checked /> Auto-start WhatsApp Channel</label>
+      <button type="submit" style="background: #16a34a; color: white; font-weight: bold;">⚡ 1-Click Auto Setup (3 Channels)</button>
+    </form>
+  </section>
+{% endif %}
+{% endblock %}

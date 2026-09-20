@@ -1,0 +1,92 @@
+{% extends "layout.html" %}
+{% block title %}Influencers Hub - Instant 3-Channel Control{% endblock %}
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center;">
+  <h1>⚡ Influencer Deals Hub</h1>
+  <div>
+    <a class="btn" style="background:#16a34a; color:white; padding:8px 16px; border-radius:6px; font-weight:bold; text-decoration:none;" href="{{ url_for('onboard') }}">✨ Auto-Create Channels (/onboard)</a>
+  </div>
+</div>
+
+<section class="card" style="border: 2px solid #3b82f6; background: #f8fafc;">
+  <h2 style="color: #1e40af; margin-top: 0;">🚀 Instant Quick-Add (No Server Deploy Needed!)</h2>
+  <p class="hint">Kotha influencer vachinappudu valla <b>Amazon Tag</b> &amp; <b>Channel Links/Usernames</b> ikkade enter cheste ventane posts start aipothayi! Server deploy cheyalsina pani ledu.</p>
+  <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; align-items: end;">
+    <div>
+      <label style="font-size: 13px; font-weight: bold; display: block; margin-bottom: 4px;">Influencer Name *</label>
+      <input name="name" placeholder="e.g. Ramesh Deals" required style="width: 100%; box-sizing: border-box;" />
+    </div>
+    <div>
+      <label style="font-size: 13px; font-weight: bold; display: block; margin-bottom: 4px;">Amazon Tag *</label>
+      <input name="tag" placeholder="e.g. mama086-21" required style="width: 100%; box-sizing: border-box;" />
+    </div>
+    <div>
+      <label style="font-size: 13px; font-weight: bold; display: block; margin-bottom: 4px;">🛡️ Channel 1: Approval TG Link</label>
+      <input name="approval_tg" placeholder="@approval_channel or t.me/..." style="width: 100%; box-sizing: border-box;" />
+    </div>
+    <div>
+      <label style="font-size: 13px; font-weight: bold; display: block; margin-bottom: 4px;">📢 Channel 2: Broadcast TG Link</label>
+      <input name="broadcast_tg" placeholder="@real_channel or t.me/..." style="width: 100%; box-sizing: border-box;" />
+    </div>
+    <div>
+      <label style="font-size: 13px; font-weight: bold; display: block; margin-bottom: 4px;">💬 Channel 3: WhatsApp Group/ID</label>
+      <input name="whatsapp_id" placeholder="120363xxx@g.us (optional)" style="width: 100%; box-sizing: border-box;" />
+    </div>
+    <div>
+      <button type="submit" style="width: 100%; background: #2563eb; color: white; padding: 9px; font-weight: bold; border-radius: 6px; cursor: pointer;">⚡ Save &amp; Start Live</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Live System Overview</h2>
+  <div class="stats">
+    <div><span>{{ stats.posted }}</span> posted</div>
+    <div><span>{{ stats.failed }}</span> failed</div>
+    <div><span>{{ stats.skipped }}</span> skipped</div>
+    {% if vm %}
+      <div>CPU <span>{{ vm.cpu_pct }}%</span></div>
+      <div>MEM <span>{{ vm.mem_pct }}%</span></div>
+      <div>DISK <span>{{ vm.disk_pct }}%</span></div>
+      <div>Bot <span class="{% if vm.bot_running %}ok{% else %}bad{% endif %}">{% if vm.bot_running %}up{% else %}down{% endif %}</span></div>
+    {% else %}
+      <div>No VM data yet</div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>All Influencers ({{ influencers|length }})</h2>
+  {% if not influencers %}
+    <p class="hint">No influencers yet — add one above.</p>
+  {% endif %}
+  <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+    <thead>
+      <tr style="text-align: left; background: #f1f5f9; border-bottom: 2px solid #cbd5e1;">
+        <th style="padding: 8px;">#</th>
+        <th style="padding: 8px;">Name</th>
+        <th style="padding: 8px;">Amazon Tag</th>
+        <th style="padding: 8px;">TG Status</th>
+        <th style="padding: 8px;">WA Status</th>
+        <th style="padding: 8px;">Active</th>
+        <th style="padding: 8px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for i in influencers %}
+      <tr style="border-bottom: 1px solid #e2e8f0;">
+        <td style="padding: 8px;"><b>#{{ i.id }}</b></td>
+        <td style="padding: 8px;"><b>{{ i.name }}</b> {% if i.handle %}<small style="color:#64748b;">({{ i.handle }})</small>{% endif %}</td>
+        <td style="padding: 8px;"><code style="background:#e0e7ff; color:#3730a3; padding:2px 6px; border-radius:4px;">{{ i.amazon_tag }}</code></td>
+        <td style="padding: 8px;">{% if i.telegram_enabled %}✅ Enabled{% else %}—{% endif %}</td>
+        <td style="padding: 8px;">{% if i.whatsapp_enabled %}✅ Enabled{% else %}—{% endif %}</td>
+        <td style="padding: 8px;">{{ '🟢 Active' if i.active else '🔴 Paused' }}</td>
+        <td style="padding: 8px;">
+          <a class="btn" style="padding:4px 10px; font-size:13px; text-decoration:none;" href="{{ url_for('influencer_detail', inf_id=i.id) }}">⚙️ Manage 3 Channels</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

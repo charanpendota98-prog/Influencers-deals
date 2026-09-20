@@ -1,0 +1,27 @@
+:root { --bg:#0f1320; --card:#1a2032; --fg:#e7ecf5; --muted:#9aa6bf; --accent:#5b8cff; --ok:#39d98a; --bad:#ff5c7a; }
+* { box-sizing: border-box; }
+body { margin:0; font:15px/1.5 system-ui,Segoe UI,Roboto,Arial; background:var(--bg); color:var(--fg); }
+header { display:flex; align-items:center; justify-content:space-between; padding:12px 20px; background:#121728; border-bottom:1px solid #232c44; }
+.brand { font-weight:700; font-size:18px; }
+nav a { color:var(--fg); text-decoration:none; margin-left:18px; opacity:.85; }
+nav a:hover { opacity:1; color:var(--accent); }
+main { max-width:980px; margin:24px auto; padding:0 16px; }
+h1 { font-size:24px; margin:0 0 16px; }
+h2 { font-size:18px; margin:0 0 12px; }
+h3 { font-size:15px; margin:18px 0 8px; color:var(--muted); }
+.card { background:var(--card); border:1px solid #232c44; border-radius:12px; padding:18px; margin-bottom:18px; }
+.row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+input { background:#0e1424; border:1px solid #2a3553; color:var(--fg); padding:9px 11px; border-radius:8px; min-width:160px; }
+button, .btn { background:var(--accent); color:#fff; border:0; padding:9px 14px; border-radius:8px; cursor:pointer; text-decoration:none; display:inline-block; font-size:14px; }
+button:hover, .btn:hover { filter:brightness(1.08); }
+.hint { color:var(--muted); font-size:13px; margin:8px 0; }
+table { width:100%; border-collapse:collapse; }
+th, td { text-align:left; padding:9px 8px; border-bottom:1px solid #232c44; }
+code { background:#0e1424; padding:2px 6px; border-radius:5px; font-size:13px; }
+.stats { display:flex; gap:18px; flex-wrap:wrap; }
+.stats div { background:#0e1424; padding:10px 14px; border-radius:8px; font-size:13px; color:var(--muted); }
+.stats span { color:var(--fg); font-weight:700; margin-left:6px; }
+.stats.big div { font-size:16px; padding:16px 20px; }
+.ok { color:var(--ok); } .bad { color:var(--bad); }
+.qrbox { margin-top:12px; min-height:80px; }
+.qrbox img { width:260px; height:260px; background:#fff; border-radius:10px; padding:8px; }

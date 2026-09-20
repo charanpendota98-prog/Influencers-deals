@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Influencer Hub{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header>
+    <span class="brand">🤝 Influencer Hub</span>
+    <nav>
+      <a href="{{ url_for('index') }}">Influencers</a>
+      <a href="{{ url_for('vm') }}">VM Health</a>
+    </nav>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

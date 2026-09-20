@@ -1,0 +1,138 @@
+{% extends "layout.html" %}
+{% block title %}{{ inf.name }} - 3-Channel Control Center{% endblock %}
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+  <div>
+    <h1 style="margin-bottom: 4px;">{{ inf.name }} <small style="color: #64748b;">#{{ inf.id }}</small></h1>
+    <p class="hint" style="margin: 0;">Amazon Associate Tag: <code style="font-size: 15px; font-weight: bold; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 4px;">{{ inf.amazon_tag }}</code> · Status: <b>{{ 'Active' if inf.active else 'Paused' }}</b></p>
+  </div>
+  <div>
+    <form method="post" action="{{ url_for('delete_influencer', inf_id=inf.id) }}" onsubmit="return confirm('Delete this influencer and all attached channels?');">
+      <button type="submit" style="background: #ef4444; color: white; padding: 6px 12px; border-radius: 4px; font-size: 12px;">🗑️ Delete Influencer</button>
+    </form>
+  </div>
+</div>
+
+<!-- LIVE PREVIEW DEMO CARD -->
+<section class="card" style="background: #fdfbf7; border: 2px solid #f59e0b;">
+  <h2 style="color: #b45309; margin-top: 0;">✨ Live Deal Rendering Preview (Automatic Split)</h2>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+    <div style="background: white; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0;">
+      <h3 style="margin-top:0; font-size: 14px; color: #15803d;">🛡️ Channel 1: Approval Channel Post</h3>
+      <pre style="white-space: pre-wrap; font-size: 12px; background: #f8fafc; padding: 8px; border-radius: 4px;">{{ demo_approval }}</pre>
+      <small style="color: #64748b;">(Only Amazon + tag=<b>{{ inf.amazon_tag }}</b> + #ad disclosure)</small>
+    </div>
+    <div style="background: white; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0;">
+      <h3 style="margin-top:0; font-size: 14px; color: #2563eb;">📢 Channel 2 &amp; 3: Real / Broadcast Post</h3>
+      <pre style="white-space: pre-wrap; font-size: 12px; background: #f8fafc; padding: 8px; border-radius: 4px;">{{ demo_broadcast }}</pre>
+      <small style="color: #64748b;">(Amazon with their tag + Flipkart/Myntra with our EarnKaro)</small>
+    </div>
+  </div>
+</section>
+
+<!-- 3 CHANNELS LIST & CONNECT -->
+<section class="card">
+  <h2>📺 Configured Channels for {{ inf.name }}</h2>
+  <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
+    <thead>
+      <tr style="text-align: left; background: #f8fafc; border-bottom: 2px solid #e2e8f0;">
+        <th style="padding: 8px;">Role</th>
+        <th style="padding: 8px;">Platform</th>
+        <th style="padding: 8px;">Identifier / Link</th>
+        <th style="padding: 8px;">Status</th>
+        <th style="padding: 8px;">Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in channels %}
+      <tr style="border-bottom: 1px solid #f1f5f9;">
+        <td style="padding: 8px;">
+          {% if c.role == 'approval' %}
+            <span style="background: #dcfce7; color: #166534; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 12px;">🛡️ Channel 1: Approval</span>
+          {% elif c.role == 'broadcast' %}
+            <span style="background: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 12px;">📢 Channel 2: Broadcast</span>
+          {% else %}
+            <span style="background: #fef3c7; color: #92400e; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 12px;">💬 Channel 3: WhatsApp</span>
+          {% endif %}
+        </td>
+        <td style="padding: 8px;"><b>{{ c.platform }}</b></td>
+        <td style="padding: 8px;"><code>{{ c.identifier }}</code> {% if c.invite_link %}<a href="{{ c.invite_link }}" target="_blank">(invite)</a>{% endif %}</td>
+        <td style="padding: 8px;"><span class="ok">{{ c.status }}</span></td>
+        <td style="padding: 8px;">
+          <form method="post" action="{{ url_for('delete_channel', channel_id=c.id) }}" style="display:inline;">
+            <input type="hidden" name="inf_id" value="{{ inf.id }}" />
+            <button type="submit" style="background: none; border: none; color: #ef4444; cursor: pointer; text-decoration: underline; font-size: 12px;">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" style="padding: 12px; color: #64748b; text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h3>➕ Connect Channel Manually (Any Existing Channel / Link)</h3>
+  <p class="hint">Influencer already create chesina channel link/username unte, ikkada enter cheste ventane connect aipotundi:</p>
+  <form method="post" action="{{ url_for('add_manual_channel', inf_id=inf.id) }}" class="row" style="display: flex; gap: 8px; flex-wrap: wrap;">
+    <select name="role" style="padding: 8px;">
+      <option value="approval">🛡️ Channel 1: Amazon Approval</option>
+      <option value="broadcast" selected>📢 Channel 2: Real / Broadcast</option>
+      <option value="whatsapp">💬 Channel 3: WhatsApp</option>
+    </select>
+    <select name="platform" style="padding: 8px;">
+      <option value="telegram" selected>Telegram</option>
+      <option value="whatsapp_group">WhatsApp Group</option>
+      <option value="whatsapp_channel">WhatsApp Channel</option>
+    </select>
+    <input name="identifier" placeholder="e.g. @channelname or https://t.me/..." required style="flex: 1; min-width: 200px;" />
+    <button type="submit" style="background: #2563eb; color: white;">Connect Channel</button>
+  </form>
+</section>
+
+<!-- AUTO CREATE CHANNELS SECTION -->
+<section class="card">
+  <h2>🤖 Auto-Create New Channels via Bot</h2>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+    <div style="border: 1px solid #e2e8f0; padding: 12px; border-radius: 6px;">
+      <h3 style="margin-top:0;">Create Telegram Approval Channel</h3>
+      <form method="post" action="{{ url_for('create_tg', inf_id=inf.id) }}" class="row">
+        <input type="hidden" name="role" value="approval" />
+        <input name="title" value="{{ inf.name }} Amazon Deals" />
+        <input name="about" value="Amazon Deals (Official Approval)" />
+        <button type="submit">Auto-Create Approval TG</button>
+      </form>
+    </div>
+    <div style="border: 1px solid #e2e8f0; padding: 12px; border-radius: 6px;">
+      <h3 style="margin-top:0;">Create Telegram Broadcast Channel</h3>
+      <form method="post" action="{{ url_for('create_tg', inf_id=inf.id) }}" class="row">
+        <input type="hidden" name="role" value="broadcast" />
+        <input name="title" value="{{ inf.name }} Loots" />
+        <input name="about" value="Best Daily Deals" />
+        <button type="submit">Auto-Create Broadcast TG</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- WHATSAPP SECTION -->
+<section class="card">
+  <h2>💬 WhatsApp Hub &amp; QR Pairing</h2>
+  <p class="hint">Start session, scan QR with influencer's WhatsApp to pair their number.</p>
+  <form method="post" action="{{ url_for('pair_wa', inf_id=inf.id) }}">
+    <button type="submit">Start WhatsApp Session (Show QR)</button>
+  </form>
+  <div id="qrbox" class="qrbox" data-key="{{ wa_key }}" style="margin: 10px 0;">
+    <p class="hint">QR will appear here once the session is started.</p>
+  </div>
+</section>
+
+<!-- POST STATS -->
+<section class="card">
+  <h2>📊 Posting Stats for {{ inf.name }}</h2>
+  <div class="stats">
+    <div>posted <span>{{ stats.posted }}</span></div>
+    <div>failed <span>{{ stats.failed }}</span></div>
+    <div>skipped <span>{{ stats.skipped }}</span></div>
+  </div>
+</section>
+{% endblock %}

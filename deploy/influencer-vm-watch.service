@@ -1,0 +1,15 @@
+[Unit]
+Description=Influencer Hub — VM/bot health watcher
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/Influencers-deals
+ExecStart=/home/user/Influencers-deals/.venv/bin/python -m influencer_hub.cli vm-watch --loop
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONPATH=/home/user/Influencers-deals
+EnvironmentFile=/home/user/Influencers-deals/.env
+
+[Install]
+WantedBy=multi-user.target
