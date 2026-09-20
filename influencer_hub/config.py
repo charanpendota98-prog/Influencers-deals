@@ -87,6 +87,9 @@ WA_HUB_TOKEN = _env("WA_HUB_TOKEN", "")  # optional shared secret
 OPS_TELEGRAM_CHANNEL = _env("OPS_TELEGRAM_CHANNEL", "")
 VM_WATCH_INTERVAL = _int("VM_WATCH_INTERVAL", 300)  # seconds
 
+# ----- Bitly shortener (for multi-link clean formatting) -----
+BITLY_API_KEY = _env("BITLY_API_KEY", "")
+
 # ----- Pipeline pacing -----
 QUEUE_WORKERS = _int("HUB_QUEUE_WORKERS", 4)
 POST_QUIET_START = _env("HUB_POST_QUIET_START", "02:00")

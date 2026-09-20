@@ -237,10 +237,21 @@ def render_for_influencer(
     text: str,
     amazon_tag: str,
     earnkaro_links: dict[str, str] | None = None,
+    shortened_links: dict[str, str] | None = None,
     role: str = "broadcast",
     strip_amazon: bool = False,
+    clean_promos: bool = True,
 ) -> str:
     """Render `text` for one influencer on a given channel `role`.
+
+    shortened_links:
+      Map of URL -> Bitly short link (if Bitly shortening was executed for 2+ links or long links).
+      Applied on non-approval channels to keep multi-link posts clean and uncluttered.
+      NOTE: Amazon approval channel ALWAYS bypasses shorteners to preserve compliance with Amazon's native link rules.
+
+    clean_promos:
+      If True (default), strips source channel promotional text, invite links, and @channel watermarks,
+      while strictly preserving product titles, descriptions, and pricing.
 
     strip_amazon:
       If True -> Amazon links and Amazon-only product lines are completely REMOVED.
@@ -252,12 +263,25 @@ def render_for_influencer(
       'approval' -> Amazon-only, posted NATIVELY (no shortener, amazon.in visible)
           with the '#ad (paid link)' disclosure.
     """
+    post_text = clean_source_post(text) if clean_promos else text
     ek = earnkaro_links or {}
+
     if strip_amazon:
-        return _strip_amazon_render(text, ek)
-    if role == "approval":
-        return _approval_render(text, amazon_tag)
-    return _render_base(text, amazon_tag, ek)
+        rendered = _strip_amazon_render(post_text, ek)
+    elif role == "approval":
+        # Approval channel: ALWAYS native Amazon link with #ad disclosure. NEVER Bitly shortened.
+        return _approval_render(post_text, amazon_tag)
+    else:
+        rendered = _render_base(post_text, amazon_tag, ek)
+
+    # Apply Bitly shortener replacements if available (for broadcast/whatsapp channels)
+    if shortened_links and role != "approval":
+        for long_u, short_u in shortened_links.items():
+            if long_u and short_u and long_u != short_u:
+                rendered = rendered.replace(long_u, short_u)
+
+    return rendered
+
 
 
 def extract_price(text: str) -> float | None:
@@ -299,6 +323,63 @@ def matches_price_filter(deal_text: str, max_price: float | None = None, min_pri
 
 def has_amazon_link(text: str) -> bool:
     return any(classify_url(u) == "amazon" for u in find_urls(text))
+
+
+# Channel promotional / watermark patterns to cleanly strip out
+PROMO_PATTERNS = [
+    r"(?i)(?:join|follow|subscribe)\s*(?:our)?\s*(?:telegram|channel|group|wa|whatsapp)?\s*(?:channel|group)?\s*[:\-\s]*https?://(?:t\.me|telegram\.me|chat\.whatsapp\.com)/[^\s]+",
+    r"(?i)https?://(?:t\.me|telegram\.me|chat\.whatsapp\.com)/[^\s]+",
+    r"(?i)posted\s*by\s*[:\-]?\s*.*$",
+    r"(?i)powered\s*by\s*[:\-]?\s*.*$",
+    r"(?i)credit\s*[:\-]?\s*.*$",
+    r"(?i)share\s*with\s*(?:your)?\s*friends?.*$",
+    r"(?i)for\s*more\s*(?:loots?|deals?|offers?).*$",
+    r"(?i)join\s*(?:fast|now|here).*$",
+    r"(?i)loot\s*alert\s*by\s*.*$",
+]
+
+
+def clean_source_post(text: str) -> str:
+    """Clean promotional watermarks, source telegram links, @admin tags,
+    and invite links from source posts while PRESERVING product titles,
+    descriptions, prices, and merchant/amazon links completely intact.
+    """
+    lines = text.splitlines()
+    cleaned_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append("")
+            continue
+
+        # Check if line is purely an invite/telegram link
+        pure_tg = re.match(r"^(?:https?://)?(?:t\.me|telegram\.me|chat\.whatsapp\.com)/\S+$", stripped, re.I)
+        if pure_tg:
+            continue
+
+        # Check if line is a generic promo line
+        promo_match = re.search(r"(?i)^\s*(?:join|subscribe|follow|join channel|join fast|share with friends|for more deals|more offers at)\b.*", stripped)
+        if promo_match and not find_urls(stripped):
+            continue
+
+        # Line might have product name or price + an @handle or promo at the end.
+        # Strip out telegram handles/links from the line while keeping product name and valid store urls.
+        line_out = line
+        # Remove telegram invite links inside the line
+        line_out = re.sub(r"https?://(?:t\.me|telegram\.me|chat\.whatsapp\.com)/\S+", "", line_out, flags=re.I)
+        # Remove channel tag / handle (e.g. @PowerLoots or @secretdeal) but don't damage normal text
+        line_out = re.sub(r"(?i)\s*@(?:[a-zA-Z0-9_]{3,30})\b", "", line_out)
+        # Remove trailing promo phrases
+        line_out = re.sub(r"(?i)\s*[-|•~]\s*(?:join|loot by|powered by|credit)\s*.*$", "", line_out)
+
+        line_out = line_out.strip()
+        if line_out:
+            cleaned_lines.append(line_out)
+
+    result = "\n".join(cleaned_lines).strip()
+    return re.sub(r"\n{3,}", "\n\n", result)
+
 
 
 def deal_signature(text: str) -> str:

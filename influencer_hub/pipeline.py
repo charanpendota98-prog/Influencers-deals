@@ -16,7 +16,7 @@ import asyncio
 import random
 from typing import Iterable
 
-from . import db, earnkaro, link_router, telegram_ops, whatsapp_client
+from . import bitly_client, db, earnkaro, link_router, telegram_ops, whatsapp_client
 
 WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
 
@@ -132,8 +132,22 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 per_channel[ch["id"]] = "skipped"
                 continue
 
+            # Check if this deal needs Bitly URL shortening:
+            # Condition: post contains 2 or more links, or link is overly long (>65 chars)
+            # and Bitly API key is configured.
+            shortened_map = {}
+            if role != "approval":
+                # Render base version to identify final URLs that will appear
+                base_rendered = link_router.render_for_influencer(
+                    deal_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz, clean_promos=True
+                )
+                final_urls = link_router.find_urls(base_rendered)
+                should_shorten = (len(final_urls) >= 2) or any(len(u) > 65 for u in final_urls)
+                if should_shorten:
+                    shortened_map = await bitly_client.shorten_urls(final_urls)
+
             rendered = link_router.render_for_influencer(
-                deal_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz
+                deal_text, effective_amz_tag, ek_map, shortened_links=shortened_map, role=role, strip_amazon=strip_amz
             )
             status = await dispatch_to_channel(inf, ch, rendered)
             db.record_post(inf["id"], ch["id"], sig,
