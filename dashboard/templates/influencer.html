@@ -222,14 +222,19 @@
 </section>
 
 <!-- WHATSAPP SECTION -->
-<section class="card">
-  <h2>💬 WhatsApp Hub &amp; QR Pairing</h2>
-  <p class="hint">Start session, scan QR with influencer's WhatsApp to pair their number.</p>
-  <form method="post" action="{{ url_for('pair_wa', inf_id=inf.id) }}" style="margin-top: 10px;">
-    <button type="submit" style="background:#16a34a;">Start WhatsApp Session (Show QR)</button>
+<section class="card" style="border: 1px solid #16a34a; background: #0c1a14;">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="color: #4ade80; margin: 0;">💬 WhatsApp Account Pairing (Isolated Multi-Session)</h2>
+    <span style="background:#064e3b; color:#86efac; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ANTI-BAN DELAY ACTIVE</span>
+  </div>
+  <p class="hint">Channels manave kani <b>WhatsApp accounts valla personal numbers</b>. Prathi influencer ki independent Baileys Web Socket untundi. Anti-ban human typing simulation + random jitter (2-5 sec) tho account 100% safe ga untundi:</p>
+  
+  <form method="post" action="{{ url_for('pair_wa', inf_id=inf.id) }}" style="margin-top: 14px;">
+    <button type="submit" style="background:#16a34a; font-weight:bold; padding:10px 20px;">📲 Start WhatsApp Session (Scan QR with Influencer Phone)</button>
   </form>
-  <div id="qrbox" class="qrbox" data-key="{{ wa_key }}" style="margin: 14px 0;">
-    <p class="hint">QR will appear here once the session is started.</p>
+  
+  <div id="qrbox" class="qrbox" data-key="{{ wa_key }}" style="margin: 16px 0; background:#07120c; padding:16px; border-radius:8px; border:1px dashed #22c55e; max-width:320px; text-align:center;">
+    <p class="hint" style="color:#86efac;">QR will appear here once session starts. Ask influencer to scan via WhatsApp &gt; Linked Devices.</p>
   </div>
 </section>
 

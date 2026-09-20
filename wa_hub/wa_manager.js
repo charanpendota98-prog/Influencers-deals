@@ -147,6 +147,16 @@ export class Hub {
   async sendText(key, to, text) {
     const s = this.sessions.get(key)
     if (!s?.sock) throw new Error('session not connected: ' + key)
+
+    // Random human-like typing simulation & delay (between 1200ms and 3500ms)
+    // This protects individual influencer WhatsApp accounts from anti-spam algorithms!
+    try {
+      await s.sock.sendPresenceUpdate('composing', to)
+      const typingDelay = Math.floor(Math.random() * 2000) + 1200
+      await new Promise(resolve => setTimeout(resolve, typingDelay))
+      await s.sock.sendPresenceUpdate('paused', to)
+    } catch (_) { /* presence update is best effort */ }
+
     const res = await s.sock.sendMessage(to, { text })
     return { ok: true, id: res?.key?.id }
   }

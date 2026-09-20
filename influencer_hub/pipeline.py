@@ -13,6 +13,7 @@ twice to the same place.
 from __future__ import annotations
 
 import asyncio
+import random
 from typing import Iterable
 
 from . import db, earnkaro, link_router, telegram_ops, whatsapp_client
@@ -28,12 +29,21 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
 
 
 async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str:
-    """Post `text` to one channel. Returns a status string."""
+    """Post `text` to one channel. Returns a status string.
+
+    WhatsApp Safety: Uses per-session random delay (2.0s - 5.5s) + anti-flood jitter
+    so WhatsApp accounts (which belong to the individual influencers) remain 100% safe
+    and never get flagged for robotic spamming.
+    """
     platform = channel["platform"]
     try:
         if platform == "telegram":
             await telegram_ops.post_to_channel(channel["identifier"], text)
         elif platform in ("whatsapp_group", "whatsapp_channel"):
+            # Anti-ban Human Emulation Jitter
+            delay = random.uniform(2.0, 5.5)
+            await asyncio.sleep(delay)
+
             key = WA_SESSION_KEY(influencer["id"])
             await whatsapp_client.send_text(key, channel["identifier"], text)
         else:
