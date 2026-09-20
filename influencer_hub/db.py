@@ -345,7 +345,9 @@ def delete_influencer(influencer_id: int) -> None:
 
 
 def update_influencer(influencer_id: int, name: str | None = None,
-                      amazon_tag: str | None = None, handle: str | None = None) -> None:
+                      amazon_tag: str | None = None, handle: str | None = None,
+                      insta_id: str | None = None, notes: str | None = None,
+                      active: bool | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -359,6 +361,15 @@ def update_influencer(influencer_id: int, name: str | None = None,
         if handle is not None:
             updates.append("handle=?")
             params.append(handle.strip())
+        if insta_id is not None:
+            updates.append("insta_id=?")
+            params.append(insta_id.strip())
+        if notes is not None:
+            updates.append("notes=?")
+            params.append(notes.strip())
+        if active is not None:
+            updates.append("active=?")
+            params.append(1 if active else 0)
         if updates:
             params.append(influencer_id)
             con.execute(f"UPDATE influencers SET {', '.join(updates)} WHERE id=?", params)
