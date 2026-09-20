@@ -12,6 +12,16 @@ from influencer_hub import db  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _init():
+    con = db._connect()
+    try:
+        con.execute("DELETE FROM posts")
+        con.execute("DELETE FROM channels")
+        con.execute("DELETE FROM influencers")
+        con.execute("DELETE FROM sources")
+        con.execute("DELETE FROM vm_stats")
+        con.commit()
+    finally:
+        con.close()
     db.init()
 
 

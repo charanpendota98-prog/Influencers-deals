@@ -43,6 +43,10 @@
       <input name="insta_id" value="{{ inf.insta_id or '' }}" placeholder="@user" style="width: 100%;" />
     </div>
     <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Token</label>
+      <input name="bitly_api_key" value="{{ inf.bitly_api_key or '' }}" placeholder="Influencer's Bitly Token..." style="width: 100%; font-family: monospace;" />
+    </div>
+    <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Default Budget Filter</label>
       <select name="price_filter" style="width: 100%;">
         <option value="all" {{ 'selected' if (not inf.price_filter or inf.price_filter == 'all') else '' }}>All Loot Deals</option>
@@ -80,6 +84,7 @@
         <th>Platform</th>
         <th>Channel Username / Invite Link</th>
         <th>Budget Limit</th>
+        <th>Bitly Token / WA Session</th>
         <th>Amazon Filter / Override</th>
         <th>Status</th>
         <th>Instant Test</th>
@@ -115,6 +120,12 @@
             </select>
           </td>
           <td>
+            <input name="bitly_api_key" value="{{ c.bitly_api_key or '' }}" placeholder="Bitly Key..." style="font-size: 11px; padding: 3px 5px; width: 100px; font-family: monospace; display:block; margin-bottom:3px;" title="Channel Bitly Token" />
+            {% if c.platform != 'telegram' %}
+              <input name="wa_session_key" value="{{ c.wa_session_key or '' }}" placeholder="WA Session..." style="font-size: 11px; padding: 3px 5px; width: 100px; font-family: monospace;" title="Custom WA session for 2nd phone" />
+            {% endif %}
+          </td>
+          <td>
             <div>
               <label style="display: block; cursor: pointer; color: #f87171; font-weight: 600; font-size: 11px;">
                 <input type="checkbox" name="strip_amazon" value="1" {{ 'checked' if c.strip_amazon else '' }} /> 🚫 Strip Amazon
@@ -138,7 +149,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="9" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
+      <tr><td colspan="10" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -159,6 +170,7 @@
         <option value="whatsapp_channel">WhatsApp Channel</option>
       </select>
       <input name="identifier" placeholder="@channel or link / WhatsApp invite" required style="flex: 1; min-width: 180px;" />
+      <input name="bitly_api_key" placeholder="Channel Bitly Key (optional)" style="width: 160px; font-family: monospace; font-size: 12px;" />
       <select name="price_filter">
         <option value="" selected>Default Budget</option>
         <option value="under_99">🔥 Under ₹99 Only</option>

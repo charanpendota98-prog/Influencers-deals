@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS channels (
     role          TEXT NOT NULL DEFAULT 'broadcast',  -- 'approval' | 'broadcast' | 'whatsapp'
     invite_link   TEXT NOT NULL DEFAULT '',
     status        TEXT NOT NULL DEFAULT 'pending',  -- pending|ready|error
+    wa_session_key TEXT NOT NULL DEFAULT '',        -- custom WA session for multi-account isolation
+    bitly_api_key  TEXT NOT NULL DEFAULT '',        -- per-channel custom Bitly token
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -111,6 +113,7 @@ def migrate() -> None:
             ("phone_number", "TEXT NOT NULL DEFAULT ''"),
             ("price_filter", "TEXT NOT NULL DEFAULT 'all'"),
             ("allowed_sources", "TEXT NOT NULL DEFAULT ''"),
+            ("bitly_api_key", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in inf_cols:
                 con.execute(f"ALTER TABLE influencers ADD COLUMN {col} {ddl}")
@@ -122,6 +125,8 @@ def migrate() -> None:
             ("strip_amazon", "INTEGER NOT NULL DEFAULT 0"),
             ("price_filter", "TEXT NOT NULL DEFAULT ''"),
             ("allowed_sources", "TEXT NOT NULL DEFAULT ''"),
+            ("wa_session_key", "TEXT NOT NULL DEFAULT ''"),
+            ("bitly_api_key", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
                 con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
@@ -141,16 +146,17 @@ def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = ""
                    use_dummy_sources: bool = False,
                    telegram_enabled: bool = True, whatsapp_enabled: bool = True,
                    insta_id: str = "", phone_number: str = "",
-                   price_filter: str = "all", allowed_sources: str = "") -> int:
+                   price_filter: str = "all", allowed_sources: str = "",
+                   bitly_api_key: str = "") -> int:
     con = _connect()
     try:
         cur = con.execute(
             "INSERT INTO influencers "
-            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), handle.strip(), amazon_tag.strip(), notes.strip(), 1 if use_dummy_sources else 0,
              1 if telegram_enabled else 0, 1 if whatsapp_enabled else 0, insta_id.strip(),
-             phone_number.strip(), price_filter.strip() or "all", allowed_sources.strip()),
+             phone_number.strip(), price_filter.strip() or "all", allowed_sources.strip(), bitly_api_key.strip()),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -162,6 +168,7 @@ def update_influencer(influencer_id: int, name: str | None = None,
                       amazon_tag: str | None = None, handle: str | None = None,
                       insta_id: str | None = None, phone_number: str | None = None,
                       price_filter: str | None = None, allowed_sources: str | None = None,
+                      bitly_api_key: str | None = None,
                       notes: str | None = None, active: bool | None = None) -> None:
     con = _connect()
     try:
@@ -188,6 +195,9 @@ def update_influencer(influencer_id: int, name: str | None = None,
         if allowed_sources is not None:
             updates.append("allowed_sources=?")
             params.append(allowed_sources.strip())
+        if bitly_api_key is not None:
+            updates.append("bitly_api_key=?")
+            params.append(bitly_api_key.strip())
         if notes is not None:
             updates.append("notes=?")
             params.append(notes.strip())
@@ -266,14 +276,17 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 amazon_override_tag: str = "",
                 strip_amazon: bool = False,
                 price_filter: str = "",
-                allowed_sources: str = "") -> int:
+                allowed_sources: str = "",
+                wa_session_key: str = "",
+                bitly_api_key: str = "") -> int:
     con = _connect()
     try:
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
-             amazon_override_tag.strip(), 1 if strip_amazon else 0, price_filter.strip(), allowed_sources.strip()),
+             amazon_override_tag.strip(), 1 if strip_amazon else 0, price_filter.strip(), allowed_sources.strip(),
+             wa_session_key.strip(), bitly_api_key.strip()),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -287,7 +300,9 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            amazon_override_tag: str | None = None,
                            strip_amazon: bool | None = None,
                            price_filter: str | None = None,
-                           allowed_sources: str | None = None) -> None:
+                           allowed_sources: str | None = None,
+                           wa_session_key: str | None = None,
+                           bitly_api_key: str | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -316,6 +331,12 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if allowed_sources is not None:
             updates.append("allowed_sources=?")
             params.append(allowed_sources.strip())
+        if wa_session_key is not None:
+            updates.append("wa_session_key=?")
+            params.append(wa_session_key.strip())
+        if bitly_api_key is not None:
+            updates.append("bitly_api_key=?")
+            params.append(bitly_api_key.strip())
         if updates:
             params.append(channel_id)
             con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)
@@ -513,9 +534,9 @@ def add_bulk_influencers(records: list[dict]) -> int:
 
             cur = con.execute(
                 "INSERT INTO influencers "
-                "(name, handle, amazon_tag, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (name, handle, tag, 0, 1, 1, insta, phone, price_filt, sources),
+                "(name, handle, amazon_tag, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (name, handle, tag, 0, 1, 1, insta, phone, price_filt, sources, (r.get("bitly_api_key") or "").strip()),
             )
             iid = int(cur.lastrowid)
 
@@ -530,18 +551,19 @@ def add_bulk_influencers(records: list[dict]) -> int:
             if r.get("broadcast_tg"):
                 ident = r["broadcast_tg"].strip()
                 con.execute(
-                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources, bitly_api_key) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (iid, "telegram", ident, "broadcast", "ready", 1 if strip_amz else 0,
-                     price_filt if price_filt != "all" else "", sources),
+                     price_filt if price_filt != "all" else "", sources, (r.get("bitly_api_key") or "").strip()),
                 )
             if r.get("whatsapp_id"):
                 ident = r["whatsapp_id"].strip()
                 con.execute(
-                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (iid, "whatsapp_group", ident, "whatsapp", "ready", 1 if strip_amz else 0,
-                     price_filt if price_filt != "all" else "", sources),
+                     price_filt if price_filt != "all" else "", sources,
+                     (r.get("wa_session_key") or "").strip(), (r.get("bitly_api_key") or "").strip()),
                 )
             count += 1
         con.commit()

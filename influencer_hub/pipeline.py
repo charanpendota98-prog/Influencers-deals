@@ -34,17 +34,21 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
     WhatsApp Safety: Uses per-session random delay (2.0s - 5.5s) + anti-flood jitter
     so WhatsApp accounts (which belong to the individual influencers) remain 100% safe
     and never get flagged for robotic spamming.
+
+    Multi-account support: Uses `channel['wa_session_key']` if set (e.g. secondary phone number),
+    otherwise defaults to the influencer's primary session `inf-{id}-wa`.
     """
     platform = channel["platform"]
     try:
         if platform == "telegram":
             await telegram_ops.post_to_channel(channel["identifier"], text)
         elif platform in ("whatsapp_group", "whatsapp_channel"):
-            # Anti-ban Human Emulation Jitter
+            # Anti-ban Human Emulation Jitter: 2.0s to 5.5s delay
             delay = random.uniform(2.0, 5.5)
             await asyncio.sleep(delay)
 
-            key = WA_SESSION_KEY(influencer["id"])
+            # Support separate WA session per channel if configured, else default influencer session
+            key = channel.get("wa_session_key") or WA_SESSION_KEY(influencer["id"])
             await whatsapp_client.send_text(key, channel["identifier"], text)
         else:
             return "skipped"
@@ -133,10 +137,11 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 continue
 
             # Check if this deal needs Bitly URL shortening:
-            # Condition: post contains 2 or more links, or link is overly long (>65 chars)
-            # and Bitly API key is configured.
+            # ONLY used if influencer has provided their Bitly API key (or channel has its own key)
+            effective_bitly_key = (ch.get("bitly_api_key") or inf.get("bitly_api_key") or "").strip()
             shortened_map = {}
-            if role != "approval":
+
+            if effective_bitly_key and role != "approval":
                 # Render base version to identify final URLs that will appear
                 base_rendered = link_router.render_for_influencer(
                     deal_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz, clean_promos=True
@@ -144,7 +149,7 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 final_urls = link_router.find_urls(base_rendered)
                 should_shorten = (len(final_urls) >= 2) or any(len(u) > 65 for u in final_urls)
                 if should_shorten:
-                    shortened_map = await bitly_client.shorten_urls(final_urls)
+                    shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
 
             rendered = link_router.render_for_influencer(
                 deal_text, effective_amz_tag, ek_map, shortened_links=shortened_map, role=role, strip_amazon=strip_amz
