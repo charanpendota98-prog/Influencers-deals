@@ -103,14 +103,25 @@
       </select>
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">⏰ Posting Schedule / Timings</label>
-      <input name="posting_schedule" placeholder="e.g. 06:00-09:00,18:00-23:00 (Empty = 24/7)" style="width: 100%; font-size: 12px;" />
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">⏰ Indian Timings / Active Schedule</label>
+      <select name="posting_schedule" multiple style="width: 100%; height: 75px; font-size: 12px;">
+        <option value="" selected>Active 24/7 (All Day &amp; Night)</option>
+        <option value="06:00-09:00">🌅 Morning Prime (6:00 AM – 9:00 AM)</option>
+        <option value="11:00-14:00">☀️ Mid-Day Loot (11:00 AM – 2:00 PM)</option>
+        <option value="18:00-23:00">🌆 Evening Rush (6:00 PM – 11:00 PM)</option>
+        <option value="20:00-00:00">🌙 Night Loot (8:00 PM – 12:00 Midnight)</option>
+      </select>
     </div>
 
-    <div style="grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; background: #0d1322; padding: 12px 16px; border-radius: 8px; border: 1px solid #283759; margin-top: 4px;">
-      <label style="font-size: 13px; font-weight: 600; color: #f87171; cursor: pointer; display:flex; align-items:center; gap:8px;">
-        <input type="checkbox" name="strip_amazon_broadcast" value="1" /> 🚫 Strip Amazon (Amazon Theesi Kevalam Flipkart/Myntra Post Chey)
-      </label>
+    <div style="grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; background: #0d1322; padding: 12px 16px; border-radius: 8px; border: 1px solid #283759; margin-top: 4px; flex-wrap:wrap; gap:10px;">
+      <div style="display:flex; gap:20px; align-items:center;">
+        <label style="font-size: 13px; font-weight: 600; color: #fbbf24; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="only_amazon" value="1" /> 🛡️ <b>ONLY AMAZON</b> (Kevalam Amazon Mathrame Post Chey - No Flipkart/Myntra)
+        </label>
+        <label style="font-size: 13px; font-weight: 600; color: #f87171; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="strip_amazon_broadcast" value="1" /> 🚫 <b>STRIP AMAZON</b> (Amazon Theesi Kevalam Flipkart/Myntra)
+        </label>
+      </div>
       <button type="submit" style="background: #2563eb; color: white; padding: 10px 28px; font-weight: 700; border-radius: 8px; cursor: pointer; border: none; font-size:14px;">⚡ Save &amp; Start Live</button>
     </div>
   </form>

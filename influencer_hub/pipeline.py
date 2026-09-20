@@ -187,13 +187,20 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 6. If strip_amazon is active on this channel, and deal has ONLY Amazon links,
+            # 6. Only Amazon Toggle: If influencer or channel has 'only_amazon' turned ON,
+            # then non-Amazon merchant deals must NOT be posted!
+            only_amz = bool(ch.get("only_amazon", 0) or inf.get("only_amazon", 0))
+            if only_amz and not link_router.has_amazon_link(deal_text):
+                per_channel[ch["id"]] = "skipped"
+                continue
+
+            # 7. If strip_amazon is active on this channel, and deal has ONLY Amazon links,
             # skip it because nothing remains to post.
             if strip_amz and not any(link_router.classify_url(u) == "merchant" for u in link_router.find_urls(deal_text)):
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 7. Smart Dedup Guard: never post the same deal/product twice to the same channel
+            # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
             if db.already_posted(inf["id"], ch["id"], sig):
                 per_channel[ch["id"]] = "skipped"
                 continue

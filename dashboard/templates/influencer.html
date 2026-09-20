@@ -12,9 +12,13 @@
     </p>
   </div>
   <div>
-    <form method="post" action="{{ url_for('delete_influencer', inf_id=inf.id) }}" onsubmit="return confirm('Delete this influencer and all attached channels?');">
-      <button type="submit" style="background: #dc2626; color: white; padding: 8px 14px; border-radius: 6px; font-size: 13px;">🗑️ Delete Influencer</button>
+    <form method="post" action="{{ url_for('delete_influencer', inf_id=inf.id) }}" onsubmit="var p = prompt('Enter Admin Password to delete this influencer:'); if (!p) return false; this.admin_password.value = p; return true;">
+      <input type="hidden" name="admin_password" value="" />
+      <button type="submit" style="background: #dc2626; color: white; padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight:bold; cursor:pointer;">🔒 Delete Influencer (Password Protected)</button>
     </form>
+    {% if request.args.get('err') == 'invalid_password' %}
+      <div style="color: #ef4444; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">❌ Incorrect Admin Password!</div>
+    {% endif %}
   </div>
 </div>
 
@@ -51,8 +55,16 @@
       <input name="categories" value="{{ inf.categories or '' }}" placeholder="clothing,electronics,home,daily (Empty=All)" style="width: 100%; font-size: 12px;" />
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">⏰ Posting Schedule / Timings</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">⏰ Indian Timings / Active Schedule</label>
       <input name="posting_schedule" value="{{ inf.posting_schedule or '' }}" placeholder="06:00-09:00,18:00-23:00 (Empty=24/7)" style="width: 100%; font-size: 12px;" />
+      <span class="hint" style="font-size:10px;">Common IST: 06:00-09:00, 11:00-14:00, 18:00-23:00</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🛡️ Only Amazon Deals</label>
+      <select name="only_amazon" style="width: 100%; font-weight:bold;">
+        <option value="0" {{ 'selected' if not inf.only_amazon else '' }}>All Merchants (Amazon + Flipkart/Myntra)</option>
+        <option value="1" {{ 'selected' if inf.only_amazon else '' }}>🛡️ ONLY AMAZON (Kevalam Amazon Mathrame)</option>
+      </select>
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Default Budget Filter</label>
@@ -140,7 +152,10 @@
           </td>
           <td>
             <div>
-              <label style="display: block; cursor: pointer; color: #f87171; font-weight: 600; font-size: 11px;">
+              <label style="display: block; cursor: pointer; color: #fbbf24; font-weight: 600; font-size: 11px;">
+                <input type="checkbox" name="only_amazon" value="1" {{ 'checked' if c.only_amazon else '' }} /> 🛡️ Only Amazon
+              </label>
+              <label style="display: block; cursor: pointer; color: #f87171; font-weight: 600; font-size: 11px; margin-top:2px;">
                 <input type="checkbox" name="strip_amazon" value="1" {{ 'checked' if c.strip_amazon else '' }} /> 🚫 Strip Amazon
               </label>
               <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt Tag" style="font-size: 11px; padding: 3px 5px; width: 100px; margin-top: 3px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
@@ -194,6 +209,9 @@
         <option value="under_999">🏷️ Under ₹999 Only</option>
         <option value="all">All Deals</option>
       </select>
+      <label style="font-size: 12px; font-weight: 600; color: #fbbf24; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        <input type="checkbox" name="only_amazon" value="1" /> 🛡️ Only Amazon
+      </label>
       <label style="font-size: 12px; font-weight: 600; color: #f87171; cursor: pointer; display: flex; align-items: center; gap: 5px;">
         <input type="checkbox" name="strip_amazon" value="1" /> 🚫 Strip Amazon
       </label>
