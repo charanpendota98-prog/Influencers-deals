@@ -185,6 +185,19 @@ export class Hub {
     return { ok: true, jid, name }
   }
 
+  listChats(key) {
+    const s = this.sessions.get(key)
+    if (!s?.sock) throw new Error('session not connected: ' + key)
+    // Return all chats/groups that this session belongs to
+    const chats = s.sock.chats ? Object.values(s.sock.chats) : []
+    return chats.map(c => ({
+      jid: c.id,
+      name: c.name || c.subject || c.id,
+      isGroup: c.id.endsWith('@g.us'),
+      isChannel: c.id.endsWith('@newsletter'),
+    }))
+  }
+
   async stop(key) {
     const s = this.sessions.get(key)
     if (s?.sock) { try { await s.sock.logout() } catch (_) {} try { s.sock.end() } catch (_) {} }

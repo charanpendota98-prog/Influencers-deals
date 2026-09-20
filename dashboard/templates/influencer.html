@@ -224,17 +224,58 @@
 <!-- WHATSAPP SECTION -->
 <section class="card" style="border: 1px solid #16a34a; background: #0c1a14;">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="color: #4ade80; margin: 0;">💬 WhatsApp Account Pairing (Isolated Multi-Session)</h2>
-    <span style="background:#064e3b; color:#86efac; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ANTI-BAN DELAY ACTIVE</span>
+    <h2 style="color: #4ade80; margin: 0;">💬 WhatsApp Account &amp; Dedicated Channel Linker</h2>
+    <span style="background:#064e3b; color:#86efac; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ISOLATED PER-INFLUENCER SESSION</span>
   </div>
-  <p class="hint">Channels manave kani <b>WhatsApp accounts valla personal numbers</b>. Prathi influencer ki independent Baileys Web Socket untundi. Anti-ban human typing simulation + random jitter (2-5 sec) tho account 100% safe ga untundi:</p>
+  <p class="hint">Telegram lo mana Bot ni Admin ga add chestham. Kaani <b>WhatsApp lo ee influencer valla phone thoti login ayyi, valla dedicated Group/Channel ki post avvali</b>:</p>
   
-  <form method="post" action="{{ url_for('pair_wa', inf_id=inf.id) }}" style="margin-top: 14px;">
-    <button type="submit" style="background:#16a34a; font-weight:bold; padding:10px 20px;">📲 Start WhatsApp Session (Scan QR with Influencer Phone)</button>
-  </form>
-  
-  <div id="qrbox" class="qrbox" data-key="{{ wa_key }}" style="margin: 16px 0; background:#07120c; padding:16px; border-radius:8px; border:1px dashed #22c55e; max-width:320px; text-align:center;">
-    <p class="hint" style="color:#86efac;">QR will appear here once session starts. Ask influencer to scan via WhatsApp &gt; Linked Devices.</p>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-top:14px;">
+    <!-- Step 1: Login Phone -->
+    <div style="background:#07120c; border:1px solid #14532d; padding:16px; border-radius:8px;">
+      <h3 style="margin-top:0; color:#86efac;">1️⃣ Login Influencer Phone (QR Scan)</h3>
+      <p class="hint" style="font-size:12px;">Start session and scan with influencer's WhatsApp (Linked Devices).</p>
+      <form method="post" action="{{ url_for('pair_wa', inf_id=inf.id) }}">
+        <button type="submit" style="background:#16a34a; width:100%; font-weight:bold;">📲 Generate Live QR Code</button>
+      </form>
+      <div id="qrbox" class="qrbox" data-key="{{ wa_key }}" style="margin-top:12px; text-align:center;">
+        <p class="hint" style="color:#86efac;">QR code will appear here.</p>
+      </div>
+      {% if wa_status_info.connected %}
+        <div style="background:#064e3b; color:#86efac; padding:8px 12px; border-radius:6px; font-weight:bold; font-size:13px; margin-top:10px;">
+          🟢 Connected Phone: +{{ wa_status_info.phone }}
+        </div>
+      {% endif %}
+    </div>
+
+    <!-- Step 2: Auto-Connect their Channel / Group -->
+    <div style="background:#07120c; border:1px solid #14532d; padding:16px; border-radius:8px;">
+      <h3 style="margin-top:0; color:#86efac;">2️⃣ Link Specific Channel to this Account</h3>
+      <p class="hint" style="font-size:12px;">Influencer phone login ayyaka, valla account lo unna Groups/Channels nunchi select cheyandi:</p>
+      
+      {% if wa_status_info.chats %}
+        <form method="post" action="{{ url_for('wa_connect_chat', inf_id=inf.id) }}" style="display:flex; flex-direction:column; gap:8px;">
+          <label style="font-size:12px; font-weight:bold; color:#cbd5e1;">Select Group / Channel from Phone:</label>
+          <select name="chat_jid" style="width:100%; padding:8px; font-size:13px;">
+            {% for chat in wa_status_info.chats %}
+              <option value="{{ chat.jid }}">{{ chat.name }} ({{ 'Group' if chat.isGroup else 'Channel' }})</option>
+            {% endfor %}
+          </select>
+          <input type="hidden" name="role" value="whatsapp" />
+          <button type="submit" style="background:#059669; color:white; font-weight:bold; margin-top:4px;">⚡ Connect Selected Channel</button>
+        </form>
+      {% else %}
+        <p class="hint" style="color:#94a3b8; font-size:12px;">Login above to see existing groups/channels, or enter group link manually:</p>
+      {% endif %}
+
+      <div style="margin-top:14px; border-top:1px dashed #14532d; padding-top:10px;">
+        <h4 style="margin:0 0 6px; color:#cbd5e1; font-size:13px;">Or Create New Group Feed Automatically</h4>
+        <form method="post" action="{{ url_for('create_group', inf_id=inf.id) }}" style="display:flex; gap:6px;">
+          <input name="participant" placeholder="9198...@s.whatsapp.net" style="flex:1; font-size:12px;" />
+          <input name="subject" value="{{ inf.name }} Deals" style="flex:1; font-size:12px;" />
+          <button type="submit" style="background:#15803d; font-size:12px;">Create</button>
+        </form>
+      </div>
+    </div>
   </div>
 </section>
 

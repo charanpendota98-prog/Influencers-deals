@@ -352,6 +352,18 @@ def influencer_detail(inf_id):
     wa_sessions = db.list_wa_sessions(inf_id)
     stats = db.post_stats(inf_id)
     wa_key = WA_SESSION_KEY(inf_id)
+
+    # Check live WhatsApp session status & fetch groups/channels
+    wa_status_info = {"connected": False, "phone": "", "chats": []}
+    try:
+        status_res = _run(whatsapp_client.session_status(wa_key))
+        if status_res.get("status") == "connected":
+            wa_status_info["connected"] = True
+            wa_status_info["phone"] = status_res.get("phone", "")
+            chats = _run(whatsapp_client.list_chats(wa_key))
+            wa_status_info["chats"] = [c for c in chats if c.get("isGroup") or c.get("isChannel")]
+    except Exception:
+        pass
     
     # Generate live preview demo if requested or for display
     demo_sample = (
@@ -366,7 +378,7 @@ def influencer_detail(inf_id):
 
     return render_template("influencer.html", inf=inf, channels=channels,
                            wa_sessions=wa_sessions, stats=stats, wa_key=wa_key,
-                           wa_hub_url=config.WA_HUB_URL,
+                           wa_hub_url=config.WA_HUB_URL, wa_status_info=wa_status_info,
                            demo_approval=demo_approval, demo_broadcast=demo_broadcast)
 
 
@@ -411,6 +423,18 @@ def create_group(inf_id):
             db.add_channel(inf_id, "whatsapp_group", jid, status="ready")
     except Exception as e:  # pragma: no cover
         res = {"error": str(e)}
+    return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+
+@app.route("/influencer/<int:inf_id>/wa-connect-chat", methods=["POST"])
+def wa_connect_chat(inf_id):
+    """Directly connect an existing WhatsApp Group/Channel from this influencer's logged-in WhatsApp!"""
+    jid = request.form.get("chat_jid", "").strip()
+    role = request.form.get("role", "whatsapp").strip()
+    name = request.form.get("chat_name", "").strip()
+    if jid:
+        db.add_channel(inf_id, "whatsapp_group" if jid.endswith("@g.us") else "whatsapp_channel",
+                       jid, invite_link="", status="ready", role=role)
     return redirect(url_for("influencer_detail", inf_id=inf_id))
 
 

@@ -34,6 +34,12 @@ async def list_sessions() -> list[dict]:
     return (await _request("GET", "/sessions")).get("sessions", [])
 
 
+async def list_chats(session_key: str) -> list[dict]:
+    res = await _request("GET", f"/sessions/{session_key}/chats")
+    return res.get("chats", [])
+    return (await _request("GET", "/sessions")).get("sessions", [])
+
+
 async def create_session(influencer_id: int, label: str) -> dict:
     """Start a new WA session for an influencer; returns a QR token to render."""
     return await _request("POST", "/sessions", json={

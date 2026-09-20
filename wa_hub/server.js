@@ -84,6 +84,15 @@ app.get('/sessions/:key/qr/stream', async (req, res) => {
   req.on('close', unsub)
 })
 
+app.get('/sessions/:key/chats', (req, res) => {
+  try {
+    const chats = hub.listChats(req.params.key)
+    res.json({ ok: true, chats })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+
 app.post('/sessions/:key/send', async (req, res) => {
   const { to, text } = req.body || {}
   if (!to || !text) return res.status(400).json({ ok: false, error: 'to+text required' })
