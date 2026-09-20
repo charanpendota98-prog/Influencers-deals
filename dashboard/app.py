@@ -198,18 +198,73 @@ def add_manual_channel(inf_id):
     return redirect(url_for("influencer_detail", inf_id=inf_id))
 
 
-@app.route("/influencers", methods=["POST"])
-def add_influencer():
-    name = request.form.get("name", "").strip()
-    tag = request.form.get("tag", "").strip()
-    handle = request.form.get("handle", "").strip()
-    dummy = request.form.get("dummy") == "on"
-    tg = request.form.get("tg") == "on"
-    wa = request.form.get("wa") == "on"
-    if name and tag:
-        db.add_influencer(name, tag, handle=handle, use_dummy_sources=dummy,
-                          telegram_enabled=tg, whatsapp_enabled=wa)
+@app.route("/bulk-import", methods=["POST"])
+def bulk_import():
+    """Bulk import hundreds/thousands of influencers via CSV file upload or raw CSV text.
+    Columns: name, amazon_tag, phone, insta, approval_tg, broadcast_tg, whatsapp_id, price_filter, allowed_sources
+    """
+    import csv
+    import io
+
+    records = []
+    file = request.files.get("csv_file")
+    raw_text = request.form.get("csv_text", "").strip()
+
+    if file and file.filename:
+        stream = io.StringIO(file.stream.read().decode("utf-8", errors="ignore"))
+        reader = csv.DictReader(stream)
+        records = list(reader)
+    elif raw_text:
+        stream = io.StringIO(raw_text)
+        reader = csv.DictReader(stream)
+        records = list(reader)
+
+    if records:
+        cleaned_records = []
+        for r in records:
+            name = (r.get("name") or "").strip()
+            tag = (r.get("amazon_tag") or r.get("tag") or "").strip()
+            if not name or not tag:
+                continue
+            rec = {
+                "name": name,
+                "amazon_tag": tag,
+                "phone_number": (r.get("phone_number") or r.get("phone") or "").strip(),
+                "insta_id": (r.get("insta_id") or r.get("insta") or "").strip(),
+                "price_filter": (r.get("price_filter") or "all").strip(),
+                "allowed_sources": (r.get("allowed_sources") or "").strip(),
+                "approval_tg": clean_identifier(r.get("approval_tg", "")),
+                "broadcast_tg": clean_identifier(r.get("broadcast_tg", "")),
+                "whatsapp_id": r.get("whatsapp_id", "").strip(),
+                "strip_amazon": (r.get("strip_amazon", "0").lower() in ("1", "true", "yes")),
+            }
+            cleaned_records.append(rec)
+
+        added = db.add_bulk_influencers(cleaned_records)
+        return redirect(url_for("index", imported=added))
+
     return redirect(url_for("index"))
+
+
+@app.route("/channel/<int:channel_id>/delete", methods=["POST"])
+def delete_channel(channel_id):
+    inf_id = request.form.get("inf_id")
+    db.delete_channel(channel_id)
+    if inf_id:
+        return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
+    return redirect(url_for("index"))
+
+
+@app.route("/influencer/<int:inf_id>/delete", methods=["POST"])
+def delete_influencer(inf_id):
+    db.delete_influencer(inf_id)
+    return redirect(url_for("index"))
+
+
+@app.route("/influencer/<int:inf_id>/test-post", methods=["POST"])
+def test_post_demo(inf_id):
+    """Instant preview demo of how deals will render for all 3 channels."""
+    return redirect(url_for("influencer_detail", inf_id=inf_id, demo=1))
 
 
 @app.route("/onboard", methods=["GET", "POST"])

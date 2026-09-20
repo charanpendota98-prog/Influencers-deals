@@ -22,6 +22,35 @@ def test_apply_amazon_tag_adds_when_missing():
     assert out == "https://www.amazon.in/dp/B0ABC123?tag=ravi099-21"
 
 
+def test_bulk_add_1000_influencers_scale():
+    # Test batch scaling mechanism with multiple influencers and auto-channel creation
+    batch = [
+        {
+            "name": f"Partner {i}",
+            "amazon_tag": f"partner{i}-21",
+            "phone_number": f"919800000{i:03d}",
+            "insta_id": f"@partner_{i}",
+            "approval_tg": f"@partner{i}_appr",
+            "broadcast_tg": f"@partner{i}_deals",
+            "whatsapp_id": f"120363{i:04d}@g.us",
+            "price_filter": "under_499" if i % 2 == 0 else "all",
+            "allowed_sources": "powerloot" if i % 3 == 0 else "",
+        }
+        for i in range(1, 15)  # test batch
+    ]
+    added = db.add_bulk_influencers(batch)
+    assert added == 14
+
+    # Verify search on batch item
+    found = db.search_influencers("919800000005")
+    assert len(found) >= 1
+    assert found[0]["name"] == "Partner 5"
+
+    # Cleanup
+    for r in found:
+        db.delete_influencer(r["id"])
+
+
 def test_asin_based_dedup_signature():
     deal_variant_1 = "🔥 Sony WH-1000XM4 at ₹19,990! https://www.amazon.in/dp/B0863TXGM3?tag=old-21"
     deal_variant_2 = "⚡ Lowest price Sony Headphone ₹19,990 https://www.amazon.in/gp/product/B0863TXGM3?ref=xyz"

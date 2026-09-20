@@ -488,6 +488,68 @@ def list_wa_sessions(influencer_id: Optional[int] = None) -> list[dict]:
 
 # ------------------------------- sources -------------------------------
 
+def add_bulk_influencers(records: list[dict]) -> int:
+    """Batch insert influencers + their initial 3 channels.
+    Designed for scaling to 1000+ influencers in a single SQLite transaction!
+    Each record can have:
+      name, amazon_tag, phone_number, insta_id, handle, price_filter, allowed_sources,
+      approval_tg, broadcast_tg, whatsapp_id, strip_amazon
+    """
+    con = _connect()
+    count = 0
+    try:
+        for r in records:
+            name = (r.get("name") or "").strip()
+            tag = (r.get("amazon_tag") or r.get("tag") or "").strip()
+            if not name or not tag:
+                continue
+
+            phone = (r.get("phone_number") or r.get("phone") or "").strip()
+            insta = (r.get("insta_id") or r.get("insta") or "").strip()
+            handle = (r.get("handle") or "").strip()
+            price_filt = (r.get("price_filter") or "all").strip()
+            sources = (r.get("allowed_sources") or "").strip()
+            strip_amz = bool(r.get("strip_amazon", False))
+
+            cur = con.execute(
+                "INSERT INTO influencers "
+                "(name, handle, amazon_tag, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (name, handle, tag, 0, 1, 1, insta, phone, price_filt, sources),
+            )
+            iid = int(cur.lastrowid)
+
+            # Auto-link channels if provided in the batch
+            if r.get("approval_tg"):
+                ident = r["approval_tg"].strip()
+                con.execute(
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, allowed_sources) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (iid, "telegram", ident, "approval", "ready", sources),
+                )
+            if r.get("broadcast_tg"):
+                ident = r["broadcast_tg"].strip()
+                con.execute(
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (iid, "telegram", ident, "broadcast", "ready", 1 if strip_amz else 0,
+                     price_filt if price_filt != "all" else "", sources),
+                )
+            if r.get("whatsapp_id"):
+                ident = r["whatsapp_id"].strip()
+                con.execute(
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (iid, "whatsapp_group", ident, "whatsapp", "ready", 1 if strip_amz else 0,
+                     price_filt if price_filt != "all" else "", sources),
+                )
+            count += 1
+        con.commit()
+        return count
+    finally:
+        con.close()
+
+
 def add_source(name: str, spec: str, kind: str = "production", active: bool = True) -> int:
     con = _connect()
     try:

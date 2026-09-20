@@ -11,16 +11,33 @@
   </div>
 </div>
 
-<!-- SEARCH BAR SECTION -->
-<section class="card" style="border: 1px solid #1e3a8a; background: #0f172a; padding: 14px 20px;">
-  <form method="get" action="{{ url_for('index') }}" style="display: flex; gap: 10px; align-items: center;">
-    <span style="font-size: 18px;">🔍</span>
-    <input name="q" value="{{ search_query or '' }}" placeholder="Search by Mobile Number, Influencer Name, Instagram ID, Amazon Tag, or ID..." style="flex: 1; padding: 10px 14px;" />
-    <button type="submit" style="background: #2563eb; color: white;">Search</button>
-    {% if search_query %}
-      <a class="btn" style="background: #475569; color: white;" href="{{ url_for('index') }}">Clear</a>
-    {% endif %}
-  </form>
+<!-- SEARCH & BULK 1000+ TOOLBAR -->
+<section class="card" style="border: 1px solid #1e3a8a; background: #0f172a; padding: 16px 20px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+    <form method="get" action="{{ url_for('index') }}" style="display: flex; gap: 10px; align-items: center; flex:1; min-width:300px;">
+      <span style="font-size: 18px;">🔍</span>
+      <input name="q" value="{{ search_query or '' }}" placeholder="Search 1000+ by Mobile Number, Name, Insta ID, Tag, or ID..." style="flex: 1; padding: 10px 14px;" />
+      <button type="submit" style="background: #2563eb; color: white;">Search</button>
+      {% if search_query %}
+        <a class="btn" style="background: #475569; color: white;" href="{{ url_for('index') }}">Clear</a>
+      {% endif %}
+    </form>
+    <div>
+      <details style="display:inline-block;">
+        <summary style="cursor:pointer; background:#4f46e5; color:white; padding:8px 16px; border-radius:6px; font-weight:700; font-size:13px; list-style:none;">
+          📂 Bulk Import 1000+ CSV
+        </summary>
+        <div style="position:absolute; right:30px; margin-top:8px; z-index:100; background:#1e1b4b; border:1px solid #4338ca; padding:16px; border-radius:8px; width:340px; box-shadow:0 10px 25px rgba(0,0,0,0.5);">
+          <h4 style="margin:0 0 8px; color:#c7d2fe;">Upload CSV (1000+ Scale)</h4>
+          <p class="hint" style="font-size:11px; margin-bottom:10px;">Format: <code>name,tag,phone,insta,approval_tg,broadcast_tg</code></p>
+          <form method="post" action="{{ url_for('bulk_import') }}" enctype="multipart/form-data">
+            <input type="file" name="csv_file" accept=".csv" style="width:100%; font-size:12px; margin-bottom:10px;" />
+            <button type="submit" style="width:100%; background:#10b981; font-weight:700;">🚀 Import Now</button>
+          </form>
+        </div>
+      </details>
+    </div>
+  </div>
 </section>
 
 <!-- QUICK ADD CARD -->
