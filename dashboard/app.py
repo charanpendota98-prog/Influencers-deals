@@ -428,14 +428,53 @@ def create_group(inf_id):
 
 @app.route("/influencer/<int:inf_id>/wa-connect-chat", methods=["POST"])
 def wa_connect_chat(inf_id):
-    """Directly connect an existing WhatsApp Group/Channel from this influencer's logged-in WhatsApp!"""
+    """Directly connect an existing WhatsApp Group/Channel either by selecting from dropdown OR entering link."""
     jid = request.form.get("chat_jid", "").strip()
+    invite_link = request.form.get("invite_link", "").strip()
     role = request.form.get("role", "whatsapp").strip()
-    name = request.form.get("chat_name", "").strip()
-    if jid:
-        db.add_channel(inf_id, "whatsapp_group" if jid.endswith("@g.us") else "whatsapp_channel",
-                       jid, invite_link="", status="ready", role=role)
+    wa_key = WA_SESSION_KEY(inf_id)
+
+    # If user provided invite link (e.g. https://chat.whatsapp.com/ABC123xyz), resolve it via Baileys socket!
+    resolved_jid = jid
+    if invite_link:
+        try:
+            res = _run(whatsapp_client.resolve_invite(wa_key, invite_link))
+            if res.get("ok") and res.get("jid"):
+                resolved_jid = res.get("jid")
+            else:
+                # Store invite link directly
+                resolved_jid = clean_identifier(invite_link)
+        except Exception:
+            resolved_jid = clean_identifier(invite_link)
+
+    if resolved_jid:
+        db.add_channel(inf_id, "whatsapp_group" if resolved_jid.endswith("@g.us") else "whatsapp_channel",
+                       resolved_jid, invite_link=invite_link, status="ready", role=role)
+
     return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+
+@app.route("/channel/<int:channel_id>/send-test", methods=["POST"])
+def send_test_message(channel_id):
+    """Instant test message dispatcher to verify channel connectivity."""
+    inf_id = int(request.form.get("inf_id", 0))
+    inf = db.get_influencer(inf_id)
+    channels = db.list_channels(inf_id)
+    ch = next((c for c in channels if c["id"] == channel_id), None)
+
+    if ch and inf:
+        test_payload = (
+            f"✅ Test Alert: {inf['name']} Channel Connected Successfully!\n"
+            f"Role: {ch['role'].upper()}\n"
+            f"Timestamp: Auto-verification test."
+        )
+        try:
+            from influencer_hub import pipeline
+            _run(pipeline.dispatch_to_channel(inf, ch, test_payload))
+        except Exception as e:
+            print(f"Test dispatch failed: {e}")
+
+    return redirect(url_for("influencer_detail", inf_id=inf_id, tested=1))
 
 
 @app.route("/influencer/<int:inf_id>/create-newsletter", methods=["POST"])

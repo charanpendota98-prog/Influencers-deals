@@ -95,7 +95,7 @@
 <!-- 3 CHANNELS LIST & CONNECT -->
 <section class="card">
   <h2>📺 Configured Channels for {{ inf.name }}</h2>
-  <p class="hint">Prathi channel ki individual settings: Override Amazon tag, Strip Amazon, or Specific Budget (Under ₹99 / ₹499):</p>
+  <p class="hint">Channels table with <b>🚀 Send Test Message</b> button next to each channel for instant connectivity verification:</p>
   
   <table style="margin-top: 12px; margin-bottom: 20px;">
     <thead>
@@ -105,8 +105,9 @@
         <th>Channel Identifier / Username</th>
         <th>Allowed Sources</th>
         <th>Budget Filter</th>
-        <th>Amazon Override / Filter</th>
+        <th>Amazon Filter</th>
         <th>Status</th>
+        <th>Test</th>
         <th>Save</th>
         <th>Delete</th>
       </tr>
@@ -129,7 +130,7 @@
             {% if c.invite_link %}<a href="{{ c.invite_link }}" target="_blank" style="font-size: 12px; margin-left: 4px; color:var(--accent);">(link)</a>{% endif %}
           </td>
           <td>
-            <input name="allowed_sources" value="{{ c.allowed_sources or '' }}" placeholder="all or powerloot" style="font-size: 11px; padding: 4px; width: 110px;" title="Comma separated source channels allowed" />
+            <input name="allowed_sources" value="{{ c.allowed_sources or '' }}" placeholder="all or powerloot" style="font-size: 11px; padding: 4px; width: 100px;" title="Comma separated source channels allowed" />
           </td>
           <td>
             <select name="price_filter" style="font-size: 12px; padding: 5px;">
@@ -143,17 +144,23 @@
           </td>
           <td>
             <div>
-              <label style="display: block; cursor: pointer; color: #f87171; font-weight: 600; font-size: 12px;">
+              <label style="display: block; cursor: pointer; color: #f87171; font-weight: 600; font-size: 11px;">
                 <input type="checkbox" name="strip_amazon" value="1" {{ 'checked' if c.strip_amazon else '' }} /> 🚫 Strip Amazon
               </label>
-              <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt tag" style="font-size: 12px; padding: 4px 6px; width: 110px; margin-top: 4px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
+              <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt tag" style="font-size: 11px; padding: 3px 5px; width: 100px; margin-top: 3px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
             </div>
           </td>
           <td><span class="ok">{{ c.status }}</span></td>
           <td>
-            <button type="submit" style="background: #0284c7; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer;">Save</button>
+            <button type="submit" style="background: #0284c7; color: white; border: none; padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;">Save</button>
           </td>
         </form>
+        <td>
+          <form method="post" action="{{ url_for('send_test_message', channel_id=c.id) }}" style="display:inline;">
+            <input type="hidden" name="inf_id" value="{{ inf.id }}" />
+            <button type="submit" style="background: #10b981; color: white; border: none; padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: bold; cursor: pointer;" title="Send instant test alert message">🚀 Test</button>
+          </form>
+        </td>
         <td>
           <form method="post" action="{{ url_for('delete_channel', channel_id=c.id) }}" style="display:inline;" onsubmit="return confirm('Remove this channel?');">
             <input type="hidden" name="inf_id" value="{{ inf.id }}" />
@@ -162,7 +169,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="9" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
+      <tr><td colspan="10" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -250,22 +257,32 @@
     <!-- Step 2: Auto-Connect their Channel / Group -->
     <div style="background:#07120c; border:1px solid #14532d; padding:16px; border-radius:8px;">
       <h3 style="margin-top:0; color:#86efac;">2️⃣ Link Specific Channel to this Account</h3>
-      <p class="hint" style="font-size:12px;">Influencer phone login ayyaka, valla account lo unna Groups/Channels nunchi select cheyandi:</p>
+      <p class="hint" style="font-size:12px;">Influencer phone login ayyaka groups kanipistayi, leda <b>direct ga WhatsApp Group / Channel Invite Link</b> ikkada ivvachu:</p>
       
-      {% if wa_status_info.chats %}
-        <form method="post" action="{{ url_for('wa_connect_chat', inf_id=inf.id) }}" style="display:flex; flex-direction:column; gap:8px;">
-          <label style="font-size:12px; font-weight:bold; color:#cbd5e1;">Select Group / Channel from Phone:</label>
-          <select name="chat_jid" style="width:100%; padding:8px; font-size:13px;">
-            {% for chat in wa_status_info.chats %}
-              <option value="{{ chat.jid }}">{{ chat.name }} ({{ 'Group' if chat.isGroup else 'Channel' }})</option>
-            {% endfor %}
-          </select>
-          <input type="hidden" name="role" value="whatsapp" />
-          <button type="submit" style="background:#059669; color:white; font-weight:bold; margin-top:4px;">⚡ Connect Selected Channel</button>
-        </form>
-      {% else %}
-        <p class="hint" style="color:#94a3b8; font-size:12px;">Login above to see existing groups/channels, or enter group link manually:</p>
-      {% endif %}
+      <form method="post" action="{{ url_for('wa_connect_chat', inf_id=inf.id) }}" style="display:flex; flex-direction:column; gap:10px;">
+        <input type="hidden" name="role" value="whatsapp" />
+
+        {% if wa_status_info.chats %}
+          <div>
+            <label style="font-size:12px; font-weight:bold; color:#cbd5e1; display:block; margin-bottom:4px;">A) Select Detected Group / Channel:</label>
+            <select name="chat_jid" style="width:100%; padding:8px; font-size:13px;">
+              <option value="">-- Or Choose Below via Link --</option>
+              {% for chat in wa_status_info.chats %}
+                <option value="{{ chat.jid }}">{{ chat.name }} ({{ 'Group' if chat.isGroup else 'Channel' }})</option>
+              {% endfor %}
+            </select>
+          </div>
+        {% endif %}
+
+        <div>
+          <label style="font-size:12px; font-weight:bold; color:#cbd5e1; display:block; margin-bottom:4px;">
+            {% if wa_status_info.chats %}B) Or Paste WhatsApp Group/Channel Invite Link:{% else %}Paste WhatsApp Group/Channel Invite Link:{% endif %}
+          </label>
+          <input name="invite_link" placeholder="e.g. https://chat.whatsapp.com/ABC123xyz" style="width:100%; font-size:13px;" />
+        </div>
+
+        <button type="submit" style="background:#059669; color:white; font-weight:bold; padding:9px; border-radius:6px; cursor:pointer;">⚡ Link WhatsApp Channel to Account</button>
+      </form>
 
       <div style="margin-top:14px; border-top:1px dashed #14532d; padding-top:10px;">
         <h4 style="margin:0 0 6px; color:#cbd5e1; font-size:13px;">Or Create New Group Feed Automatically</h4>

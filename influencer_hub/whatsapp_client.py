@@ -37,6 +37,10 @@ async def list_sessions() -> list[dict]:
 async def list_chats(session_key: str) -> list[dict]:
     res = await _request("GET", f"/sessions/{session_key}/chats")
     return res.get("chats", [])
+
+
+async def resolve_invite(session_key: str, invite_url_or_code: str) -> dict:
+    return await _request("POST", f"/sessions/{session_key}/resolve-invite", json={"invite": invite_url_or_code})
     return (await _request("GET", "/sessions")).get("sessions", [])
 
 

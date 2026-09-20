@@ -84,6 +84,17 @@ app.get('/sessions/:key/qr/stream', async (req, res) => {
   req.on('close', unsub)
 })
 
+app.post('/sessions/:key/resolve-invite', async (req, res) => {
+  const { invite } = req.body || {}
+  if (!invite) return res.status(400).json({ ok: false, error: 'invite required' })
+  try {
+    const r = await hub.resolveInviteCode(req.params.key, invite)
+    res.json(r)
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+
 app.get('/sessions/:key/chats', (req, res) => {
   try {
     const chats = hub.listChats(req.params.key)

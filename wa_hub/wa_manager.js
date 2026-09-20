@@ -185,17 +185,39 @@ export class Hub {
     return { ok: true, jid, name }
   }
 
+  async resolveInviteCode(key, inviteUrlOrCode) {
+    const s = this.sessions.get(key)
+    if (!s?.sock) throw new Error('session not connected: ' + key)
+    // Extract code from full link e.g. https://chat.whatsapp.com/ABC123xyz
+    let code = inviteUrlOrCode.trim()
+    const m = code.match(/chat\.whatsapp\.com\/([0-9A-Za-z_-]+)/i)
+    if (m) code = m[1]
+    code = code.replace(/[^0-9A-Za-z_-]/g, '')
+
+    try {
+      const info = await s.sock.groupGetInviteInfo(code)
+      return { ok: true, jid: info.id, subject: info.subject, size: info.size }
+    } catch (e) {
+      // If unable to query metadata, accept the raw code/jid
+      return { ok: false, error: String(e), code }
+    }
+  }
+
   listChats(key) {
     const s = this.sessions.get(key)
     if (!s?.sock) throw new Error('session not connected: ' + key)
-    // Return all chats/groups that this session belongs to
-    const chats = s.sock.chats ? Object.values(s.sock.chats) : []
-    return chats.map(c => ({
-      jid: c.id,
-      name: c.name || c.subject || c.id,
-      isGroup: c.id.endsWith('@g.us'),
-      isChannel: c.id.endsWith('@newsletter'),
-    }))
+    const chats = []
+    if (s.sock.chats) {
+      for (const c of Object.values(s.sock.chats)) {
+        chats.push({
+          jid: c.id,
+          name: c.name || c.subject || c.id,
+          isGroup: c.id.endsWith('@g.us'),
+          isChannel: c.id.endsWith('@newsletter'),
+        })
+      }
+    }
+    return chats
   }
 
   async stop(key) {
