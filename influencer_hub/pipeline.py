@@ -43,6 +43,18 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
         return f"failed:{exc}"
 
 
+def _parse_price_filter_spec(spec: str) -> tuple[float | None, float | None]:
+    """Parse filter specs like 'under_99', 'under_499', 'under_999', 'under_199', 'all'."""
+    import re
+    s = (spec or "").strip().lower()
+    if not s or s == "all":
+        return None, None
+    m = re.search(r"under_?(\d+)", s)
+    if m:
+        return float(m.group(1)), None
+    return None, None
+
+
 async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | None = None) -> dict:
     """Render one deal for every active influencer and dispatch to their channels.
 
@@ -67,13 +79,22 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             # If channel has custom override amazon tag, use it, else default to inf tag
             effective_amz_tag = ch.get("amazon_override_tag") or amazon_tag
 
-            # Approval channel only carries Amazon deals (native + #ad). Skip
+            # Price filter hierarchy: channel price_filter overrides influencer price_filter
+            filter_spec = ch.get("price_filter") or inf.get("price_filter") or "all"
+            max_p, min_p = _parse_price_filter_spec(filter_spec)
+
+            # 1. Price Specification Filter (Under 99, Under 499, etc.)
+            if not link_router.matches_price_filter(deal_text, max_price=max_p, min_price=min_p):
+                per_channel[ch["id"]] = "skipped"
+                continue
+
+            # 2. Approval channel only carries Amazon deals (native + #ad). Skip
             # deals that have no Amazon link so we never post an empty approval.
             if role == "approval" and not link_router.has_amazon_link(deal_text):
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # If strip_amazon is active on this channel, and deal has ONLY Amazon links,
+            # 3. If strip_amazon is active on this channel, and deal has ONLY Amazon links,
             # skip it because nothing remains to post.
             if strip_amz and not any(link_router.classify_url(u) == "merchant" for u in link_router.find_urls(deal_text)):
                 per_channel[ch["id"]] = "skipped"

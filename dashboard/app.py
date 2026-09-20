@@ -57,6 +57,15 @@ def clean_identifier(raw: str) -> str:
     return f"@{s}" if not s.endswith(".net") and not s.endswith(".us") else s
 
 
+@app.route("/")
+def index():
+    q = request.args.get("q", "").strip()
+    influencers = db.search_influencers(q) if q else db.list_influencers()
+    stats = db.post_stats()
+    vm = db.latest_vm()
+    return render_template("index.html", influencers=influencers, stats=stats, vm=vm, search_query=q)
+
+
 @app.route("/quick-add", methods=["POST"])
 def quick_add():
     """Ultra-fast 1-click addition of influencer + their ready-made channels.
@@ -64,8 +73,10 @@ def quick_add():
     """
     name = request.form.get("name", "").strip()
     tag = request.form.get("tag", "").strip()
+    phone = request.form.get("phone_number", "").strip()
     insta = request.form.get("insta_id", "").strip()
     handle = request.form.get("handle", "").strip()
+    price_filt = request.form.get("price_filter", "all").strip()
     approval_tg = request.form.get("approval_tg", "").strip()
     broadcast_tg = request.form.get("broadcast_tg", "").strip()
     whatsapp_id = request.form.get("whatsapp_id", "").strip()
@@ -74,7 +85,8 @@ def quick_add():
     if not name or not tag:
         return redirect(url_for("index"))
 
-    iid = db.add_influencer(name, tag, handle=handle, insta_id=insta)
+    iid = db.add_influencer(name, tag, handle=handle, insta_id=insta,
+                            phone_number=phone, price_filter=price_filt)
 
     # 1. Approval Channel
     if approval_tg:
@@ -84,11 +96,13 @@ def quick_add():
     # 2. Broadcast Channel
     if broadcast_tg:
         ident = clean_identifier(broadcast_tg)
-        db.add_channel(iid, "telegram", ident, role="broadcast", status="ready", strip_amazon=strip_amz_all)
+        db.add_channel(iid, "telegram", ident, role="broadcast", status="ready",
+                       strip_amazon=strip_amz_all, price_filter=price_filt if price_filt != "all" else "")
 
     # 3. WhatsApp Channel/Group
     if whatsapp_id:
-        db.add_channel(iid, "whatsapp_group", whatsapp_id, role="whatsapp", status="ready", strip_amazon=strip_amz_all)
+        db.add_channel(iid, "whatsapp_group", whatsapp_id, role="whatsapp", status="ready",
+                       strip_amazon=strip_amz_all, price_filter=price_filt if price_filt != "all" else "")
 
     return redirect(url_for("influencer_detail", inf_id=iid))
 
@@ -97,8 +111,10 @@ def quick_add():
 def update_profile(inf_id):
     name = request.form.get("name", "").strip()
     tag = request.form.get("amazon_tag", "").strip()
+    phone = request.form.get("phone_number", "").strip()
     handle = request.form.get("handle", "").strip()
     insta = request.form.get("insta_id", "").strip()
+    price_filt = request.form.get("price_filter", "").strip()
     notes = request.form.get("notes", "").strip()
     active_str = request.form.get("active")
     active = (active_str == "1") if active_str is not None else None
@@ -107,8 +123,10 @@ def update_profile(inf_id):
         inf_id,
         name=name if name else None,
         amazon_tag=tag if tag else None,
+        phone_number=phone if phone else None,
         handle=handle if handle else None,
         insta_id=insta if insta else None,
+        price_filter=price_filt if price_filt else None,
         notes=notes if notes else None,
         active=active,
     )
@@ -121,6 +139,7 @@ def update_channel_route(channel_id):
     ident = request.form.get("identifier", "").strip()
     role = request.form.get("role", "").strip()
     override_tag = request.form.get("amazon_override_tag", "").strip()
+    price_filt = request.form.get("price_filter", "").strip()
     strip_amz = request.form.get("strip_amazon") == "1"
 
     if ident:
@@ -132,6 +151,7 @@ def update_channel_route(channel_id):
         role=role if role else None,
         amazon_override_tag=override_tag,
         strip_amazon=strip_amz,
+        price_filter=price_filt,
     )
     if inf_id:
         return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
@@ -145,6 +165,7 @@ def add_manual_channel(inf_id):
     role = request.form.get("role", "broadcast").strip()
     invite = request.form.get("invite", "").strip()
     override_tag = request.form.get("amazon_override_tag", "").strip()
+    price_filt = request.form.get("price_filter", "").strip()
     strip_amz = request.form.get("strip_amazon") == "1"
 
     if raw_ident:
@@ -158,38 +179,10 @@ def add_manual_channel(inf_id):
             role=role,
             amazon_override_tag=override_tag,
             strip_amazon=strip_amz,
+            price_filter=price_filt,
         )
 
     return redirect(url_for("influencer_detail", inf_id=inf_id))
-
-
-@app.route("/channel/<int:channel_id>/delete", methods=["POST"])
-def delete_channel(channel_id):
-    inf_id = request.form.get("inf_id")
-    db.delete_channel(channel_id)
-    if inf_id:
-        return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
-    return redirect(url_for("index"))
-
-
-@app.route("/influencer/<int:inf_id>/delete", methods=["POST"])
-def delete_influencer(inf_id):
-    db.delete_influencer(inf_id)
-    return redirect(url_for("index"))
-
-
-@app.route("/influencer/<int:inf_id>/test-post", methods=["POST"])
-def test_post_demo(inf_id):
-    """Instant preview demo of how deals will render for all 3 channels."""
-    return redirect(url_for("influencer_detail", inf_id=inf_id, demo=1))
-
-
-@app.route("/")
-def index():
-    influencers = db.list_influencers()
-    stats = db.post_stats()
-    vm = db.latest_vm()
-    return render_template("index.html", influencers=influencers, stats=stats, vm=vm)
 
 
 @app.route("/influencers", methods=["POST"])

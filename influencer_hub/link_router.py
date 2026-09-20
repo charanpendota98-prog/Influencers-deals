@@ -260,6 +260,43 @@ def render_for_influencer(
     return _render_base(text, amazon_tag, ek)
 
 
+def extract_price(text: str) -> float | None:
+    """Extract the lowest price mentioned in the deal text.
+    Handles ₹, Rs, Rs., INR, at Rs.499, @199, Price: 299 etc.
+    """
+    clean_text = text.replace(",", "")
+    patterns = [
+        r"(?:₹|rs\.?|inr)\s*(\d+(?:\.\d{1,2})?)",
+        r"@\s*(\d+(?:\.\d{1,2})?)",
+        r"(?:deal price|price|at)\s*(?:₹|rs\.?|inr|:)?\s*(\d+(?:\.\d{1,2})?)",
+    ]
+    prices: list[float] = []
+    for pat in patterns:
+        for m in re.finditer(pat, clean_text, re.I):
+            try:
+                val = float(m.group(1))
+                if 1 <= val <= 2000000:  # sane bounds (1 rupee to 20 lakh)
+                    prices.append(val)
+            except (ValueError, TypeError):
+                continue
+    return min(prices) if prices else None
+
+
+def matches_price_filter(deal_text: str, max_price: float | None = None, min_price: float | None = None) -> bool:
+    """Return True if the deal matches the given price bounds."""
+    if max_price is None and min_price is None:
+        return True
+    deal_price = extract_price(deal_text)
+    if deal_price is None:
+        # If no price detected in post, pass it through so non-priced deals aren't dropped
+        return True
+    if max_price is not None and deal_price > max_price:
+        return False
+    if min_price is not None and deal_price < min_price:
+        return False
+    return True
+
+
 def has_amazon_link(text: str) -> bool:
     return any(classify_url(u) == "amazon" for u in find_urls(text))
 

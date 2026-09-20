@@ -22,6 +22,26 @@ def test_apply_amazon_tag_adds_when_missing():
     assert out == "https://www.amazon.in/dp/B0ABC123?tag=ravi099-21"
 
 
+def test_price_filter_matching():
+    deal_cheap = "Deal at ₹89 loot link: https://www.amazon.in/dp/B0123"
+    deal_mid = "Portronics Fan Price: ₹399 https://www.amazon.in/dp/B0123"
+    deal_expensive = "Sony TV at ₹24,999 https://www.amazon.in/dp/B0123"
+
+    assert lr.matches_price_filter(deal_cheap, max_price=99) is True
+    assert lr.matches_price_filter(deal_mid, max_price=99) is False
+    assert lr.matches_price_filter(deal_mid, max_price=499) is True
+    assert lr.matches_price_filter(deal_expensive, max_price=499) is False
+
+
+def test_search_influencers_by_phone_and_name():
+    iid = db.add_influencer("Suresh Reddy", "suresh099-21", phone_number="919988776655")
+    res_phone = db.search_influencers("998877")
+    assert any(x["id"] == iid for x in res_phone)
+    res_name = db.search_influencers("Suresh")
+    assert any(x["id"] == iid for x in res_name)
+    db.delete_influencer(iid)
+
+
 def test_strip_amazon_render():
     text = (
         "🔥 Super Combo Deal\n"

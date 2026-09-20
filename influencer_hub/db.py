@@ -108,6 +108,8 @@ def migrate() -> None:
             ("telegram_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("whatsapp_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("insta_id", "TEXT NOT NULL DEFAULT ''"),
+            ("phone_number", "TEXT NOT NULL DEFAULT ''"),
+            ("price_filter", "TEXT NOT NULL DEFAULT 'all'"),
         ):
             if col not in inf_cols:
                 con.execute(f"ALTER TABLE influencers ADD COLUMN {col} {ddl}")
@@ -117,6 +119,7 @@ def migrate() -> None:
             ("role", "TEXT NOT NULL DEFAULT 'broadcast'"),
             ("amazon_override_tag", "TEXT NOT NULL DEFAULT ''"),
             ("strip_amazon", "INTEGER NOT NULL DEFAULT 0"),
+            ("price_filter", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
                 con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
@@ -135,15 +138,17 @@ def _now() -> str:
 def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = "",
                    use_dummy_sources: bool = False,
                    telegram_enabled: bool = True, whatsapp_enabled: bool = True,
-                   insta_id: str = "") -> int:
+                   insta_id: str = "", phone_number: str = "",
+                   price_filter: str = "all") -> int:
     con = _connect()
     try:
         cur = con.execute(
             "INSERT INTO influencers "
-            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), handle.strip(), amazon_tag.strip(), notes.strip(), 1 if use_dummy_sources else 0,
-             1 if telegram_enabled else 0, 1 if whatsapp_enabled else 0, insta_id.strip()),
+             1 if telegram_enabled else 0, 1 if whatsapp_enabled else 0, insta_id.strip(),
+             phone_number.strip(), price_filter.strip() or "all"),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -153,7 +158,8 @@ def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = ""
 
 def update_influencer(influencer_id: int, name: str | None = None,
                       amazon_tag: str | None = None, handle: str | None = None,
-                      insta_id: str | None = None, notes: str | None = None,
+                      insta_id: str | None = None, phone_number: str | None = None,
+                      price_filter: str | None = None, notes: str | None = None,
                       active: bool | None = None) -> None:
     con = _connect()
     try:
@@ -171,6 +177,12 @@ def update_influencer(influencer_id: int, name: str | None = None,
         if insta_id is not None:
             updates.append("insta_id=?")
             params.append(insta_id.strip())
+        if phone_number is not None:
+            updates.append("phone_number=?")
+            params.append(phone_number.strip())
+        if price_filter is not None:
+            updates.append("price_filter=?")
+            params.append(price_filter.strip())
         if notes is not None:
             updates.append("notes=?")
             params.append(notes.strip())
@@ -247,14 +259,15 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 invite_link: str = "", status: str = "pending",
                 role: str = "broadcast",
                 amazon_override_tag: str = "",
-                strip_amazon: bool = False) -> int:
+                strip_amazon: bool = False,
+                price_filter: str = "") -> int:
     con = _connect()
     try:
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
-             amazon_override_tag.strip(), 1 if strip_amazon else 0),
+             amazon_override_tag.strip(), 1 if strip_amazon else 0, price_filter.strip()),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -266,7 +279,8 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            role: str | None = None, invite_link: str | None = None,
                            status: str | None = None,
                            amazon_override_tag: str | None = None,
-                           strip_amazon: bool | None = None) -> None:
+                           strip_amazon: bool | None = None,
+                           price_filter: str | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -289,10 +303,38 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if strip_amazon is not None:
             updates.append("strip_amazon=?")
             params.append(1 if strip_amazon else 0)
+        if price_filter is not None:
+            updates.append("price_filter=?")
+            params.append(price_filter.strip())
         if updates:
             params.append(channel_id)
             con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)
             con.commit()
+    finally:
+        con.close()
+
+
+def search_influencers(query: str = "") -> list[dict]:
+    """Search influencers by ID, Phone Number, Name, Instagram ID, Amazon Tag, or Handle."""
+    q = query.strip()
+    if not q:
+        return list_influencers()
+    con = _connect()
+    try:
+        sql = """
+        SELECT * FROM influencers
+        WHERE id = ?
+           OR phone_number LIKE ?
+           OR name LIKE ?
+           OR insta_id LIKE ?
+           OR amazon_tag LIKE ?
+           OR handle LIKE ?
+        ORDER BY id
+        """
+        id_val = int(q) if q.isdigit() else -1
+        like_val = f"%{q}%"
+        rows = con.execute(sql, (id_val, like_val, like_val, like_val, like_val, like_val)).fetchall()
+        return [dict(r) for r in rows]
     finally:
         con.close()
 
