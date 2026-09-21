@@ -5,35 +5,35 @@
   <div>
     <h1 style="margin:0; font-size: 26px; display:flex; align-items:center; gap:8px;">
       ⚡ Influencer Deals Command Center
-      <span style="font-size:12px; background:#1e3a8a; color:#93c5fd; padding:3px 10px; border-radius:20px; font-weight:700;">PRO v3.5</span>
+      <span style="font-size:12px; background:#1e3a8a; color:#93c5fd; padding:3px 10px; border-radius:20px; font-weight:700;">PRO v4.0</span>
     </h1>
-    <p class="hint" style="margin-top:4px;">Multi-Influencer Automated Affiliate Distribution · 3-Channel Isolation · Smart Anti-Ban Pacing · Category Routing</p>
+    <p class="hint" style="margin-top:4px;">Multi-Influencer Automated Affiliate Network · 3-Channel Architecture · Zero-Mistake Operations</p>
   </div>
   <div style="display:flex; gap:10px;">
     <button onclick="document.getElementById('quick-add-form').scrollIntoView({behavior: 'smooth'}); document.getElementById('name-input').focus();" class="btn" style="background:#2563eb; color:white; padding:10px 18px; border-radius:8px; font-weight:700;">➕ Add Influencer Instantly</button>
-    <a class="btn" style="background:#10b981; color:white; padding:10px 18px; border-radius:8px; font-weight:700; text-decoration:none;" href="{{ url_for('onboard') }}">✨ Influencer Self-Onboard Link</a>
+    <a class="btn" style="background:#10b981; color:white; padding:10px 18px; border-radius:8px; font-weight:700; text-decoration:none;" href="{{ url_for('onboard') }}">✨ Self-Onboard Link</a>
   </div>
 </div>
 
-<!-- LIVE METRICS -->
+<!-- TOP METRICS BAR -->
 <section class="card" style="padding:16px; background:#0f172a; border-color:#1e3a8a;">
   <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
     <div style="display:flex; gap:12px; flex-wrap:wrap;">
       <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
-        <span style="color:#94a3b8; font-size:12px; display:block;">TOTAL INFLUENCERS</span>
-        <b style="color:#fff; font-size:18px;">{{ influencers|length }} Active</b>
+        <span style="color:#94a3b8; font-size:12px; display:block;">ACTIVE INFLUENCERS</span>
+        <b style="color:#fff; font-size:18px;">{{ influencers|length }} Partners</b>
       </div>
       <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
         <span style="color:#94a3b8; font-size:12px; display:block;">POSTED DEALS</span>
         <b style="color:#34d399; font-size:18px;">{{ stats.posted }} Deals</b>
       </div>
       <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
-        <span style="color:#94a3b8; font-size:12px; display:block;">SKIPPED (DEDUP/SCHEDULE)</span>
+        <span style="color:#94a3b8; font-size:12px; display:block;">PROTECTED SKIPS (DEDUP/TIMING)</span>
         <b style="color:#93c5fd; font-size:18px;">{{ stats.skipped }} Deals</b>
       </div>
       <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
-        <span style="color:#94a3b8; font-size:12px; display:block;">EARNKARO PUBLISHER</span>
-        <code style="color:#fbbf24; font-size:14px; font-weight:bold;">5478322 (LOCKED)</code>
+        <span style="color:#94a3b8; font-size:12px; display:block;">EARNKARO COMMISSIONS</span>
+        <code style="color:#fbbf24; font-size:14px; font-weight:bold;">PubID: 5478322 (LOCKED)</code>
       </div>
     </div>
     {% if vm %}
@@ -44,12 +44,12 @@
   </div>
 </section>
 
-<!-- SEARCH & BULK 1000+ TOOLBAR -->
+<!-- SEARCH & BULK TOOLBAR -->
 <section class="card" style="border: 1px solid #1e3a8a; background: #0f172a; padding: 14px 20px; border-radius: 10px;">
   <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
     <form method="get" action="{{ url_for('index') }}" style="display: flex; gap: 10px; align-items: center; flex:1; min-width:300px;">
       <span style="font-size: 18px;">🔍</span>
-      <input name="q" value="{{ search_query or '' }}" placeholder="Search by Phone Number, Name, Insta ID, Tag, or ID..." style="flex: 1; padding: 10px 14px;" />
+      <input name="q" value="{{ search_query or '' }}" placeholder="Search by Phone Number, Name, Insta ID, Amazon Tag, or ID..." style="flex: 1; padding: 10px 14px;" />
       <button type="submit" style="background: #2563eb; color: white;">Search</button>
       {% if search_query %}
         <a class="btn" style="background: #475569; color: white;" href="{{ url_for('index') }}">Clear</a>
@@ -73,48 +73,56 @@
   </div>
 </section>
 
-<!-- ADD NEW INFLUENCER FORM -->
-<section id="quick-add-form" class="card" style="border: 1px solid #3b82f6; background: #131b2e; border-radius: 12px;">
-  <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="color: #60a5fa; margin: 0; font-size: 18px;">➕ Add Influencer &amp; Channels (Instant 1-Click Setup)</h2>
-    <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">LIVE SETUP (NO EXCEL NEEDED)</span>
+<!-- ➕ ADD NEW INFLUENCER FORM (INSTANT 1-CLICK) -->
+<section id="quick-add-form" class="card" style="border: 2px solid #3b82f6; background: #131b2e; border-radius: 12px; box-shadow:0 8px 30px rgba(0,0,0,0.4);">
+  <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #283759; padding-bottom:12px; margin-bottom:14px;">
+    <div>
+      <h2 style="color: #60a5fa; margin: 0; font-size: 19px; display:flex; align-items:center; gap:8px;">
+        ➕ Quick Add Influencer &amp; Channels
+        <span style="background:#065f46; color:#a7f3d0; font-size:11px; padding:2px 8px; border-radius:4px;">NO EXCEL NEEDED</span>
+      </h2>
+      <p class="hint" style="margin:4px 0 0;">Fill details directly here &amp; click 'Save &amp; Start Live'. The influencer is instantly saved and their channel is ready!</p>
+    </div>
+    <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:4px 10px; border-radius:6px; font-weight:700;">3-CHANNELS AUTO-SETUP</span>
   </div>
-  <p class="hint">Fill details here directly &amp; click Save — influencer is immediately activated &amp; starts posting right away without needing any excel upload!</p>
   
-  <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 14px;">
+  <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;">
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Influencer Name *</label>
-      <input id="name-input" name="name" placeholder="e.g. Ramesh Deals" required style="width: 100%;" />
+      <input id="name-input" name="name" placeholder="e.g. Ramesh Deals" required style="width: 100%; font-size:14px;" />
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📞 Mobile / WhatsApp Number</label>
-      <input name="phone_number" placeholder="e.g. 919876543210" style="width: 100%; font-family: monospace;" />
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📞 Mobile / WhatsApp Number *</label>
+      <input name="phone_number" placeholder="e.g. 919876543210" required style="width: 100%; font-family: monospace; font-size:14px;" />
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Amazon Associate Tag *</label>
-      <input name="tag" placeholder="e.g. mama086-21" required style="width: 100%; font-family: monospace;" />
+      <input name="tag" placeholder="e.g. ramesh-21" required style="width: 100%; font-family: monospace; font-size:14px;" />
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">📸 Instagram ID</label>
-      <input name="insta_id" placeholder="@instagram_user" style="width: 100%;" />
+      <input name="insta_id" placeholder="@instagram_handle" style="width: 100%;" />
     </div>
 
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#6ee7b7;">🛡️ 1) APPROVAL CHANNEL (Telegram)</label>
-      <input name="approval_tg" placeholder="@approval_channel or t.me/..." style="width: 100%; font-family: monospace;" />
+      <input name="approval_tg" placeholder="@approval_channel or link" style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:10px;">Amazon-only + #ad for associate approval</span>
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#93c5fd;">📢 2) MAIN CHANNEL (Telegram Broadcast)</label>
-      <input name="broadcast_tg" placeholder="@main_channel or t.me/..." style="width: 100%; font-family: monospace;" />
+      <input name="broadcast_tg" placeholder="@main_channel or link" style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:10px;">Full deals (Amazon + our EarnKaro)</span>
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde68a;">💬 3) WHATSAPP CHANNEL (Invite / JID)</label>
       <input name="whatsapp_id" placeholder="https://chat.whatsapp.com/... or 120363xxx" style="width: 100%;" />
+      <span class="hint" style="font-size:10px;">Paste invite link or phone chat JID</span>
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Deal Budget Filter</label>
       <select name="price_filter" style="width: 100%;">
-        <option value="all" selected>All Loot Deals</option>
+        <option value="all" selected>All Deals (No Price Limit)</option>
         <option value="under_99">🔥 Under ₹99 Only</option>
         <option value="under_199">⚡ Under ₹199 Only</option>
         <option value="under_499">🎁 Under ₹499 Only</option>
@@ -122,15 +130,21 @@
       </select>
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Token (Supports Multiple Comma-Separated)</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Tokens (Optional)</label>
       <input name="bitly_api_key" placeholder="Key1, Key2..." style="width: 100%; font-family: monospace;" />
-      <span class="hint" style="font-size:11px;">Supports multiple keys with auto-failover</span>
+      <span class="hint" style="font-size:11px;">If provided, multi-links will shorten cleanly</span>
     </div>
 
-    <!-- CATEGORIES MULTI-CHECKBOX GRID -->
+    <!-- 11 CATEGORIES MULTI-CHECKBOX GRID -->
     <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
-      <label style="font-size: 13px; font-weight: 700; color:#a78bfa; display: block; margin-bottom: 8px;">🛍️ Allowed Deal Categories (Select Any Multiple)</label>
-      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <label style="font-size: 13px; font-weight: 700; color:#a78bfa; margin:0;">🛍️ Allowed Deal Categories (Select All or Required)</label>
+        <div style="font-size:11px;">
+          <a href="javascript:void(0)" onclick="document.querySelectorAll('input[name=categories]').forEach(el => el.checked=true);" style="color:#38bdf8; text-decoration:underline; margin-right:8px;">Select All</a>
+          <a href="javascript:void(0)" onclick="document.querySelectorAll('input[name=categories]').forEach(el => el.checked=false);" style="color:#94a3b8; text-decoration:underline;">Clear All</a>
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px;">
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" name="categories" value="clothing" checked /> 👗 Fashion &amp; Clothing
         </label>
@@ -162,14 +176,14 @@
           <input type="checkbox" name="categories" value="books_stationery" checked /> 📚 Books &amp; Stationery
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" name="categories" value="automotive" checked /> 🚗 Automotive &amp; Bike Accessories
+          <input type="checkbox" name="categories" value="automotive" checked /> 🚗 Automotive &amp; Bike
         </label>
       </div>
     </div>
 
-    <!-- INDIAN TIMING SCHEDULE SESSIONS -->
+    <!-- INDIAN TIMINGS SESSIONS & BREAKS -->
     <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
-      <label style="font-size: 13px; font-weight: 700; color:#34d399; display: block; margin-bottom: 8px;">⏰ Indian Timings (IST Active Posting Sessions)</label>
+      <label style="font-size: 13px; font-weight: 700; color:#34d399; display: block; margin-bottom: 8px;">⏰ Indian Timings (IST Active Posting Sessions &amp; Night Sleep Breaks)</label>
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px;">
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" name="posting_schedule" value="06:00-02:00" /> 🌙 <b>Next-Day Late Session</b> (6:00 AM – 2:00 AM Next Day)
@@ -189,10 +203,11 @@
       </div>
       <div style="margin-top:8px;">
         <input name="custom_schedule" placeholder="Or custom windows: e.g. 06:00-02:00 (Hold/Sleep from 2AM to 6AM)" style="width:100%; font-size:12px;" />
-        <span class="hint" style="font-size:10px;">If nothing selected, channel posts 24/7 all day &amp; night. Outside active windows, posts are paused cleanly.</span>
+        <span class="hint" style="font-size:10px;">Outside active hours, deals are skipped cleanly so queue never clusters! Empty = 24/7.</span>
       </div>
     </div>
 
+    <!-- TOGGLE SWITCHES & SAVE -->
     <div style="grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; background: #0d1322; padding: 12px 16px; border-radius: 8px; border: 1px solid #283759; margin-top: 4px; flex-wrap:wrap; gap:10px;">
       <div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
         <label style="font-size: 13px; font-weight: 600; color: #fbbf24; cursor: pointer; display:flex; align-items:center; gap:8px;">
@@ -202,7 +217,7 @@
           <input type="checkbox" name="strip_amazon_broadcast" value="1" /> 🚫 <b>STRIP AMAZON</b> (Amazon Theesi Kevalam Flipkart/Myntra)
         </label>
       </div>
-      <button type="submit" style="background: #2563eb; color: white; padding: 10px 28px; font-weight: 700; border-radius: 8px; cursor: pointer; border: none; font-size:14px;">⚡ Save &amp; Start Live</button>
+      <button type="submit" style="background: #2563eb; color: white; padding: 12px 32px; font-weight: 800; border-radius: 8px; cursor: pointer; border: none; font-size:15px; box-shadow:0 4px 14px rgba(37,99,235,0.4);">⚡ Save &amp; Start Live</button>
     </div>
   </form>
 </section>
@@ -211,7 +226,7 @@
 <section class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <h2 style="margin:0; font-size:18px;">Active Influencers ({{ influencers|length }})</h2>
-    <span class="hint">Complete Control · Multi-Account Isolated</span>
+    <span class="hint">Instant Channel Control &amp; Direct QR Linking</span>
   </div>
   
   {% if not influencers %}
