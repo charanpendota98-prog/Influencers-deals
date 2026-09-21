@@ -84,8 +84,8 @@
     <!-- CATEGORIES EDIT -->
     <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:12px; border-radius:8px;">
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#a78bfa;">🛍️ Allowed Deal Categories (comma-separated or empty for All)</label>
-      <input name="categories" value="{{ inf.categories or '' }}" placeholder="clothing,electronics,home,daily,beauty,appliances,baby,sports" style="width: 100%; font-size: 12px;" />
-      <span class="hint" style="font-size:11px;">Supported: <code>clothing</code>, <code>electronics</code>, <code>home</code>, <code>daily</code>, <code>beauty</code>, <code>appliances</code>, <code>baby</code>, <code>sports</code></span>
+      <input name="categories" value="{{ inf.categories or '' }}" placeholder="clothing,electronics,home,daily,beauty,appliances,baby,sports,recharge_freebies,books_stationery,automotive" style="width: 100%; font-size: 12px;" />
+      <span class="hint" style="font-size:11px;">Supported: <code>clothing</code>, <code>electronics</code>, <code>home</code>, <code>daily</code>, <code>beauty</code>, <code>appliances</code>, <code>baby</code>, <code>sports</code>, <code>recharge_freebies</code>, <code>books_stationery</code>, <code>automotive</code></span>
     </div>
 
     <!-- SCHEDULE EDIT -->
@@ -248,8 +248,8 @@
       <form method="post" action="{{ url_for('pair_wa', inf_id=inf.id) }}">
         <button type="submit" style="background:#16a34a; width:100%; font-weight:bold;">📲 Generate Live QR Code</button>
       </form>
-      <div id="qrbox" class="qrbox" data-key="{{ wa_key }}" style="margin-top:12px; text-align:center;">
-        <p class="hint" style="color:#86efac;">QR code will appear here.</p>
+      <div id="qrbox" class="qrbox" data-key="{{ wa_key }}" style="margin-top:12px; text-align:center; min-height:120px; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+        <p class="hint" style="color:#86efac;">Click 'Generate Live QR Code' above to start QR session.</p>
       </div>
       {% if wa_status_info.connected %}
         <div style="background:#064e3b; color:#86efac; padding:8px 12px; border-radius:6px; font-weight:bold; font-size:13px; margin-top:10px;">
@@ -283,6 +283,7 @@
             {% if wa_status_info.chats %}B) Or Paste WhatsApp Group/Channel Link:{% else %}Paste WhatsApp Group/Channel Link:{% endif %}
           </label>
           <input name="invite_link" placeholder="e.g. https://chat.whatsapp.com/ABC123xyz" style="width:100%; font-size:13px;" />
+          <span class="hint" style="font-size:10px; color:#86efac;">Phone lo create chesina WhatsApp group/channel invite link ikkada paste chesthe auto connect avuthundi!</span>
         </div>
 
         <button type="submit" style="background:#059669; color:white; font-weight:bold; padding:9px; border-radius:6px; cursor:pointer;">⚡ Link WhatsApp Channel to Account</button>

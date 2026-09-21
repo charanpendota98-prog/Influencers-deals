@@ -10,6 +10,7 @@
     <p class="hint" style="margin-top:4px;">Multi-Influencer Automated Affiliate Distribution · 3-Channel Isolation · Smart Anti-Ban Pacing · Category Routing</p>
   </div>
   <div style="display:flex; gap:10px;">
+    <button onclick="document.getElementById('quick-add-form').scrollIntoView({behavior: 'smooth'}); document.getElementById('name-input').focus();" class="btn" style="background:#2563eb; color:white; padding:10px 18px; border-radius:8px; font-weight:700;">➕ Add Influencer Instantly</button>
     <a class="btn" style="background:#10b981; color:white; padding:10px 18px; border-radius:8px; font-weight:700; text-decoration:none;" href="{{ url_for('onboard') }}">✨ Influencer Self-Onboard Link</a>
   </div>
 </div>
@@ -73,17 +74,17 @@
 </section>
 
 <!-- ADD NEW INFLUENCER FORM -->
-<section class="card" style="border: 1px solid #3b82f6; background: #131b2e; border-radius: 12px;">
+<section id="quick-add-form" class="card" style="border: 1px solid #3b82f6; background: #131b2e; border-radius: 12px;">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="color: #60a5fa; margin: 0; font-size: 18px;">⚡ Quick Onboard New Influencer (Auto 3-Channel Setup)</h2>
-    <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ZERO-CODE DEPLOY</span>
+    <h2 style="color: #60a5fa; margin: 0; font-size: 18px;">➕ Add Influencer &amp; Channels (Instant 1-Click Setup)</h2>
+    <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">LIVE SETUP (NO EXCEL NEEDED)</span>
   </div>
-  <p class="hint">Channels setup: <b>1) Approval Channel</b> (Amazon-only + #ad), <b>2) Main Channel</b> (Full loots), and <b>3) WhatsApp Channel</b>.</p>
+  <p class="hint">Fill details here directly &amp; click Save — influencer is immediately activated &amp; starts posting right away without needing any excel upload!</p>
   
   <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 14px;">
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Influencer Name *</label>
-      <input name="name" placeholder="e.g. Ramesh Deals" required style="width: 100%;" />
+      <input id="name-input" name="name" placeholder="e.g. Ramesh Deals" required style="width: 100%;" />
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📞 Mobile / WhatsApp Number</label>
@@ -153,6 +154,15 @@
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" name="categories" value="sports" checked /> 🏋️ Sports &amp; Fitness
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="recharge_freebies" checked /> 🎁 Freebies, Cashback &amp; Coupons
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="books_stationery" checked /> 📚 Books &amp; Stationery
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="automotive" checked /> 🚗 Automotive &amp; Bike Accessories
         </label>
       </div>
     </div>

@@ -11,7 +11,7 @@ def test_category_classification_and_filtering():
     elec_deal = "🔥 Apple iPhone 15 / Sony Headphones Wireless Earbuds at ₹49,999!"
     home_deal = "🏠 Prestige Non-Stick Cookware Pan & Bedsheet set at ₹599"
     daily_deal = "🧴 Dettol Soap & Face Wash Cream lotion at ₹149"
-    other_deal = "🎟️ Free movie ticket voucher contest"
+    other_deal = "🎟️ General quiz contest information"
 
     # Category classification
     assert "clothing" in lr.classify_deal_category(fashion_deal)

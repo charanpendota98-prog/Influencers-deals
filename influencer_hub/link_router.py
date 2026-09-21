@@ -427,6 +427,16 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
         "dishwasher", "water purifier", "geyser", "water heater", "vacuum cleaner", "cooler", "fan",
         "inverter", "appliances",
     ],
+    "recharge_freebies": [
+        "freebie", "free sample", "free loot", "recharge", "cashback", "coupon", "code", "voucher", "loot deal",
+        "bug deal", "price error", "flat off", "swiggy", "zomato", "amazon pay", "flipkart minutes",
+    ],
+    "books_stationery": [
+        "book", "novel", "pen", "notebook", "diary", "marker", "stationery", "calculator", "backpack", "school bag",
+    ],
+    "automotive": [
+        "car", "bike", "helmet", "dashcam", "car wash", "tyre", "puncture", "riding gloves", "mobile holder",
+    ],
 }
 
 
