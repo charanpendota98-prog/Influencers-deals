@@ -561,18 +561,22 @@ def calculate_deal_loot_score(text: str) -> float:
     return score
 
 
-def format_loot_of_the_hour_post(original_post: str) -> str:
-    """Transform the best deal of the hour into an eye-catching, high-converting banner post."""
+def format_loot_of_the_hour_post(original_post: str, hour_label: str = "") -> str:
+    """Transform the best deal of the hour into an eye-catching, high-converting banner post.
+    hour_label: e.g. '2:00 PM', '3:00 PM' (IST)
+    """
+    time_badge = f" [ {hour_label} SPECIAL ]" if hour_label else ""
     lines = [
-        "👑 ══════════════════════ 👑",
-        "⚡ 𝗟𝗢𝗢𝗧 𝗢𝗙 𝗧𝗛𝗘 𝗛𝗢𝗨𝗥 ⚡",
-        "🔥 Best Handpicked Deal Just For You!",
-        "👑 ══════════════════════ 👑",
+        "👑 ════════════════════════════ 👑",
+        f"⚡ 𝗟𝗢𝗢𝗧 𝗢𝗙 𝗧𝗛𝗘 𝗛𝗢𝗨𝗥{time_badge} ⚡",
+        "🔥 Best Handpicked Deal Chosen From This Hour!",
+        "👑 ════════════════════════════ 👑",
         "",
         original_post.strip(),
         "",
-        "⏳ 𝘏𝘶𝘳𝘳𝘺! 𝘗𝘳𝘪𝘤𝘦 𝘮𝘢𝘺 𝘪𝘯𝘤𝘳𝘦𝘢𝘴𝘦 𝘢𝘯𝘺 𝘮𝘪𝘯𝘶𝘵𝘦!",
-        "📌 𝘑𝘰𝘪𝘯 & 𝘚𝘩𝘢𝘳𝘦 𝘸𝘪𝘵𝘩 𝘧𝘳𝘪𝘦𝘯𝘥𝘴 𝘣𝘦𝘧𝘰𝘳𝘦 𝘪𝘵 𝘦𝘹𝘱𝘪𝘳𝘦𝘴!",
+        "🌟 𝘛𝘩𝘪𝘴 𝘸𝘢𝘴 𝘵𝘩𝘦 #1 𝘣𝘦𝘴𝘵 𝘳𝘢𝘵𝘦𝘥 𝘥𝘦𝘢𝘭 𝘰𝘧 𝘵𝘩𝘪𝘴 𝘩𝘰𝘶𝘳!",
+        "⏳ 𝘏𝘶𝘳𝘳𝘺! 𝘗𝘳𝘪𝘤𝘦 𝘮𝘢𝘺 𝘪𝘯𝘤𝘳𝘦𝘢𝘴𝘦 𝘰𝘳 𝘨𝘰 𝘰𝘶𝘵 𝘰𝘧 𝘴𝘵𝘰𝘤𝘬 𝘢𝘯𝘺 𝘴𝘦𝘤𝘰𝘯𝘥!",
+        "📌 𝘚𝘩𝘢𝘳𝘦 𝘸𝘪𝘵𝘩 𝘺𝘰𝘶𝘳 𝘧𝘳𝘪𝘦𝘯𝘥𝘴 𝘣𝘦𝘧𝘰𝘳𝘦 𝘪𝘵 𝘦𝘹𝘱𝘪𝘳𝘦𝘴!",
     ]
     return "\n".join(lines)
 

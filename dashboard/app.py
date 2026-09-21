@@ -534,6 +534,18 @@ def wa_connect_chat(inf_id):
     return redirect(url_for("influencer_detail", inf_id=inf_id))
 
 
+@app.route("/trigger-all-hourly-loot", methods=["POST"])
+def trigger_all_hourly_loot():
+    """Trigger 'Loot of the Hour' highlight across all active channels."""
+    try:
+        from influencer_hub import pipeline
+        res = _run(pipeline.run_hourly_loot_highlight())
+        print(f"All channels hourly loot highlight triggered: {res}")
+    except Exception as e:
+        print(f"All hourly loot highlight failed: {e}")
+    return redirect(url_for("index"))
+
+
 @app.route("/influencer/<int:inf_id>/trigger-hourly-loot", methods=["POST"])
 def trigger_hourly_loot(inf_id):
     """Manually or cron-triggered 'Loot of the Hour' highlight for this influencer."""

@@ -272,6 +272,14 @@ async def run_hourly_loot_highlight(influencer_ids: Iterable[int] | None = None)
         want = set(influencer_ids)
         influencers = [i for i in influencers if i["id"] in want]
 
+    from datetime import datetime
+    import zoneinfo
+    try:
+        ist_now = datetime.now(zoneinfo.ZoneInfo("Asia/Kolkata"))
+        hour_label = ist_now.strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        hour_label = ""
+
     results: dict[int, dict[int, str]] = {}
     for inf in influencers:
         channels = [c for c in db.list_channels(inf["id"]) if c["status"] == "ready" and c.get("role") != "approval"]
@@ -290,7 +298,7 @@ async def run_hourly_loot_highlight(influencer_ids: Iterable[int] | None = None)
 
             # Pick the highest score deal
             best_post = max(candidates, key=lambda p: link_router.calculate_deal_loot_score(p["deal_text"]))
-            banner = link_router.format_loot_of_the_hour_post(best_post["deal_text"])
+            banner = link_router.format_loot_of_the_hour_post(best_post["deal_text"], hour_label=hour_label)
             # Dedicated signature for hourly highlight to distinguish it from the original raw post
             banner_sig = "highlight:" + link_router.deal_signature(best_post["deal_text"])
 
