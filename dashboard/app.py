@@ -490,6 +490,7 @@ def wa_connect_chat(inf_id):
 
     # If user provided invite link (e.g. https://chat.whatsapp.com/ABC123xyz), resolve it via Baileys socket!
     resolved_jid = jid
+    allowed_src = request.form.get("allowed_sources", "").strip()
     if invite_link:
         try:
             res = _run(whatsapp_client.resolve_invite(wa_key, invite_link))
@@ -503,7 +504,8 @@ def wa_connect_chat(inf_id):
 
     if resolved_jid:
         db.add_channel(inf_id, "whatsapp_group" if resolved_jid.endswith("@g.us") else "whatsapp_channel",
-                       resolved_jid, invite_link=invite_link, status="ready", role=role)
+                       resolved_jid, invite_link=invite_link, status="ready", role=role,
+                       allowed_sources=allowed_src)
 
     return redirect(url_for("influencer_detail", inf_id=inf_id))
 

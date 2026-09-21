@@ -57,11 +57,17 @@
       <span class="hint" style="font-size:11px;">Multiple keys supported with automatic failover</span>
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🛡️ Only Amazon Deals Toggle</label>
-      <select name="only_amazon" style="width: 100%; font-weight:bold;">
-        <option value="0" {{ 'selected' if not inf.only_amazon else '' }}>All Merchants (Amazon + Flipkart/Myntra)</option>
-        <option value="1" {{ 'selected' if inf.only_amazon else '' }}>🛡️ ONLY AMAZON (Kevalam Amazon Mathrame)</option>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🛡️ EarnKaro Monetisation &amp; Only Amazon Toggle</label>
+      <select name="only_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px;">
+        <option value="0" {{ 'selected' if not inf.only_amazon else '' }}>💰 ALL DEALS: Amazon + EarnKaro (Flipkart/Myntra Commission ON)</option>
+        <option value="1" {{ 'selected' if inf.only_amazon else '' }}>🛡️ ONLY AMAZON: Kevalam Amazon Mathrame (EarnKaro OFF - Initial Trust Phase)</option>
       </select>
+      <span class="hint" style="font-size:10px; color:#93c5fd;">First few days only_amazon ON petti, tarvatha EarnKaro ON cheyochu!</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📡 Allowed Deal Sources (Comma-Separated)</label>
+      <input name="allowed_sources" value="{{ inf.allowed_sources or '' }}" placeholder="powerloot,secret_loots (Empty = All Sources)" style="width: 100%; font-size: 12px;" />
+      <span class="hint" style="font-size:10px;">Specific source channel nunchi mathrame deals raavalante ikkada rayandi</span>
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">🎯 Default Budget Filter</label>
@@ -207,7 +213,8 @@
           </td>
           <td>
             <input name="categories" value="{{ c.categories or '' }}" placeholder="clothing,electronics (All)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Allowed categories" />
-            <input name="posting_schedule" value="{{ c.posting_schedule or '' }}" placeholder="06:00-02:00 (24/7)" style="font-size: 11px; padding: 3px 5px; width: 110px;" title="Timing schedule" />
+            <input name="posting_schedule" value="{{ c.posting_schedule or '' }}" placeholder="06:00-02:00 (24/7)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Timing schedule" />
+            <input name="allowed_sources" value="{{ c.allowed_sources or '' }}" placeholder="powerloot (All Src)" style="font-size: 10px; padding: 2px 4px; width: 110px; font-family: monospace;" title="Specific deal source for this channel" />
           </td>
           <td>
             <div>
@@ -274,6 +281,7 @@
       <label style="font-size: 12px; font-weight: 600; color: #f87171; cursor: pointer; display: flex; align-items: center; gap: 5px;">
         <input type="checkbox" name="strip_amazon" value="1" /> 🚫 Strip Amazon
       </label>
+      <input name="allowed_sources" placeholder="Source (e.g. powerloot)" style="font-size: 12px; width: 140px;" title="Restrict this channel to a specific deal source" />
       <button type="submit" style="background: #2563eb; color: white;">Connect Channel</button>
     </form>
   </div>
@@ -331,6 +339,12 @@
           </label>
           <input name="invite_link" placeholder="e.g. https://chat.whatsapp.com/ABC123xyz" style="width:100%; font-size:13px;" />
           <span class="hint" style="font-size:10px; color:#86efac;">Phone lo create chesina WhatsApp group/channel invite link ikkada paste chesthe auto connect avuthundi!</span>
+        </div>
+
+        <div>
+          <label style="font-size:12px; font-weight:bold; color:#38bdf8; display:block; margin-bottom:4px;">📡 Allowed Source for this WhatsApp Channel (Optional):</label>
+          <input name="allowed_sources" placeholder="e.g. powerloot, secret_loots (Empty = All Sources)" style="width:100%; font-size:12px;" />
+          <span class="hint" style="font-size:10px;">Ee WhatsApp channel ki vere specific source loots mathrame vellali ante ikkada source peru ivvandi!</span>
         </div>
 
         <button type="submit" style="background:#059669; color:white; font-weight:bold; padding:9px; border-radius:6px; cursor:pointer;">⚡ Link WhatsApp Channel to Account</button>
