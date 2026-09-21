@@ -526,6 +526,57 @@ def is_time_in_schedule(schedule_spec: str, current_time: str | None = None) -> 
 
 
 
+def calculate_deal_loot_score(text: str) -> float:
+    """Calculate an attractive 'loot score' (0 to 100) for a deal based on:
+    - Discount percentage mentioned (e.g. 80% off -> +40 points)
+    - Low price loot bonus (under ₹199 or under ₹499)
+    - Loot urgency keywords (Loot, Error, Steal, Bug, Flat, Free)
+    """
+    score = 10.0
+    # 1. Discount % match
+    m_disc = re.search(r"(\d{1,2})%\s*(?:off|discount)", text, re.I)
+    if m_disc:
+        disc = float(m_disc.group(1))
+        score += min(50.0, disc * 0.6)  # 80% gives 48 points
+
+    # 2. Price factor
+    price = extract_price(text)
+    if price is not None:
+        if price <= 99:
+            score += 35.0
+        elif price <= 299:
+            score += 25.0
+        elif price <= 499:
+            score += 15.0
+        elif price <= 999:
+            score += 8.0
+
+    # 3. Urgency / loot trigger words
+    urgent_words = ["loot", "steal", "bug", "flat", "free", "grab", "lowest", "huge drop", "error"]
+    lower = text.lower()
+    for w in urgent_words:
+        if w in lower:
+            score += 4.0
+
+    return score
+
+
+def format_loot_of_the_hour_post(original_post: str) -> str:
+    """Transform the best deal of the hour into an eye-catching, high-converting banner post."""
+    lines = [
+        "👑 ══════════════════════ 👑",
+        "⚡ 𝗟𝗢𝗢𝗧 𝗢𝗙 𝗧𝗛𝗘 𝗛𝗢𝗨𝗥 ⚡",
+        "🔥 Best Handpicked Deal Just For You!",
+        "👑 ══════════════════════ 👑",
+        "",
+        original_post.strip(),
+        "",
+        "⏳ 𝘏𝘶𝘳𝘳𝘺! 𝘗𝘳𝘪𝘤𝘦 𝘮𝘢𝘺 𝘪𝘯𝘤𝘳𝘦𝘢𝘴𝘦 𝘢𝘯𝘺 𝘮𝘪𝘯𝘶𝘵𝘦!",
+        "📌 𝘑𝘰𝘪𝘯 & 𝘚𝘩𝘢𝘳𝘦 𝘸𝘪𝘵𝘩 𝘧𝘳𝘪𝘦𝘯𝘥𝘴 𝘣𝘦𝘧𝘰𝘳𝘦 𝘪𝘵 𝘦𝘹𝘱𝘪𝘳𝘦𝘴!",
+    ]
+    return "\n".join(lines)
+
+
 def deal_signature(text: str) -> str:
     """A stable signature for dedup:
     1. Extracts ASINs from Amazon links (B0...)

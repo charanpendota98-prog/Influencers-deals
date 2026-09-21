@@ -16,13 +16,19 @@
       {% if inf.insta_id %}<a href="https://instagram.com/{{ inf.insta_id.lstrip('@') }}" target="_blank" style="color:#e879f9; text-decoration:none;">📸 {{ inf.insta_id }}</a>{% endif %}
     </p>
   </div>
-  <div>
+  <div style="display:flex; gap:10px; align-items:center;">
+    <form method="post" action="{{ url_for('trigger_hourly_loot', inf_id=inf.id) }}">
+      <button type="submit" style="background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight:bold; cursor:pointer; border:none; box-shadow:0 2px 10px rgba(245, 158, 11, 0.3);" title="Analyzes deals from the last 1 hour and highlights the best deal">⚡ Post Loot of the Hour</button>
+    </form>
     <form method="post" action="{{ url_for('delete_influencer', inf_id=inf.id) }}" onsubmit="var p = prompt('Enter Admin Password to delete this influencer:'); if (!p) return false; this.admin_password.value = p; return true;">
       <input type="hidden" name="admin_password" value="" />
       <button type="submit" style="background: #dc2626; color: white; padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight:bold; cursor:pointer;">🔒 Delete Influencer (Password Protected)</button>
     </form>
     {% if request.args.get('err') == 'invalid_password' %}
       <div style="color: #ef4444; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">❌ Incorrect Admin Password!</div>
+    {% endif %}
+    {% if request.args.get('hourly_loot') == '1' %}
+      <div style="color: #34d399; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">✅ Loot of the Hour Analyzed &amp; Dispatched!</div>
     {% endif %}
   </div>
 </div>

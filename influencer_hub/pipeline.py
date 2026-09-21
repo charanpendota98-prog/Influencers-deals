@@ -239,7 +239,8 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             status = await dispatch_to_channel(inf, ch, rendered)
             db.record_post(inf["id"], ch["id"], sig,
                            status="posted" if status == "posted" else "failed",
-                           error="" if status == "posted" else status)
+                           error="" if status == "posted" else status,
+                           deal_text=rendered if status == "posted" else "")
             per_channel[ch["id"]] = status
         results[inf["id"]] = per_channel
     return results
@@ -259,6 +260,53 @@ async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] | 
         for iid, chmap in res.items():
             all_results.setdefault(iid, {}).update(chmap)
     return all_results
+
+
+async def run_hourly_loot_highlight(influencer_ids: Iterable[int] | None = None) -> dict[int, dict[int, str]]:
+    """Analyzes all deals posted in the last 1 hour across active channels,
+    finds the highest-rated 'Loot of the Hour' (biggest discount/best price),
+    and sends an attractive, high-converting highlight banner post.
+    """
+    influencers = db.list_influencers(active_only=True)
+    if influencer_ids is not None:
+        want = set(influencer_ids)
+        influencers = [i for i in influencers if i["id"] in want]
+
+    results: dict[int, dict[int, str]] = {}
+    for inf in influencers:
+        channels = [c for c in db.list_channels(inf["id"]) if c["status"] == "ready" and c.get("role") != "approval"]
+        per_ch: dict[int, str] = {}
+        for ch in channels:
+            # 1. Check schedule
+            sched = ch.get("posting_schedule") or inf.get("posting_schedule") or ""
+            if not link_router.is_time_in_schedule(sched):
+                continue
+
+            recent_posts = db.get_recent_posted_deals(ch["id"], hours=1)
+            # Filter posts with deal text
+            candidates = [p for p in recent_posts if p.get("deal_text") and not p.get("deal_text").startswith("👑")]
+            if not candidates:
+                continue
+
+            # Pick the highest score deal
+            best_post = max(candidates, key=lambda p: link_router.calculate_deal_loot_score(p["deal_text"]))
+            banner = link_router.format_loot_of_the_hour_post(best_post["deal_text"])
+            # Dedicated signature for hourly highlight to distinguish it from the original raw post
+            banner_sig = "highlight:" + link_router.deal_signature(best_post["deal_text"])
+
+            if db.already_posted(inf["id"], ch["id"], banner_sig):
+                per_ch[ch["id"]] = "already_highlighted"
+                continue
+
+            status = await dispatch_to_channel(inf, ch, banner)
+            db.record_post(inf["id"], ch["id"], banner_sig,
+                           status="posted" if status == "posted" else "failed",
+                           error="" if status == "posted" else status,
+                           deal_text=banner if status == "posted" else "")
+            per_ch[ch["id"]] = status
+        if per_ch:
+            results[inf["id"]] = per_ch
+    return results
 
 
 async def close() -> None:

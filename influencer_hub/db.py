@@ -143,6 +143,10 @@ def migrate() -> None:
             if col not in ch_cols:
                 con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
 
+        posts_cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
+        if "deal_text" not in posts_cols:
+            con.execute("ALTER TABLE posts ADD COLUMN deal_text TEXT NOT NULL DEFAULT ''")
+
         con.commit()
     finally:
         con.close()
@@ -669,16 +673,32 @@ def list_sources(kind: Optional[str] = None, active_only: bool = True) -> list[d
 # -------------------------------- posts --------------------------------
 
 def record_post(influencer_id: int, channel_id: int, deal_sig: str,
-                status: str = "queued", error: str = "") -> int:
+                status: str = "queued", error: str = "", deal_text: str = "") -> int:
     con = _connect()
     try:
+        # Check if deal_text column exists
         cur = con.execute(
-            "INSERT INTO posts (influencer_id, channel_id, deal_sig, status, error, posted_at) "
-            "VALUES (?,?,?,?,?,?)",
+            "INSERT INTO posts (influencer_id, channel_id, deal_sig, status, error, posted_at, deal_text) "
+            "VALUES (?,?,?,?,?,?,?)",
             (influencer_id, channel_id, deal_sig, status, error,
-             _now() if status == "posted" else None))
+             _now() if status == "posted" else None, deal_text))
         con.commit()
         return int(cur.lastrowid)
+    finally:
+        con.close()
+
+
+def get_recent_posted_deals(channel_id: int, hours: int = 1) -> list[dict]:
+    """Retrieve all deals posted to channel_id within the last N hours."""
+    con = _connect()
+    try:
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+        rows = con.execute(
+            "SELECT * FROM posts WHERE channel_id=? AND status='posted' AND posted_at >= ? "
+            "ORDER BY id DESC",
+            (channel_id, cutoff)).fetchall()
+        return [dict(r) for r in rows]
     finally:
         con.close()
 
