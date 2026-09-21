@@ -358,14 +358,23 @@ def onboard():
         return render_template("onboard.html", result=None)
     name = request.form.get("name", "").strip()
     tag = request.form.get("tag", "").strip()
+    phone = request.form.get("whatsapp", "").strip()
     handle = request.form.get("handle", "").strip()
     dummy = request.form.get("dummy") == "on"
-    tg = request.form.get("tg") == "on"
-    wa = request.form.get("wa") == "on"
-    if not (name and tag):
-        return render_template("onboard.html", result={"error": "name + Amazon tag required"})
-    iid = db.add_influencer(name, tag, handle=handle, use_dummy_sources=dummy,
-                            telegram_enabled=tg, whatsapp_enabled=wa)
+    tg = request.form.get("tg") in ("on", "1", "true")
+    wa = request.form.get("wa") in ("on", "1", "true")
+    allow_amz = request.form.get("allow_amazon") in ("1", "on", "true")
+    allow_ek = request.form.get("allow_earnkaro") in ("1", "on", "true")
+
+    if not name:
+        name = "Influencer-" + phone[-4:] if phone else "New Partner"
+    if not tag:
+        tag = "amzdeal-21"
+
+    iid = db.add_influencer(name, tag, handle=handle, phone_number=phone,
+                            use_dummy_sources=dummy, telegram_enabled=tg,
+                            whatsapp_enabled=wa, allow_amazon=allow_amz,
+                            allow_earnkaro=allow_ek)
     msgs = []
     # 3-channel auto setup for each influencer:
     # Channel 1: Amazon Approval Telegram channel (pure amazon.in + #ad disclosure)
