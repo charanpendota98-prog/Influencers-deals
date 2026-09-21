@@ -24,6 +24,7 @@ AMAZON_DOMAINS = {"amazon.in", "www.amazon.in", "amazon.com", "www.amazon.com"}
 # Amazon). Add more here as the deal pool grows.
 MERCHANT_DOMAINS = {
     "flipkart.com", "www.flipkart.com",
+    "shopsy.in", "www.shopsy.in",
     "myntra.com", "www.myntra.com",
     "ajio.com", "www.ajio.com",
     "nykaa.com", "www.nykaa.com",

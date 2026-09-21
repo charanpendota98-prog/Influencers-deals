@@ -70,9 +70,10 @@ def clean_merchant_url_for_api(url: str) -> str:
     p = urlparse(url)
     tracking_params = {
         "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
-        "affid", "aff_siteid", "clickid", "pid", "is_retargeting", "af_force_deeplink",
-        "af_dp", "product_name", "host_internal", "external_product_id", "product_id",
-        "ref", "tag", "cmpid", "src", "source", "subid", "subid1"
+        "affid", "aff_siteid", "affextparam1", "affextparam2", "clickid", "pid",
+        "is_retargeting", "af_force_deeplink", "af_dp", "product_name", "host_internal",
+        "external_product_id", "product_id", "ref", "tag", "cmpid", "mcn", "src",
+        "source", "subid", "subid1"
     }
     q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if k.lower() not in tracking_params]
     query_str = urlencode(q) if q else ""
