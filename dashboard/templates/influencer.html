@@ -102,6 +102,31 @@
       </select>
     </div>
 
+    <!-- TELEGRAM & WHATSAPP CUSTOM NAVIGATION BUTTON / PROMO BANNER -->
+    <div style="grid-column: 1 / -1; background:#1e1b4b; border:1px solid #6366f1; padding:14px; border-radius:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <label style="font-size: 13px; font-weight: 700; color:#c7d2fe; margin:0; display:flex; align-items:center; gap:8px;">
+          🔘 <b>Telegram / WhatsApp Post Navigation Button</b> (Grow Our Main Channel)
+        </label>
+        <label style="font-size:12px; color:#a5b4fc; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if inf.custom_button_enabled else '' }} /> Enable Navigation Button on Posts
+        </label>
+      </div>
+      <p class="hint" style="font-size:11px; margin-top:0; color:#94a3b8;">
+        ఇన్‌ఫ్లుయెన్సర్ పోస్ట్ క్రింద మన సొంత ఛానల్ బటన్ అమర్చవచ్చు! క్లిక్ చేయగానే యూజర్లు మన మెయిన్ ఛానల్‌కు నావిగేట్ అవుతారు.
+      </p>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:8px;">
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button Title / Label</label>
+          <input name="custom_button_text" value="{{ inf.custom_button_text or '' }}" placeholder="🔥 Join Our VIP Loot Deals" style="width:100%; font-size:12px;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Target Channel Invite Link / Username</label>
+          <input name="custom_button_url" value="{{ inf.custom_button_url or '' }}" placeholder="https://t.me/our_vip_deals or @our_deals" style="width:100%; font-size:12px; font-family:monospace;" />
+        </div>
+      </div>
+    </div>
+
     <!-- CATEGORIES EDIT (MULTI-CHECKBOX PICKER + SYNC) -->
     <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">

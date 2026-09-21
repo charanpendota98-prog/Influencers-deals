@@ -84,21 +84,38 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
     so WhatsApp accounts (which belong to the individual influencers) remain 100% safe
     and never get flagged for robotic spamming.
 
-    Multi-account support: Uses `channel['wa_session_key']` if set (e.g. secondary phone number),
-    otherwise defaults to the influencer's primary session `inf-{id}-wa`.
+    Telegram Navigation Button: If custom_button_enabled is True on channel or influencer,
+    attaches an inline navigation button underneath the post directing users to our main channel.
     """
     platform = channel["platform"]
     try:
         if platform == "telegram":
-            await telegram_ops.post_to_channel(channel["identifier"], text)
-        elif platform in ("whatsapp_group", "whatsapp_channel"):
+            # Check custom navigation button
+            btn_enabled = bool(channel.get("custom_button_enabled") or influencer.get("custom_button_enabled"))
+            btn_text = channel.get("custom_button_text") or influencer.get("custom_button_text") or "🔥 Join Main Deals Channel"
+            btn_url = channel.get("custom_button_url") or influencer.get("custom_button_url") or ""
+
+            if btn_enabled and btn_url:
+                await telegram_ops.post_to_channel(channel["identifier"], text,
+                                                    button_text=btn_text, button_url=btn_url)
+            else:
+                await telegram_ops.post_to_channel(channel["identifier"], text)
+        elif platform in ("whatsapp", "whatsapp_group", "whatsapp_channel"):
             # Support separate WA session per channel if configured, else default influencer session
             key = channel.get("wa_session_key") or WA_SESSION_KEY(influencer["id"])
+
+            # If custom navigation link is enabled, we can append a clean text footer to WhatsApp posts
+            wa_text = text
+            btn_enabled = bool(channel.get("custom_button_enabled") or influencer.get("custom_button_enabled"))
+            btn_text = channel.get("custom_button_text") or influencer.get("custom_button_text") or "Join Our Deals Channel"
+            btn_url = channel.get("custom_button_url") or influencer.get("custom_button_url") or ""
+            if btn_enabled and btn_url and btn_url not in wa_text:
+                wa_text = f"{text}\n\n👉 {btn_text}: {btn_url}"
 
             # Apply 45-65s gap + 120-150s hourly safety pacing
             await apply_whatsapp_safety_pacing(key)
 
-            await whatsapp_client.send_text(key, channel["identifier"], text)
+            await whatsapp_client.send_text(key, channel["identifier"], wa_text)
         else:
             return "skipped"
         return "posted"

@@ -121,6 +121,9 @@ def migrate() -> None:
             ("only_amazon", "INTEGER NOT NULL DEFAULT 0"),
             ("allow_amazon", "INTEGER NOT NULL DEFAULT 1"),
             ("allow_earnkaro", "INTEGER NOT NULL DEFAULT 1"),
+            ("custom_button_enabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("custom_button_text", "TEXT NOT NULL DEFAULT ''"),
+            ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in inf_cols:
                 con.execute(f"ALTER TABLE influencers ADD COLUMN {col} {ddl}")
@@ -139,6 +142,9 @@ def migrate() -> None:
             ("only_amazon", "INTEGER NOT NULL DEFAULT 0"),
             ("allow_amazon", "INTEGER NOT NULL DEFAULT 1"),
             ("allow_earnkaro", "INTEGER NOT NULL DEFAULT 1"),
+            ("custom_button_enabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("custom_button_text", "TEXT NOT NULL DEFAULT ''"),
+            ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
                 con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
@@ -191,6 +197,9 @@ def update_influencer(influencer_id: int, name: str | None = None,
                       bitly_api_key: str | None = None, categories: str | None = None,
                       posting_schedule: str | None = None, only_amazon: bool | None = None,
                       allow_amazon: bool | None = None, allow_earnkaro: bool | None = None,
+                      custom_button_enabled: bool | None = None,
+                      custom_button_text: str | None = None,
+                      custom_button_url: str | None = None,
                       notes: str | None = None, active: bool | None = None) -> None:
     con = _connect()
     try:
@@ -235,6 +244,15 @@ def update_influencer(influencer_id: int, name: str | None = None,
         if allow_earnkaro is not None:
             updates.append("allow_earnkaro=?")
             params.append(1 if allow_earnkaro else 0)
+        if custom_button_enabled is not None:
+            updates.append("custom_button_enabled=?")
+            params.append(1 if custom_button_enabled else 0)
+        if custom_button_text is not None:
+            updates.append("custom_button_text=?")
+            params.append(custom_button_text.strip())
+        if custom_button_url is not None:
+            updates.append("custom_button_url=?")
+            params.append(custom_button_url.strip())
         if notes is not None:
             updates.append("notes=?")
             params.append(notes.strip())
@@ -350,7 +368,10 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            posting_schedule: str | None = None,
                            only_amazon: bool | None = None,
                            allow_amazon: bool | None = None,
-                           allow_earnkaro: bool | None = None) -> None:
+                           allow_earnkaro: bool | None = None,
+                           custom_button_enabled: bool | None = None,
+                           custom_button_text: str | None = None,
+                           custom_button_url: str | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -400,6 +421,15 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if allow_earnkaro is not None:
             updates.append("allow_earnkaro=?")
             params.append(1 if allow_earnkaro else 0)
+        if custom_button_enabled is not None:
+            updates.append("custom_button_enabled=?")
+            params.append(1 if custom_button_enabled else 0)
+        if custom_button_text is not None:
+            updates.append("custom_button_text=?")
+            params.append(custom_button_text.strip())
+        if custom_button_url is not None:
+            updates.append("custom_button_url=?")
+            params.append(custom_button_url.strip())
         if updates:
             params.append(channel_id)
             con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)
@@ -476,40 +506,6 @@ def delete_influencer(influencer_id: int) -> None:
     try:
         con.execute("DELETE FROM influencers WHERE id=?", (influencer_id,))
         con.commit()
-    finally:
-        con.close()
-
-
-def update_influencer(influencer_id: int, name: str | None = None,
-                      amazon_tag: str | None = None, handle: str | None = None,
-                      insta_id: str | None = None, notes: str | None = None,
-                      active: bool | None = None) -> None:
-    con = _connect()
-    try:
-        updates = []
-        params = []
-        if name is not None:
-            updates.append("name=?")
-            params.append(name.strip())
-        if amazon_tag is not None:
-            updates.append("amazon_tag=?")
-            params.append(amazon_tag.strip())
-        if handle is not None:
-            updates.append("handle=?")
-            params.append(handle.strip())
-        if insta_id is not None:
-            updates.append("insta_id=?")
-            params.append(insta_id.strip())
-        if notes is not None:
-            updates.append("notes=?")
-            params.append(notes.strip())
-        if active is not None:
-            updates.append("active=?")
-            params.append(1 if active else 0)
-        if updates:
-            params.append(influencer_id)
-            con.execute(f"UPDATE influencers SET {', '.join(updates)} WHERE id=?", params)
-            con.commit()
     finally:
         con.close()
 

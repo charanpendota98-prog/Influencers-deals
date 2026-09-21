@@ -159,6 +159,11 @@ def update_profile(inf_id):
     active_str = request.form.get("active")
     active = (active_str == "1") if active_str is not None else None
 
+    # Custom navigation button fields
+    btn_enabled = request.form.get("custom_button_enabled") == "1"
+    btn_text = request.form.get("custom_button_text", "").strip()
+    btn_url = request.form.get("custom_button_url", "").strip()
+
     # If user explicitly selected only_amazon=1, sync allow_earnkaro=0
     if only_amazon:
         allow_earnkaro = False
@@ -178,6 +183,9 @@ def update_profile(inf_id):
         only_amazon=only_amazon,
         allow_amazon=allow_amazon,
         allow_earnkaro=allow_earnkaro,
+        custom_button_enabled=btn_enabled,
+        custom_button_text=btn_text,
+        custom_button_url=btn_url,
         notes=notes if notes else None,
         active=active,
     )
@@ -203,6 +211,12 @@ def update_channel_route(channel_id):
     allow_ek_str = request.form.get("allow_earnkaro")
     allow_ek = (allow_ek_str == "1") if allow_ek_str is not None else None
 
+    # Custom button fields per channel
+    btn_en_str = request.form.get("custom_button_enabled")
+    btn_en = (btn_en_str == "1") if btn_en_str is not None else None
+    btn_text = request.form.get("custom_button_text")
+    btn_url = request.form.get("custom_button_url")
+
     # If only_amazon is explicitly toggled on, sync allow_earnkaro=False
     if only_amz:
         allow_ek = False
@@ -225,6 +239,9 @@ def update_channel_route(channel_id):
         only_amazon=only_amz,
         allow_amazon=allow_amz,
         allow_earnkaro=allow_ek,
+        custom_button_enabled=btn_en,
+        custom_button_text=btn_text,
+        custom_button_url=btn_url,
     )
     if inf_id:
         return redirect(url_for("influencer_detail", inf_id=int(inf_id)))

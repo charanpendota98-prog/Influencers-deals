@@ -81,15 +81,23 @@ async def create_channel_for_influencer(influencer_id: int, title: str,
     return {"identifier": ident, "invite": invite, "admin_granted": admin_granted, "role": role}
 
 
-async def post_to_channel(identifier: str, text: str, media_path: str | None = None) -> None:
+async def post_to_channel(identifier: str, text: str, media_path: str | None = None,
+                          button_text: str | None = None, button_url: str | None = None) -> None:
     client = _client()
     if not client.is_connected():
         await client.connect()
     entity = await client.get_input_entity(identifier)
+
+    # Build inline URL buttons if configured
+    buttons = None
+    if button_text and button_url:
+        from telethon import Button
+        buttons = [Button.url(button_text.strip(), button_url.strip())]
+
     if media_path:
-        await client.send_file(entity, media_path, caption=text)
+        await client.send_file(entity, media_path, caption=text, buttons=buttons)
     else:
-        await client.send_message(entity, text)
+        await client.send_message(entity, text, buttons=buttons)
 
 
 async def disconnect() -> None:
