@@ -45,7 +45,8 @@ class _FakeSession:
 def test_convert_links_uses_bearer_and_body():
     ek.CACHE.clear()
     fake = _FakeSession()
-    with patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=fake):
+    with patch("influencer_hub.earnkaro.config.EARNKARO_API_KEY", "dummy-jwt-key"), \
+         patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=fake):
         out = asyncio.run(ek.convert_links({"https://www.flipkart.com/p/itm1"}))
     assert out == {"https://www.flipkart.com/p/itm1": "https://ekaro.in/AbC123"}
     assert len(fake.calls) == 1
@@ -60,7 +61,8 @@ def test_convert_links_failure_falls_back():
     ek.CACHE.clear()
     fake = _FakeSession()
     fake.post = lambda *a, **k: _FakeResp(200, '{"success": 0, "data": "x"}')
-    with patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=fake):
+    with patch("influencer_hub.earnkaro.config.EARNKARO_API_KEY", "dummy-jwt-key"), \
+         patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=fake):
         out = asyncio.run(ek.convert_links({"https://www.flipkart.com/p/itm2"}))
     # Fallback keeps the original link so the deal still posts.
     assert out == {"https://www.flipkart.com/p/itm2": "https://www.flipkart.com/p/itm2"}

@@ -56,7 +56,9 @@ def test_short_link_accepted_when_pubid_matches():
     fake = _FakeSessionFull(
         ek_body='{"success": 1, "data": "https://fktr.in/ORooMq5"}',
         resolved_url="https://www.flipkart.com/p/itm?pid=X&affExtParam2=5478322")
-    with patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=fake):
+    with patch("influencer_hub.earnkaro.config.EARNKARO_API_KEY", "dummy-jwt-key"), \
+         patch("influencer_hub.earnkaro.config.EARNKARO_PUBLISHER_ID", "5478322"), \
+         patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=fake):
         out = asyncio.run(ek.convert_links({"https://www.flipkart.com/p/itmA"}))
     assert out == {"https://www.flipkart.com/p/itmA": "https://fktr.in/ORooMq5"}
 
@@ -66,7 +68,9 @@ def test_short_link_rejected_when_pubid_mismatch():
     fake = _FakeSessionFull(
         ek_body='{"success": 1, "data": "https://fktr.in/ORooMq5"}',
         resolved_url="https://www.flipkart.com/p/itm?pid=X&affExtParam2=999")
-    with patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=fake):
+    with patch("influencer_hub.earnkaro.config.EARNKARO_API_KEY", "dummy-jwt-key"), \
+         patch("influencer_hub.earnkaro.config.EARNKARO_PUBLISHER_ID", "5478322"), \
+         patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=fake):
         out = asyncio.run(ek.convert_links({"https://www.flipkart.com/p/itmA"}))
     # Mismatch -> refuse the short link, keep the original (no commission leak).
     assert out == {"https://www.flipkart.com/p/itmA": "https://www.flipkart.com/p/itmA"}
