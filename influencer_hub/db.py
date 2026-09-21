@@ -119,6 +119,8 @@ def migrate() -> None:
             ("categories", "TEXT NOT NULL DEFAULT ''"),
             ("posting_schedule", "TEXT NOT NULL DEFAULT ''"),
             ("only_amazon", "INTEGER NOT NULL DEFAULT 0"),
+            ("allow_amazon", "INTEGER NOT NULL DEFAULT 1"),
+            ("allow_earnkaro", "INTEGER NOT NULL DEFAULT 1"),
         ):
             if col not in inf_cols:
                 con.execute(f"ALTER TABLE influencers ADD COLUMN {col} {ddl}")
@@ -135,6 +137,8 @@ def migrate() -> None:
             ("categories", "TEXT NOT NULL DEFAULT ''"),
             ("posting_schedule", "TEXT NOT NULL DEFAULT ''"),
             ("only_amazon", "INTEGER NOT NULL DEFAULT 0"),
+            ("allow_amazon", "INTEGER NOT NULL DEFAULT 1"),
+            ("allow_earnkaro", "INTEGER NOT NULL DEFAULT 1"),
         ):
             if col not in ch_cols:
                 con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
@@ -156,17 +160,19 @@ def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = ""
                    insta_id: str = "", phone_number: str = "",
                    price_filter: str = "all", allowed_sources: str = "",
                    bitly_api_key: str = "", categories: str = "",
-                   posting_schedule: str = "", only_amazon: bool = False) -> int:
+                   posting_schedule: str = "", only_amazon: bool = False,
+                   allow_amazon: bool = True, allow_earnkaro: bool = True) -> int:
     con = _connect()
     try:
         cur = con.execute(
             "INSERT INTO influencers "
-            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), handle.strip(), amazon_tag.strip(), notes.strip(), 1 if use_dummy_sources else 0,
              1 if telegram_enabled else 0, 1 if whatsapp_enabled else 0, insta_id.strip(),
              phone_number.strip(), price_filter.strip() or "all", allowed_sources.strip(), bitly_api_key.strip(),
-             categories.strip(), posting_schedule.strip(), 1 if only_amazon else 0),
+             categories.strip(), posting_schedule.strip(), 1 if only_amazon else 0,
+             1 if allow_amazon else 0, 1 if allow_earnkaro else 0),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -180,6 +186,7 @@ def update_influencer(influencer_id: int, name: str | None = None,
                       price_filter: str | None = None, allowed_sources: str | None = None,
                       bitly_api_key: str | None = None, categories: str | None = None,
                       posting_schedule: str | None = None, only_amazon: bool | None = None,
+                      allow_amazon: bool | None = None, allow_earnkaro: bool | None = None,
                       notes: str | None = None, active: bool | None = None) -> None:
     con = _connect()
     try:
@@ -218,6 +225,12 @@ def update_influencer(influencer_id: int, name: str | None = None,
         if only_amazon is not None:
             updates.append("only_amazon=?")
             params.append(1 if only_amazon else 0)
+        if allow_amazon is not None:
+            updates.append("allow_amazon=?")
+            params.append(1 if allow_amazon else 0)
+        if allow_earnkaro is not None:
+            updates.append("allow_earnkaro=?")
+            params.append(1 if allow_earnkaro else 0)
         if notes is not None:
             updates.append("notes=?")
             params.append(notes.strip())
@@ -301,16 +314,18 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 bitly_api_key: str = "",
                 categories: str = "",
                 posting_schedule: str = "",
-                only_amazon: bool = False) -> int:
+                only_amazon: bool = False,
+                allow_amazon: bool = True,
+                allow_earnkaro: bool = True) -> int:
     con = _connect()
     try:
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
              amazon_override_tag.strip(), 1 if strip_amazon else 0, price_filter.strip(), allowed_sources.strip(),
              wa_session_key.strip(), bitly_api_key.strip(), categories.strip(), posting_schedule.strip(),
-             1 if only_amazon else 0),
+             1 if only_amazon else 0, 1 if allow_amazon else 0, 1 if allow_earnkaro else 0),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -329,7 +344,9 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            bitly_api_key: str | None = None,
                            categories: str | None = None,
                            posting_schedule: str | None = None,
-                           only_amazon: bool | None = None) -> None:
+                           only_amazon: bool | None = None,
+                           allow_amazon: bool | None = None,
+                           allow_earnkaro: bool | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -373,6 +390,12 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if only_amazon is not None:
             updates.append("only_amazon=?")
             params.append(1 if only_amazon else 0)
+        if allow_amazon is not None:
+            updates.append("allow_amazon=?")
+            params.append(1 if allow_amazon else 0)
+        if allow_earnkaro is not None:
+            updates.append("allow_earnkaro=?")
+            params.append(1 if allow_earnkaro else 0)
         if updates:
             params.append(channel_id)
             con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)

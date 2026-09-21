@@ -44,8 +44,9 @@
       <input name="phone_number" value="{{ inf.phone_number or '' }}" placeholder="919876543210" style="width: 100%; font-family:monospace;" />
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Amazon Associate Tag</label>
-      <input name="amazon_tag" value="{{ inf.amazon_tag }}" required style="width: 100%; font-family: monospace;" />
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Amazon Associate Tag * (Instant Live Update)</label>
+      <input name="amazon_tag" value="{{ inf.amazon_tag }}" required style="width: 100%; font-family: monospace; font-weight:bold; color:#fbbf24; background:#070d18;" />
+      <span class="hint" style="font-size:10px;">Vere Amazon Tag update cheste ventsne fresh deals anni aa new tag tho post avthayi!</span>
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">📸 Instagram ID</label>
@@ -59,10 +60,18 @@
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🛡️ EarnKaro Monetisation &amp; Only Amazon Toggle</label>
       <select name="only_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px;">
-        <option value="0" {{ 'selected' if not inf.only_amazon else '' }}>💰 ALL DEALS: Amazon + EarnKaro (Flipkart/Myntra Commission ON)</option>
-        <option value="1" {{ 'selected' if inf.only_amazon else '' }}>🛡️ ONLY AMAZON: Kevalam Amazon Mathrame (EarnKaro OFF - Initial Trust Phase)</option>
+        <option value="0" {{ 'selected' if not inf.only_amazon else '' }}>💰 ALL DEALS: Amazon + EarnKaro (EarnKaro Commission ON)</option>
+        <option value="1" {{ 'selected' if inf.only_amazon else '' }}>🛡️ ONLY AMAZON: Kevalam Amazon (EarnKaro OFF - Initial Trust Phase)</option>
       </select>
       <span class="hint" style="font-size:10px; color:#93c5fd;">First few days only_amazon ON petti, tarvatha EarnKaro ON cheyochu!</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">📦 Amazon Deals Switch (Post Amazon Deals)</label>
+      <select name="allow_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px;">
+        <option value="1" {{ 'selected' if inf.allow_amazon != 0 else '' }}>🟢 YES: Post Amazon Deals (with their tag)</option>
+        <option value="0" {{ 'selected' if inf.allow_amazon == 0 else '' }}>🔴 NO: Stop Amazon Deals (Amazon OFF)</option>
+      </select>
+      <span class="hint" style="font-size:10px; color:#86efac;">Amazon deals kooda vaddu anukunte ikkada NO pettachu!</span>
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📡 Allowed Deal Sources (Comma-Separated)</label>

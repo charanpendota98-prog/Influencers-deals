@@ -187,16 +187,29 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 6. Only Amazon Toggle: If influencer or channel has 'only_amazon' turned ON,
-            # then non-Amazon merchant deals must NOT be posted!
+            # 6. Ultra-Smart Granular Merchant Toggles (allow_amazon & allow_earnkaro / only_amazon):
+            # Rule A: If allow_amazon is OFF (or strip_amazon is active), do NOT post Amazon deals
+            allow_amz = bool(ch.get("allow_amazon", 1) and inf.get("allow_amazon", 1))
+            # Rule B: If allow_earnkaro is OFF (or only_amazon is active), do NOT post non-Amazon merchant deals
+            allow_ek = bool(ch.get("allow_earnkaro", 1) and inf.get("allow_earnkaro", 1))
             only_amz = bool(ch.get("only_amazon", 0) or inf.get("only_amazon", 0))
-            if only_amz and not link_router.has_amazon_link(deal_text):
+
+            has_amz = link_router.has_amazon_link(deal_text)
+            has_merchant = any(link_router.classify_url(u) == "merchant" for u in link_router.find_urls(deal_text))
+
+            # If deal is strictly non-Amazon (Flipkart/Myntra/etc) and EarnKaro is disabled (or only_amazon is enabled):
+            if (not allow_ek or only_amz) and not has_amz:
+                per_channel[ch["id"]] = "skipped"
+                continue
+
+            # If deal is strictly Amazon and Amazon deals are disabled on this channel/influencer:
+            if not allow_amz and not has_merchant:
                 per_channel[ch["id"]] = "skipped"
                 continue
 
             # 7. If strip_amazon is active on this channel, and deal has ONLY Amazon links,
             # skip it because nothing remains to post.
-            if strip_amz and not any(link_router.classify_url(u) == "merchant" for u in link_router.find_urls(deal_text)):
+            if strip_amz and not has_merchant:
                 per_channel[ch["id"]] = "skipped"
                 continue
 

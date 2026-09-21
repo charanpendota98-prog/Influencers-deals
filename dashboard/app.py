@@ -146,9 +146,15 @@ def update_profile(inf_id):
     schedule_list = request.form.getlist("posting_schedule")
     schedule = ",".join(s.strip() for s in schedule_list if s.strip()) or request.form.get("custom_schedule", "").strip()
     only_amazon = request.form.get("only_amazon") == "1"
+    allow_amazon = request.form.get("allow_amazon", "1") == "1"
+    allow_earnkaro = request.form.get("allow_earnkaro", "1") == "1"
     notes = request.form.get("notes", "").strip()
     active_str = request.form.get("active")
     active = (active_str == "1") if active_str is not None else None
+
+    # If user explicitly selected only_amazon=1, sync allow_earnkaro=0
+    if only_amazon:
+        allow_earnkaro = False
 
     db.update_influencer(
         inf_id,
@@ -163,6 +169,8 @@ def update_profile(inf_id):
         categories=categories if categories is not None else None,
         posting_schedule=schedule if schedule is not None else None,
         only_amazon=only_amazon,
+        allow_amazon=allow_amazon,
+        allow_earnkaro=allow_earnkaro,
         notes=notes if notes else None,
         active=active,
     )
