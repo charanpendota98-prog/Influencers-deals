@@ -191,6 +191,14 @@ def update_channel_route(channel_id):
     schedule = request.form.get("posting_schedule", "").strip()
     only_amz = request.form.get("only_amazon") == "1"
     strip_amz = request.form.get("strip_amazon") == "1"
+    allow_amz_str = request.form.get("allow_amazon")
+    allow_amz = (allow_amz_str == "1") if allow_amz_str is not None else None
+    allow_ek_str = request.form.get("allow_earnkaro")
+    allow_ek = (allow_ek_str == "1") if allow_ek_str is not None else None
+
+    # If only_amazon is explicitly toggled on, sync allow_earnkaro=False
+    if only_amz:
+        allow_ek = False
 
     if ident:
         ident = clean_identifier(ident) if not ident.startswith("120") else ident
@@ -208,6 +216,8 @@ def update_channel_route(channel_id):
         categories=categories,
         posting_schedule=schedule,
         only_amazon=only_amz,
+        allow_amazon=allow_amz,
+        allow_earnkaro=allow_ek,
     )
     if inf_id:
         return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
@@ -229,6 +239,10 @@ def add_manual_channel(inf_id):
     schedule = request.form.get("posting_schedule", "").strip()
     only_amz = request.form.get("only_amazon") == "1"
     strip_amz = request.form.get("strip_amazon") == "1"
+    allow_amz = request.form.get("allow_amazon", "1") == "1"
+    allow_ek = request.form.get("allow_earnkaro", "1") == "1"
+    if only_amz:
+        allow_ek = False
 
     if raw_ident:
         ident = clean_identifier(raw_ident) if platform == "telegram" else raw_ident
@@ -248,6 +262,8 @@ def add_manual_channel(inf_id):
             categories=categories,
             posting_schedule=schedule,
             only_amazon=only_amz,
+            allow_amazon=allow_amz,
+            allow_earnkaro=allow_ek,
         )
 
     return redirect(url_for("influencer_detail", inf_id=inf_id))
