@@ -353,15 +353,21 @@ def clean_source_post(text: str) -> str:
             cleaned_lines.append("")
             continue
 
-        # Check if line is purely an invite/telegram link
-        pure_tg = re.match(r"^(?:https?://)?(?:t\.me|telegram\.me|chat\.whatsapp\.com)/\S+$", stripped, re.I)
-        if pure_tg:
-            continue
+        urls = find_urls(stripped)
+        has_store_url = any(classify_url(u) in ("amazon", "merchant") for u in urls)
 
-        # Check if line is a generic promo line
-        promo_match = re.search(r"(?i)^\s*(?:join|subscribe|follow|join channel|join fast|share with friends|for more deals|more offers at)\b.*", stripped)
-        if promo_match and not find_urls(stripped):
-            continue
+        if not has_store_url:
+            # 1. Pure Telegram or WhatsApp invite links
+            if re.search(r"https?://(?:t\.me|telegram\.me|chat\.whatsapp\.com)/\S+", stripped, re.I):
+                continue
+
+            # 2. Promotional text banners / watermarks
+            if re.search(r"(?i)^\s*(?:join|subscribe|follow|join channel|join fast|share with friends|for more|posted by|credit|powered by|loot alert by)\b", stripped):
+                continue
+
+            # 3. Pure channel handles
+            if re.match(r"^@(?:[a-zA-Z0-9_]{3,30})$", stripped):
+                continue
 
         # Line might have product name or price + an @handle or promo at the end.
         # Strip out telegram handles/links from the line while keeping product name and valid store urls.
