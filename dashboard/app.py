@@ -90,8 +90,11 @@ def quick_add():
     whatsapp_id = request.form.get("whatsapp_id", "").strip()
     strip_amz_all = request.form.get("strip_amazon_broadcast") == "1"
 
-    if not name or not tag:
-        return redirect(url_for("index"))
+    # Fallback to defaults so form never fails silently if minor details missed
+    if not name:
+        name = "Influencer-" + phone[-4:] if phone else "New Partner"
+    if not tag:
+        tag = "amzdeal-21"
 
     iid = db.add_influencer(name, tag, handle=handle, insta_id=insta,
                             phone_number=phone, price_filter=price_filt,
