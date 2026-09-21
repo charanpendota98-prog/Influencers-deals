@@ -84,6 +84,10 @@ def quick_add():
     schedule_list = request.form.getlist("posting_schedule")
     schedule = ",".join(s.strip() for s in schedule_list if s.strip()) or request.form.get("custom_schedule", "").strip()
     only_amazon = request.form.get("only_amazon") == "1"
+    allow_amazon = request.form.get("allow_amazon", "1") == "1"
+    allow_earnkaro = request.form.get("allow_earnkaro", "1") == "1"
+    if only_amazon:
+        allow_earnkaro = False
 
     approval_tg = request.form.get("approval_tg", "").strip()
     broadcast_tg = request.form.get("broadcast_tg", "").strip()
@@ -100,14 +104,15 @@ def quick_add():
                             phone_number=phone, price_filter=price_filt,
                             allowed_sources=allowed_src, bitly_api_key=bitly_key,
                             categories=categories, posting_schedule=schedule,
-                            only_amazon=only_amazon)
+                            only_amazon=only_amazon, allow_amazon=allow_amazon,
+                            allow_earnkaro=allow_earnkaro)
 
     # 1. Approval Channel
     if approval_tg:
         ident = clean_identifier(approval_tg)
         db.add_channel(iid, "telegram", ident, role="approval", status="ready",
                        allowed_sources=allowed_src, categories=categories, posting_schedule=schedule,
-                       only_amazon=True)
+                       only_amazon=True, allow_amazon=True, allow_earnkaro=False)
 
     # 2. Broadcast Channel
     if broadcast_tg:
@@ -117,7 +122,8 @@ def quick_add():
                        price_filter=price_filt if price_filt != "all" else "",
                        allowed_sources=allowed_src, bitly_api_key=bitly_key,
                        categories=categories, posting_schedule=schedule,
-                       only_amazon=only_amazon)
+                       only_amazon=only_amazon, allow_amazon=allow_amazon,
+                       allow_earnkaro=allow_earnkaro)
 
     # 3. WhatsApp Channel/Group
     if whatsapp_id:
@@ -126,7 +132,8 @@ def quick_add():
                        price_filter=price_filt if price_filt != "all" else "",
                        allowed_sources=allowed_src, bitly_api_key=bitly_key,
                        categories=categories, posting_schedule=schedule,
-                       only_amazon=only_amazon)
+                       only_amazon=only_amazon, allow_amazon=allow_amazon,
+                       allow_earnkaro=allow_earnkaro)
 
     return redirect(url_for("influencer_detail", inf_id=iid))
 

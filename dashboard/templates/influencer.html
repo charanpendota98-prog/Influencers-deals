@@ -64,20 +64,20 @@
       <span class="hint" style="font-size:11px;">Multiple keys supported with automatic failover</span>
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🛡️ EarnKaro Monetisation &amp; Only Amazon Toggle</label>
-      <select name="only_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px;">
-        <option value="0" {{ 'selected' if not inf.only_amazon else '' }}>💰 ALL DEALS: Amazon + EarnKaro (EarnKaro Commission ON)</option>
-        <option value="1" {{ 'selected' if inf.only_amazon else '' }}>🛡️ ONLY AMAZON: Kevalam Amazon (EarnKaro OFF - Initial Trust Phase)</option>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">📦 Amazon Deals Switch (Toggle Amazon)</label>
+      <select name="allow_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px; background:#0c1a14; border:1px solid #16a34a; color:#86efac;">
+        <option value="1" {{ 'selected' if inf.allow_amazon != 0 else '' }}>🟢 AMAZON ON: Post Amazon Deals (with their tag)</option>
+        <option value="0" {{ 'selected' if inf.allow_amazon == 0 else '' }}>🔴 AMAZON OFF: Stop Amazon Deals (No Amazon Posts)</option>
       </select>
-      <span class="hint" style="font-size:10px; color:#93c5fd;">First few days only_amazon ON petti, tarvatha EarnKaro ON cheyochu!</span>
+      <span class="hint" style="font-size:10px; color:#86efac;">Amazon deals post avvala vadda anedi ee toggle tho instant ga control cheyachu.</span>
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">📦 Amazon Deals Switch (Post Amazon Deals)</label>
-      <select name="allow_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px;">
-        <option value="1" {{ 'selected' if inf.allow_amazon != 0 else '' }}>🟢 YES: Post Amazon Deals (with their tag)</option>
-        <option value="0" {{ 'selected' if inf.allow_amazon == 0 else '' }}>🔴 NO: Stop Amazon Deals (Amazon OFF)</option>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">💰 EarnKaro Deals Switch (Toggle EarnKaro Commission)</label>
+      <select name="allow_earnkaro" style="width: 100%; font-weight:bold; font-size:13px; padding:6px; background:#1c1917; border:1px solid #d97706; color:#fde68a;">
+        <option value="1" {{ 'selected' if inf.allow_earnkaro != 0 and not inf.only_amazon else '' }}>🟢 EARNKARO ON: Post Flipkart/Myntra (Our Commission ON)</option>
+        <option value="0" {{ 'selected' if inf.allow_earnkaro == 0 or inf.only_amazon else '' }}>🔴 EARNKARO OFF: No Non-Amazon / EarnKaro (Trust Phase)</option>
       </select>
-      <span class="hint" style="font-size:10px; color:#86efac;">Amazon deals kooda vaddu anukunte ikkada NO pettachu!</span>
+      <span class="hint" style="font-size:10px; color:#fde68a;">Off cheste kevalam Amazon veltundi. On cheste mana EarnKaro links veltayi!</span>
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📡 Allowed Deal Sources (Comma-Separated)</label>
@@ -233,11 +233,11 @@
           </td>
           <td>
             <div>
-              <label style="display: block; cursor: pointer; color: #fbbf24; font-weight: 600; font-size: 11px;">
-                <input type="checkbox" name="only_amazon" value="1" {{ 'checked' if c.only_amazon else '' }} /> 🛡️ Only Amazon
+              <label style="display: block; cursor: pointer; color: #86efac; font-weight: 600; font-size: 11px;">
+                <input type="checkbox" name="allow_amazon" value="1" {{ 'checked' if c.allow_amazon != 0 else '' }} /> 📦 Amazon ON
               </label>
-              <label style="display: block; cursor: pointer; color: #f87171; font-weight: 600; font-size: 11px; margin-top:2px;">
-                <input type="checkbox" name="strip_amazon" value="1" {{ 'checked' if c.strip_amazon else '' }} /> 🚫 Strip Amazon
+              <label style="display: block; cursor: pointer; color: #fde68a; font-weight: 600; font-size: 11px; margin-top:2px;">
+                <input type="checkbox" name="allow_earnkaro" value="1" {{ 'checked' if (c.allow_earnkaro != 0 and not c.only_amazon) else '' }} /> 💰 EarnKaro ON
               </label>
               <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt Tag" style="font-size: 11px; padding: 3px 5px; width: 100px; margin-top: 3px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
             </div>
@@ -290,11 +290,11 @@
         <option value="under_999">🏷️ Under ₹999 Only</option>
         <option value="all">All Deals</option>
       </select>
-      <label style="font-size: 12px; font-weight: 600; color: #fbbf24; cursor: pointer; display: flex; align-items: center; gap: 5px;">
-        <input type="checkbox" name="only_amazon" value="1" /> 🛡️ Only Amazon
+      <label style="font-size: 12px; font-weight: 600; color: #86efac; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        <input type="checkbox" name="allow_amazon" value="1" checked /> 📦 Amazon ON
       </label>
-      <label style="font-size: 12px; font-weight: 600; color: #f87171; cursor: pointer; display: flex; align-items: center; gap: 5px;">
-        <input type="checkbox" name="strip_amazon" value="1" /> 🚫 Strip Amazon
+      <label style="font-size: 12px; font-weight: 600; color: #fde68a; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        <input type="checkbox" name="allow_earnkaro" value="1" checked /> 💰 EarnKaro ON
       </label>
       <input name="allowed_sources" placeholder="Source (e.g. powerloot)" style="font-size: 12px; width: 140px;" title="Restrict this channel to a specific deal source" />
       <button type="submit" style="background: #2563eb; color: white;">Connect Channel</button>
