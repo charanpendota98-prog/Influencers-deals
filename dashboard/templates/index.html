@@ -1,35 +1,67 @@
 {% extends "layout.html" %}
-{% block title %}Influencers Hub - Clean &amp; Advanced{% endblock %}
+{% block title %}Influencers Hub - India's Top-Tier Deals Platform{% endblock %}
 {% block content %}
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap:wrap; gap:12px;">
   <div>
-    <h1 style="margin:0; font-size: 26px;">⚡ Influencer Deals Hub</h1>
-    <p class="hint" style="margin-top:4px;">Multi-Influencer Loot Deals Network · High Performance &amp; Easy 3-Channel Control</p>
+    <h1 style="margin:0; font-size: 26px; display:flex; align-items:center; gap:8px;">
+      ⚡ Influencer Deals Command Center
+      <span style="font-size:12px; background:#1e3a8a; color:#93c5fd; padding:3px 10px; border-radius:20px; font-weight:700;">PRO v3.5</span>
+    </h1>
+    <p class="hint" style="margin-top:4px;">Multi-Influencer Automated Affiliate Distribution · 3-Channel Isolation · Smart Anti-Ban Pacing · Category Routing</p>
   </div>
   <div style="display:flex; gap:10px;">
-    <a class="btn" style="background:#10b981; color:white; padding:10px 18px; border-radius:8px; font-weight:700; text-decoration:none;" href="{{ url_for('onboard') }}">✨ Self-Serve Link</a>
+    <a class="btn" style="background:#10b981; color:white; padding:10px 18px; border-radius:8px; font-weight:700; text-decoration:none;" href="{{ url_for('onboard') }}">✨ Influencer Self-Onboard Link</a>
   </div>
 </div>
+
+<!-- LIVE METRICS -->
+<section class="card" style="padding:16px; background:#0f172a; border-color:#1e3a8a;">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
+        <span style="color:#94a3b8; font-size:12px; display:block;">TOTAL INFLUENCERS</span>
+        <b style="color:#fff; font-size:18px;">{{ influencers|length }} Active</b>
+      </div>
+      <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
+        <span style="color:#94a3b8; font-size:12px; display:block;">POSTED DEALS</span>
+        <b style="color:#34d399; font-size:18px;">{{ stats.posted }} Deals</b>
+      </div>
+      <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
+        <span style="color:#94a3b8; font-size:12px; display:block;">SKIPPED (DEDUP/SCHEDULE)</span>
+        <b style="color:#93c5fd; font-size:18px;">{{ stats.skipped }} Deals</b>
+      </div>
+      <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
+        <span style="color:#94a3b8; font-size:12px; display:block;">EARNKARO PUBLISHER</span>
+        <code style="color:#fbbf24; font-size:14px; font-weight:bold;">5478322 (LOCKED)</code>
+      </div>
+    </div>
+    {% if vm %}
+      <div style="font-size:12px; color:#94a3b8; text-align:right;">
+        CPU: <b style="color:#fff;">{{ vm.cpu_pct }}%</b> | RAM: <b style="color:#fff;">{{ vm.mem_pct }}%</b> | Bot: <b class="{% if vm.bot_running %}ok{% else %}bad{% endif %}">{% if vm.bot_running %}ONLINE{% else %}DOWN{% endif %}</b>
+      </div>
+    {% endif %}
+  </div>
+</section>
 
 <!-- SEARCH & BULK 1000+ TOOLBAR -->
 <section class="card" style="border: 1px solid #1e3a8a; background: #0f172a; padding: 14px 20px; border-radius: 10px;">
   <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
     <form method="get" action="{{ url_for('index') }}" style="display: flex; gap: 10px; align-items: center; flex:1; min-width:300px;">
       <span style="font-size: 18px;">🔍</span>
-      <input name="q" value="{{ search_query or '' }}" placeholder="Search by Mobile Number, Name, Insta ID, Amazon Tag, or ID..." style="flex: 1; padding: 10px 14px;" />
+      <input name="q" value="{{ search_query or '' }}" placeholder="Search by Phone Number, Name, Insta ID, Tag, or ID..." style="flex: 1; padding: 10px 14px;" />
       <button type="submit" style="background: #2563eb; color: white;">Search</button>
       {% if search_query %}
         <a class="btn" style="background: #475569; color: white;" href="{{ url_for('index') }}">Clear</a>
       {% endif %}
     </form>
     <div>
-      <details style="display:inline-block;">
+      <details style="display:inline-block; position:relative;">
         <summary style="cursor:pointer; background:#4f46e5; color:white; padding:9px 16px; border-radius:8px; font-weight:700; font-size:13px; list-style:none;">
           📂 Bulk Import 1000+ CSV
         </summary>
-        <div style="position:absolute; right:30px; margin-top:8px; z-index:100; background:#1e1b4b; border:1px solid #4338ca; padding:16px; border-radius:8px; width:340px; box-shadow:0 10px 25px rgba(0,0,0,0.5);">
+        <div style="position:absolute; right:0; margin-top:8px; z-index:100; background:#1e1b4b; border:1px solid #4338ca; padding:16px; border-radius:8px; width:340px; box-shadow:0 10px 25px rgba(0,0,0,0.5);">
           <h4 style="margin:0 0 8px; color:#c7d2fe;">Upload CSV (1000+ Scale)</h4>
-          <p class="hint" style="font-size:11px; margin-bottom:10px;">Format: <code>name,tag,phone,insta,approval_tg,broadcast_tg</code></p>
+          <p class="hint" style="font-size:11px; margin-bottom:10px;">Columns: <code>name,tag,phone,insta,approval_tg,broadcast_tg,whatsapp_id</code></p>
           <form method="post" action="{{ url_for('bulk_import') }}" enctype="multipart/form-data">
             <input type="file" name="csv_file" accept=".csv" style="width:100%; font-size:12px; margin-bottom:10px;" />
             <button type="submit" style="width:100%; background:#10b981; font-weight:700;">🚀 Import Now</button>
@@ -40,13 +72,13 @@
   </div>
 </section>
 
-<!-- 3-CHANNEL SETUP CARD (CLEAN & CLEAR) -->
+<!-- ADD NEW INFLUENCER FORM -->
 <section class="card" style="border: 1px solid #3b82f6; background: #131b2e; border-radius: 12px;">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="color: #60a5fa; margin: 0; font-size: 18px;">⚡ Quick Onboard (Standard 3-Channel Setup)</h2>
-    <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">3-CHANNELS DIRECT</span>
+    <h2 style="color: #60a5fa; margin: 0; font-size: 18px;">⚡ Quick Onboard New Influencer (Auto 3-Channel Setup)</h2>
+    <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ZERO-CODE DEPLOY</span>
   </div>
-  <p class="hint">Every influencer gets 3 dedicated channels: <b>1) Approval Channel</b> (Amazon-only + #ad), <b>2) Main Channel</b> (Full loots), and <b>3) WhatsApp Channel/Group</b>.</p>
+  <p class="hint">Channels setup: <b>1) Approval Channel</b> (Amazon-only + #ad), <b>2) Main Channel</b> (Full loots), and <b>3) WhatsApp Channel</b>.</p>
   
   <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 14px;">
     <div>
@@ -67,19 +99,19 @@
     </div>
 
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#6ee7b7;">🛡️ 1) APPROVAL CHANNEL (TG)</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#6ee7b7;">🛡️ 1) APPROVAL CHANNEL (Telegram)</label>
       <input name="approval_tg" placeholder="@approval_channel or t.me/..." style="width: 100%; font-family: monospace;" />
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#93c5fd;">📢 2) MAIN CHANNEL (TG Broadcast)</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#93c5fd;">📢 2) MAIN CHANNEL (Telegram Broadcast)</label>
       <input name="broadcast_tg" placeholder="@main_channel or t.me/..." style="width: 100%; font-family: monospace;" />
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde68a;">💬 3) WHATSAPP CHANNEL (Invite / ID)</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde68a;">💬 3) WHATSAPP CHANNEL (Invite / JID)</label>
       <input name="whatsapp_id" placeholder="https://chat.whatsapp.com/... or 120363xxx" style="width: 100%;" />
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Deal Budget Specification</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Deal Budget Filter</label>
       <select name="price_filter" style="width: 100%;">
         <option value="all" selected>All Loot Deals</option>
         <option value="under_99">🔥 Under ₹99 Only</option>
@@ -89,34 +121,72 @@
       </select>
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Token (Optional)</label>
-      <input name="bitly_api_key" placeholder="Influencer's Bitly Token..." style="width: 100%; font-family: monospace;" />
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Token (Supports Multiple Comma-Separated)</label>
+      <input name="bitly_api_key" placeholder="Key1, Key2..." style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:11px;">Supports multiple keys with auto-failover</span>
     </div>
-    <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#a78bfa;">🛍️ Allowed Deal Categories</label>
-      <select name="categories" multiple style="width: 100%; height: 75px; font-size: 12px;">
-        <option value="all" selected>All Categories (Default)</option>
-        <option value="clothing">👗 Fashion &amp; Clothing</option>
-        <option value="electronics">📱 Electronics &amp; Gadgets</option>
-        <option value="home">🏠 Home &amp; Kitchen</option>
-        <option value="daily">🧴 Daily Essentials &amp; Groceries</option>
-      </select>
+
+    <!-- CATEGORIES MULTI-CHECKBOX GRID -->
+    <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
+      <label style="font-size: 13px; font-weight: 700; color:#a78bfa; display: block; margin-bottom: 8px;">🛍️ Allowed Deal Categories (Select Any Multiple)</label>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px;">
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="clothing" checked /> 👗 Fashion &amp; Clothing
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="electronics" checked /> 📱 Electronics &amp; Gadgets
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="home" checked /> 🏠 Home &amp; Kitchen
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="daily" checked /> 🧴 Daily Essentials &amp; Grocery
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="beauty" checked /> 💄 Beauty &amp; Personal Care
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="appliances" checked /> ❄️ Appliances &amp; AC/Fridge
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="baby" checked /> 👶 Baby Products &amp; Toys
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="sports" checked /> 🏋️ Sports &amp; Fitness
+        </label>
+      </div>
     </div>
-    <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">⏰ Indian Timings / Active Schedule</label>
-      <select name="posting_schedule" multiple style="width: 100%; height: 75px; font-size: 12px;">
-        <option value="" selected>Active 24/7 (All Day &amp; Night)</option>
-        <option value="06:00-09:00">🌅 Morning Prime (6:00 AM – 9:00 AM)</option>
-        <option value="11:00-14:00">☀️ Mid-Day Loot (11:00 AM – 2:00 PM)</option>
-        <option value="18:00-23:00">🌆 Evening Rush (6:00 PM – 11:00 PM)</option>
-        <option value="20:00-00:00">🌙 Night Loot (8:00 PM – 12:00 Midnight)</option>
-      </select>
+
+    <!-- INDIAN TIMING SCHEDULE SESSIONS -->
+    <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
+      <label style="font-size: 13px; font-weight: 700; color:#34d399; display: block; margin-bottom: 8px;">⏰ Indian Timings (IST Active Posting Sessions)</label>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px;">
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="06:00-02:00" /> 🌙 <b>Next-Day Late Session</b> (6:00 AM – 2:00 AM Next Day)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="06:00-09:00" /> 🌅 <b>Morning Prime</b> (6:00 AM – 9:00 AM)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="11:00-14:00" /> ☀️ <b>Mid-Day Loot</b> (11:00 AM – 2:00 PM)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="18:00-23:00" /> 🌆 <b>Evening Rush</b> (6:00 PM – 11:00 PM)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="20:00-00:00" /> 🌙 <b>Night Loot</b> (8:00 PM – 12:00 Midnight)
+        </label>
+      </div>
+      <div style="margin-top:8px;">
+        <input name="custom_schedule" placeholder="Or custom windows: e.g. 06:00-02:00 (Hold/Sleep from 2AM to 6AM)" style="width:100%; font-size:12px;" />
+        <span class="hint" style="font-size:10px;">If nothing selected, channel posts 24/7 all day &amp; night. Outside active windows, posts are paused cleanly.</span>
+      </div>
     </div>
 
     <div style="grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; background: #0d1322; padding: 12px 16px; border-radius: 8px; border: 1px solid #283759; margin-top: 4px; flex-wrap:wrap; gap:10px;">
-      <div style="display:flex; gap:20px; align-items:center;">
+      <div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
         <label style="font-size: 13px; font-weight: 600; color: #fbbf24; cursor: pointer; display:flex; align-items:center; gap:8px;">
-          <input type="checkbox" name="only_amazon" value="1" /> 🛡️ <b>ONLY AMAZON</b> (Kevalam Amazon Mathrame Post Chey - No Flipkart/Myntra)
+          <input type="checkbox" name="only_amazon" value="1" /> 🛡️ <b>ONLY AMAZON</b> (Kevalam Amazon Mathrame Post Chey)
         </label>
         <label style="font-size: 13px; font-weight: 600; color: #f87171; cursor: pointer; display:flex; align-items:center; gap:8px;">
           <input type="checkbox" name="strip_amazon_broadcast" value="1" /> 🚫 <b>STRIP AMAZON</b> (Amazon Theesi Kevalam Flipkart/Myntra)
@@ -127,29 +197,11 @@
   </form>
 </section>
 
-<!-- SYSTEM STATS -->
-<section class="card">
-  <h2>Live System Overview</h2>
-  <div class="stats">
-    <div><span>{{ stats.posted }}</span> posted</div>
-    <div><span>{{ stats.failed }}</span> failed</div>
-    <div><span>{{ stats.skipped }}</span> skipped</div>
-    {% if vm %}
-      <div>CPU <span>{{ vm.cpu_pct }}%</span></div>
-      <div>MEM <span>{{ vm.mem_pct }}%</span></div>
-      <div>DISK <span>{{ vm.disk_pct }}%</span></div>
-      <div>Bot <span class="{% if vm.bot_running %}ok{% else %}bad{% endif %}">{% if vm.bot_running %}ACTIVE{% else %}DOWN{% endif %}</span></div>
-    {% else %}
-      <div>System: <span class="ok">ONLINE</span></div>
-    {% endif %}
-  </div>
-</section>
-
 <!-- INFLUENCERS LIST TABLE -->
 <section class="card">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="margin:0;">Active Influencers ({{ influencers|length }})</h2>
-    <span class="hint">Unlimited Scale Enabled</span>
+    <h2 style="margin:0; font-size:18px;">Active Influencers ({{ influencers|length }})</h2>
+    <span class="hint">Complete Control · Multi-Account Isolated</span>
   </div>
   
   {% if not influencers %}
@@ -160,12 +212,12 @@
     <thead>
       <tr>
         <th>#</th>
-        <th>Influencer &amp; Phone</th>
+        <th>Influencer &amp; Mobile</th>
         <th>Instagram</th>
         <th>Amazon Tag</th>
-        <th>Budget Filter</th>
-        <th>TG</th>
-        <th>WA</th>
+        <th>Budget &amp; Category</th>
+        <th>Posting Schedule</th>
+        <th>Only Amz</th>
         <th>Status</th>
         <th style="text-align:right;">Control</th>
       </tr>
@@ -188,14 +240,31 @@
         </td>
         <td><code>{{ i.amazon_tag }}</code></td>
         <td>
-          {% if i.price_filter and i.price_filter != 'all' %}
-            <span style="background:#78350f; color:#fde68a; padding:2px 6px; border-radius:4px; font-weight:700; font-size:11px;">🎯 {{ i.price_filter|upper }}</span>
-          {% else %}
-            <span style="color:#64748b; font-size:12px;">All Deals</span>
+          <div>
+            {% if i.price_filter and i.price_filter != 'all' %}
+              <span style="background:#78350f; color:#fde68a; padding:2px 6px; border-radius:4px; font-weight:700; font-size:11px;">🎯 {{ i.price_filter|upper }}</span>
+            {% else %}
+              <span style="color:#64748b; font-size:12px;">All Deals</span>
+            {% endif %}
+          </div>
+          {% if i.categories and i.categories != 'all' %}
+            <div style="font-size:10px; color:#c084fc; margin-top:2px;">🛍️ {{ i.categories }}</div>
           {% endif %}
         </td>
-        <td>{% if i.telegram_enabled %}<span class="ok">✅ ON</span>{% else %}<span style="color:#64748b;">OFF</span>{% endif %}</td>
-        <td>{% if i.whatsapp_enabled %}<span class="ok">✅ ON</span>{% else %}<span style="color:#64748b;">OFF</span>{% endif %}</td>
+        <td>
+          {% if i.posting_schedule and i.posting_schedule != 'all' %}
+            <span style="background:#065f46; color:#a7f3d0; padding:2px 6px; border-radius:4px; font-weight:700; font-size:11px;">⏰ {{ i.posting_schedule }}</span>
+          {% else %}
+            <span style="color:#10b981; font-size:12px;">24/7 Active</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if i.only_amazon %}
+            <span style="background:#854d0e; color:#fef08a; padding:2px 6px; border-radius:4px; font-weight:bold; font-size:11px;">🛡️ ONLY AMZ</span>
+          {% else %}
+            <span style="color:#64748b; font-size:11px;">All Stores</span>
+          {% endif %}
+        </td>
         <td>
           {% if i.active %}
             <span style="background:#064e3b; color:#6ee7b7; padding:2px 8px; border-radius:4px; font-weight:700; font-size:12px;">🟢 ACTIVE</span>

@@ -381,27 +381,51 @@ def clean_source_post(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", result)
 
 
-# Category Keyword Mappings
+# Comprehensive Category Keyword Mappings (Top 8 Indian E-Commerce Verticals)
 CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "clothing": [
         "shirt", "tshirt", "t-shirt", "jeans", "trousers", "dress", "kurta", "saree", "shoes", "sneakers",
         "sandals", "slippers", "hoodie", "jacket", "trackpant", "bra", "brief", "leggings", "watch", "footwear",
         "clothing", "wear", "ethnic", "fashion", "handbag", "wallet", "sunglasses", "top", "pant", "suit",
+        "blazer", "chinos", "boxers", "vest", "kurti", "lehenga", "crocs", "boots", "loafers", "heels",
     ],
     "electronics": [
         "phone", "mobile", "smartphone", "laptop", "earbuds", "earphone", "headphones", "neckband", "tv",
         "television", "smartwatch", "charger", "powerbank", "cable", "tablet", "ipad", "camera", "speaker",
         "soundbar", "mouse", "keyboard", "ssd", "ram", "processor", "trimmer", "iron", "electronics",
+        "iphone", "oneplus", "samsung", "redmi", "realme", "macbook", "adapter", "monitor", "gaming", "console",
     ],
     "home": [
         "bedsheet", "curtain", "blanket", "pillow", "cookware", "pan", "bottle", "flask", "mop", "cleaner",
         "container", "storage", "towel", "mattress", "kitchen", "lamp", "lights", "decor", "home", "living",
-        "sofa", "chair", "cushion", "plate", "glass", "dinnerware",
+        "sofa", "chair", "cushion", "plate", "glass", "dinnerware", "kettle", "gas stove", "pressure cooker",
+        "air fryer", "mixer grinder", "juicer", "blender", "chimney", "curtains", "doormat",
     ],
     "daily": [
         "shampoo", "soap", "toothpaste", "facewash", "cream", "serum", "lotion", "perfume", "deodorant",
         "sunscreen", "diaper", "wipes", "oil", "ghee", "tea", "coffee", "biscuit", "grocery", "snack",
-        "detergent", "powder", "health", "supplement", "daily", "essentials",
+        "detergent", "powder", "health", "supplement", "daily", "essentials", "colgate", "dettol", "surf excel",
+        "body wash", "handwash", "rice", "dal", "dry fruits", "almonds", "cashew", "maggie",
+    ],
+    "beauty": [
+        "makeup", "lipstick", "eyeliner", "kajal", "foundation", "compact", "mascara", "nail polish",
+        "skincare", "hair care", "moisturizer", "toner", "lip balm", "hair oil", "body lotion", "sunblock",
+        "fragrance", "cologne", "beauty", "cosmetics", "face mask", "scrub", "wax",
+    ],
+    "baby": [
+        "baby", "infant", "toddler", "diapers", "pampers", "huggies", "mamy poko", "stroller", "pram",
+        "baby lotion", "baby soap", "baby shampoo", "feeding bottle", "toys", "lego", "board game", "puzzle",
+        "action figure", "doll", "remote control", "ride on",
+    ],
+    "sports": [
+        "sports", "fitness", "gym", "dumbbell", "treadmill", "yoga mat", "resistance band", "cricket",
+        "badminton", "shuttlecock", "racket", "football", "jersey", "protein", "whey", "creatine",
+        "shaker", "bicycle", "cycle", "skating", "swimming",
+    ],
+    "appliances": [
+        "refrigerator", "fridge", "washing machine", "ac", "air conditioner", "microwave", "oven",
+        "dishwasher", "water purifier", "geyser", "water heater", "vacuum cleaner", "cooler", "fan",
+        "inverter", "appliances",
     ],
 }
 
@@ -436,7 +460,11 @@ def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> boo
 
 def is_time_in_schedule(schedule_spec: str, current_time: str | None = None) -> bool:
     """Check if the current time (or given HH:MM in IST / local) falls within the allowed windows.
-    schedule_spec: comma-separated windows like '06:00-09:00,18:00-23:00'
+    Supports:
+      - Normal windows: '06:00-09:00', '18:00-23:00'
+      - Across-midnight / next-day windows: '06:00-02:00' (active from 6 AM through next day 2 AM,
+        holding/sleeping only between 2:00 AM and 6:00 AM)
+      - Multiple windows separated by comma: '06:00-09:00,11:00-14:00,18:00-23:00'
     Empty schedule_spec means active 24/7 (always True).
     """
     spec = (schedule_spec or "").strip()
@@ -470,7 +498,7 @@ def is_time_in_schedule(schedule_spec: str, current_time: str | None = None) -> 
                 if start <= now_str <= end:
                     return True
             else:
-                # Overnight window (e.g. 22:00-04:00)
+                # Overnight/across-midnight window (e.g. 06:00 to 02:00 next day, or 20:00 to 04:00)
                 if now_str >= start or now_str <= end:
                     return True
     return False

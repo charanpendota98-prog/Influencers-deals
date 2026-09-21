@@ -20,24 +20,35 @@ BITLY_CACHE: dict[str, str] = {}
 async def shorten_one(session: aiohttp.ClientSession, long_url: str, token: str) -> str:
     if not token or not long_url:
         return long_url
-    if long_url in BITLY_CACHE:
-        return BITLY_CACHE[long_url]
+    
+    # Support multiple comma-separated keys: pick the first valid token or fallback
+    keys = [k.strip() for k in token.split(",") if k.strip()]
+    if not keys:
+        return long_url
 
-    try:
-        async with session.post(
-            BITLY_API_URL,
-            json={"long_url": long_url},
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=8.0),
-        ) as resp:
-            if resp.status in (200, 201):
-                data = await resp.json()
-                short_link = data.get("link")
-                if short_link:
-                    BITLY_CACHE[long_url] = short_link
-                    return short_link
-    except Exception:
-        pass
+    cache_key = f"{keys[0]}:{long_url}"
+    if cache_key in BITLY_CACHE:
+        return BITLY_CACHE[cache_key]
+
+    for api_tok in keys:
+        try:
+            async with session.post(
+                BITLY_API_URL,
+                json={"long_url": long_url},
+                headers={"Authorization": f"Bearer {api_tok}", "Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=8.0),
+            ) as resp:
+                if resp.status in (200, 201):
+                    data = await resp.json()
+                    short_link = data.get("link")
+                    if short_link:
+                        BITLY_CACHE[cache_key] = short_link
+                        return short_link
+                elif resp.status == 429:
+                    # Rate limit exceeded on this key, try next key in the pool!
+                    continue
+        except Exception:
+            continue
     return long_url
 
 

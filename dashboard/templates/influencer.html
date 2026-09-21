@@ -1,9 +1,14 @@
 {% extends "layout.html" %}
 {% block title %}{{ inf.name }} - Channels Control Center{% endblock %}
 {% block content %}
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap:wrap; gap:12px;">
   <div>
-    <h1 style="margin-bottom: 4px;">{{ inf.name }} <small style="color: var(--muted); font-size:16px;">#{{ inf.id }}</small></h1>
+    <h1 style="margin-bottom: 4px; display:flex; align-items:center; gap:8px;">
+      {{ inf.name }} <small style="color: var(--muted); font-size:16px;">#{{ inf.id }}</small>
+      {% if inf.only_amazon %}
+        <span style="font-size:11px; background:#854d0e; color:#fef08a; padding:2px 8px; border-radius:4px; font-weight:bold;">🛡️ ONLY AMAZON ACTIVE</span>
+      {% endif %}
+    </h1>
     <p class="hint" style="margin: 0;">
       Amazon Associate Tag: <code style="font-size: 14px; font-weight: bold; background: #1e3a8a; color: #93c5fd; padding: 3px 8px; border-radius: 4px;">{{ inf.amazon_tag }}</code> · 
       {% if inf.phone_number %}<span style="color:#38bdf8; font-family:monospace; margin-right:8px;">📞 {{ inf.phone_number }}</span> · {% endif %}
@@ -25,11 +30,11 @@
 <!-- INFLUENCER PROFILE EDIT FORM -->
 <section class="card" style="border: 1px solid #4338ca; background: #13172c;">
   <div style="display:flex; justify-content:space-between; align-items:center;">
-    <h2 style="color: #a5b4fc; margin-top: 0; font-size:17px;">👤 Influencer Profile Settings</h2>
-    <span style="font-size:11px; background:#312e81; color:#c7d2fe; padding:2px 8px; border-radius:4px;">ZERO DOWNTIME</span>
+    <h2 style="color: #a5b4fc; margin-top: 0; font-size:17px;">👤 Influencer Profile Settings &amp; Rules</h2>
+    <span style="font-size:11px; background:#312e81; color:#c7d2fe; padding:2px 8px; border-radius:4px;">ZERO DOWNTIME EDIT</span>
   </div>
   
-  <form method="post" action="{{ url_for('update_profile', inf_id=inf.id) }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: end; margin-top: 10px;">
+  <form method="post" action="{{ url_for('update_profile', inf_id=inf.id) }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-top: 14px;">
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Name</label>
       <input name="name" value="{{ inf.name }}" required style="width: 100%;" />
@@ -47,33 +52,25 @@
       <input name="insta_id" value="{{ inf.insta_id or '' }}" placeholder="@user" style="width: 100%;" />
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Token</label>
-      <input name="bitly_api_key" value="{{ inf.bitly_api_key or '' }}" placeholder="Influencer's Bitly Token..." style="width: 100%; font-family: monospace;" />
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Tokens (Comma-Separated Pool)</label>
+      <input name="bitly_api_key" value="{{ inf.bitly_api_key or '' }}" placeholder="Token1, Token2..." style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:11px;">Multiple keys supported with automatic failover</span>
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#a78bfa;">🛍️ Deal Categories</label>
-      <input name="categories" value="{{ inf.categories or '' }}" placeholder="clothing,electronics,home,daily (Empty=All)" style="width: 100%; font-size: 12px;" />
-    </div>
-    <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">⏰ Indian Timings / Active Schedule</label>
-      <input name="posting_schedule" value="{{ inf.posting_schedule or '' }}" placeholder="06:00-09:00,18:00-23:00 (Empty=24/7)" style="width: 100%; font-size: 12px;" />
-      <span class="hint" style="font-size:10px;">Common IST: 06:00-09:00, 11:00-14:00, 18:00-23:00</span>
-    </div>
-    <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🛡️ Only Amazon Deals</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🛡️ Only Amazon Deals Toggle</label>
       <select name="only_amazon" style="width: 100%; font-weight:bold;">
         <option value="0" {{ 'selected' if not inf.only_amazon else '' }}>All Merchants (Amazon + Flipkart/Myntra)</option>
         <option value="1" {{ 'selected' if inf.only_amazon else '' }}>🛡️ ONLY AMAZON (Kevalam Amazon Mathrame)</option>
       </select>
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Default Budget Filter</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">🎯 Default Budget Filter</label>
       <select name="price_filter" style="width: 100%;">
         <option value="all" {{ 'selected' if (not inf.price_filter or inf.price_filter == 'all') else '' }}>All Loot Deals</option>
-        <option value="under_99" {{ 'selected' if inf.price_filter == 'under_99' else '' }}>Under ₹99 Only</option>
-        <option value="under_199" {{ 'selected' if inf.price_filter == 'under_199' else '' }}>Under ₹199 Only</option>
-        <option value="under_499" {{ 'selected' if inf.price_filter == 'under_499' else '' }}>Under ₹499 Only</option>
-        <option value="under_999" {{ 'selected' if inf.price_filter == 'under_999' else '' }}>Under ₹999 Only</option>
+        <option value="under_99" {{ 'selected' if inf.price_filter == 'under_99' else '' }}>🔥 Under ₹99 Only</option>
+        <option value="under_199" {{ 'selected' if inf.price_filter == 'under_199' else '' }}>⚡ Under ₹199 Only</option>
+        <option value="under_499" {{ 'selected' if inf.price_filter == 'under_499' else '' }}>🎁 Under ₹499 Only</option>
+        <option value="under_999" {{ 'selected' if inf.price_filter == 'under_999' else '' }}>🏷️ Under ₹999 Only</option>
       </select>
     </div>
     <div>
@@ -83,8 +80,23 @@
         <option value="0" {{ 'selected' if not inf.active else '' }}>🔴 Paused (Stop)</option>
       </select>
     </div>
-    <div>
-      <button type="submit" style="width: 100%; background: #4f46e5; color: white; padding: 10px; font-weight: 700; border-radius: 8px; cursor: pointer; border: none;">💾 Save Profile</button>
+
+    <!-- CATEGORIES EDIT -->
+    <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:12px; border-radius:8px;">
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#a78bfa;">🛍️ Allowed Deal Categories (comma-separated or empty for All)</label>
+      <input name="categories" value="{{ inf.categories or '' }}" placeholder="clothing,electronics,home,daily,beauty,appliances,baby,sports" style="width: 100%; font-size: 12px;" />
+      <span class="hint" style="font-size:11px;">Supported: <code>clothing</code>, <code>electronics</code>, <code>home</code>, <code>daily</code>, <code>beauty</code>, <code>appliances</code>, <code>baby</code>, <code>sports</code></span>
+    </div>
+
+    <!-- SCHEDULE EDIT -->
+    <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:12px; border-radius:8px;">
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">⏰ Indian Timings (IST Active Schedule / Break Windows)</label>
+      <input name="posting_schedule" value="{{ inf.posting_schedule or '' }}" placeholder="06:00-02:00 or 06:00-09:00,18:00-23:00 (Empty=24/7)" style="width: 100%; font-size: 12px;" />
+      <span class="hint" style="font-size:11px;">Example: <code>06:00-02:00</code> (active from 6 AM till 2 AM next day; pauses/holds between 2 AM and 6 AM). Outside active time, deals pause cleanly without queue clutter.</span>
+    </div>
+
+    <div style="grid-column: 1 / -1; display:flex; justify-content:flex-end;">
+      <button type="submit" style="background: #4f46e5; color: white; padding: 10px 24px; font-weight: 700; border-radius: 8px; cursor: pointer; border: none;">💾 Save Profile &amp; Rules</button>
     </div>
   </form>
 </section>
@@ -148,7 +160,7 @@
           </td>
           <td>
             <input name="categories" value="{{ c.categories or '' }}" placeholder="clothing,electronics (All)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Allowed categories" />
-            <input name="posting_schedule" value="{{ c.posting_schedule or '' }}" placeholder="06:00-09:00 (24/7)" style="font-size: 11px; padding: 3px 5px; width: 110px;" title="Timing schedule" />
+            <input name="posting_schedule" value="{{ c.posting_schedule or '' }}" placeholder="06:00-02:00 (24/7)" style="font-size: 11px; padding: 3px 5px; width: 110px;" title="Timing schedule" />
           </td>
           <td>
             <div>
@@ -200,7 +212,7 @@
       <input name="identifier" placeholder="@channel or link / WhatsApp invite" required style="flex: 1; min-width: 180px;" />
       <input name="bitly_api_key" placeholder="Bitly Key (optional)" style="width: 130px; font-family: monospace; font-size: 11px;" />
       <input name="categories" placeholder="clothing,electronics (All)" style="width: 140px; font-size: 11px;" />
-      <input name="posting_schedule" placeholder="06:00-09:00 (24/7)" style="width: 130px; font-size: 11px;" />
+      <input name="posting_schedule" placeholder="06:00-02:00 (24/7)" style="width: 130px; font-size: 11px;" />
       <select name="price_filter">
         <option value="" selected>Default Budget</option>
         <option value="under_99">🔥 Under ₹99 Only</option>
