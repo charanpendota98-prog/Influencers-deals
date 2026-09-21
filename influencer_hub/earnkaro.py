@@ -61,6 +61,24 @@ def _cache_key(url: str) -> str:
     return hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
 
 
+def clean_merchant_url_for_api(url: str) -> str:
+    """Strip third-party referral affiliate tracking params before sending to EarnKaro converter.
+    This guarantees that competitor affiliate tags (like hypd, affid, clickid, appsflyer)
+    are cleaned off, leaving the pure product link so EarnKaro converts cleanly 100%.
+    """
+    from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+    p = urlparse(url)
+    tracking_params = {
+        "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+        "affid", "aff_siteid", "clickid", "pid", "is_retargeting", "af_force_deeplink",
+        "af_dp", "product_name", "host_internal", "external_product_id", "product_id",
+        "ref", "tag", "cmpid", "src", "source", "subid", "subid1"
+    }
+    q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if k.lower() not in tracking_params]
+    query_str = urlencode(q) if q else ""
+    return urlunparse((p.scheme, p.netloc.lower(), p.path, "", query_str, ""))
+
+
 def _clean(url: str) -> str:
     from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
     p = urlparse(url)
@@ -116,11 +134,13 @@ async def convert_one(session: aiohttp.ClientSession, url: str) -> str:
         return url
 
     last: Exception | None = None
+    # Pre-clean dirty third-party affiliate tracking params (hypd, clickid, appsflyer, etc.)
+    api_deal_url = clean_merchant_url_for_api(url)
     for attempt in range(3):
         try:
             async with session.post(
                 config.EARNKARO_API_URL,
-                json={"deal": url},
+                json={"deal": api_deal_url},
                 headers={
                     "Authorization": f"Bearer {config.EARNKARO_API_KEY}",
                     "Content-Type": "application/json",
