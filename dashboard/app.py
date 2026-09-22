@@ -65,9 +65,20 @@ def index():
     vm = db.latest_vm()
     settings = db.get_all_global_settings()
     sources = db.list_sources(active_only=False)
-    # Ensure default source exists if list is empty
-    if not sources:
-        db.add_source("Meesho Deals Channel", "https://t.me/+6LA1ljXGlbNmMjA1")
+    # Ensure standard production source channels exist without duplicates
+    default_sources = [
+        ("Meesho Deals Official", "https://t.me/+6LA1ljXGlbNmMjA1"),
+        ("Shopsy Loots Official", "https://t.me/+O3j4ghbtJzhjZjJl"),
+        ("Premium Loot Deals", "https://t.me/+HUga1JTHwhBmNDE1"),
+        ("Mega Loot Deals", "https://t.me/+8KzU3P58MJ9jN2M1"),
+    ]
+    existing_specs = {s["spec"] for s in sources}
+    added_any = False
+    for s_name, s_spec in default_sources:
+        if s_spec not in existing_specs:
+            db.add_source(s_name, s_spec)
+            added_any = True
+    if added_any:
         sources = db.list_sources(active_only=False)
 
     vault_err = request.args.get("vault_err")

@@ -676,11 +676,16 @@ def add_bulk_influencers(records: list[dict]) -> int:
 
 
 def add_source(name: str, spec: str, kind: str = "production", active: bool = True) -> int:
+    """Add a deal source channel. Skips duplicate specs to avoid double polling."""
     con = _connect()
     try:
+        clean_spec = spec.strip()
+        existing = con.execute("SELECT id FROM sources WHERE spec=?", (clean_spec,)).fetchone()
+        if existing:
+            return int(existing["id"])
         cur = con.execute(
             "INSERT INTO sources (name, spec, kind, active) VALUES (?,?,?,?)",
-            (name.strip(), spec.strip(), kind.strip(), 1 if active else 0))
+            (name.strip(), clean_spec, kind.strip(), 1 if active else 0))
         con.commit()
         return int(cur.lastrowid)
     finally:
