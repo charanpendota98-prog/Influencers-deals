@@ -121,6 +121,8 @@ def migrate() -> None:
             ("only_amazon", "INTEGER NOT NULL DEFAULT 0"),
             ("allow_amazon", "INTEGER NOT NULL DEFAULT 1"),
             ("allow_earnkaro", "INTEGER NOT NULL DEFAULT 1"),
+            ("allow_hypd", "INTEGER NOT NULL DEFAULT 1"),
+            ("hypd_store_id", "TEXT NOT NULL DEFAULT '93944'"),
             ("custom_button_enabled", "INTEGER NOT NULL DEFAULT 0"),
             ("custom_button_text", "TEXT NOT NULL DEFAULT ''"),
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
@@ -142,6 +144,8 @@ def migrate() -> None:
             ("only_amazon", "INTEGER NOT NULL DEFAULT 0"),
             ("allow_amazon", "INTEGER NOT NULL DEFAULT 1"),
             ("allow_earnkaro", "INTEGER NOT NULL DEFAULT 1"),
+            ("allow_hypd", "INTEGER NOT NULL DEFAULT 1"),
+            ("hypd_store_id", "TEXT NOT NULL DEFAULT '93944'"),
             ("custom_button_enabled", "INTEGER NOT NULL DEFAULT 0"),
             ("custom_button_text", "TEXT NOT NULL DEFAULT ''"),
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
@@ -171,18 +175,20 @@ def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = ""
                    price_filter: str = "all", allowed_sources: str = "",
                    bitly_api_key: str = "", categories: str = "",
                    posting_schedule: str = "", only_amazon: bool = False,
-                   allow_amazon: bool = True, allow_earnkaro: bool = True) -> int:
+                   allow_amazon: bool = True, allow_earnkaro: bool = True,
+                   allow_hypd: bool = True, hypd_store_id: str = "93944") -> int:
     con = _connect()
     try:
         cur = con.execute(
             "INSERT INTO influencers "
-            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), handle.strip(), amazon_tag.strip(), notes.strip(), 1 if use_dummy_sources else 0,
              1 if telegram_enabled else 0, 1 if whatsapp_enabled else 0, insta_id.strip(),
              phone_number.strip(), price_filter.strip() or "all", allowed_sources.strip(), bitly_api_key.strip(),
              categories.strip(), posting_schedule.strip(), 1 if only_amazon else 0,
-             1 if allow_amazon else 0, 1 if allow_earnkaro else 0),
+             1 if allow_amazon else 0, 1 if allow_earnkaro else 0,
+             1 if allow_hypd else 0, hypd_store_id.strip() or "93944"),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -197,6 +203,7 @@ def update_influencer(influencer_id: int, name: str | None = None,
                       bitly_api_key: str | None = None, categories: str | None = None,
                       posting_schedule: str | None = None, only_amazon: bool | None = None,
                       allow_amazon: bool | None = None, allow_earnkaro: bool | None = None,
+                      allow_hypd: bool | None = None, hypd_store_id: str | None = None,
                       custom_button_enabled: bool | None = None,
                       custom_button_text: str | None = None,
                       custom_button_url: str | None = None,
@@ -244,6 +251,12 @@ def update_influencer(influencer_id: int, name: str | None = None,
         if allow_earnkaro is not None:
             updates.append("allow_earnkaro=?")
             params.append(1 if allow_earnkaro else 0)
+        if allow_hypd is not None:
+            updates.append("allow_hypd=?")
+            params.append(1 if allow_hypd else 0)
+        if hypd_store_id is not None:
+            updates.append("hypd_store_id=?")
+            params.append(hypd_store_id.strip())
         if custom_button_enabled is not None:
             updates.append("custom_button_enabled=?")
             params.append(1 if custom_button_enabled else 0)
@@ -338,16 +351,19 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 posting_schedule: str = "",
                 only_amazon: bool = False,
                 allow_amazon: bool = True,
-                allow_earnkaro: bool = True) -> int:
+                allow_earnkaro: bool = True,
+                allow_hypd: bool = True,
+                hypd_store_id: str = "93944") -> int:
     con = _connect()
     try:
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
              amazon_override_tag.strip(), 1 if strip_amazon else 0, price_filter.strip(), allowed_sources.strip(),
              wa_session_key.strip(), bitly_api_key.strip(), categories.strip(), posting_schedule.strip(),
-             1 if only_amazon else 0, 1 if allow_amazon else 0, 1 if allow_earnkaro else 0),
+             1 if only_amazon else 0, 1 if allow_amazon else 0, 1 if allow_earnkaro else 0,
+             1 if allow_hypd else 0, hypd_store_id.strip() or "93944"),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -369,6 +385,8 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            only_amazon: bool | None = None,
                            allow_amazon: bool | None = None,
                            allow_earnkaro: bool | None = None,
+                           allow_hypd: bool | None = None,
+                           hypd_store_id: str | None = None,
                            custom_button_enabled: bool | None = None,
                            custom_button_text: str | None = None,
                            custom_button_url: str | None = None) -> None:
@@ -421,6 +439,12 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if allow_earnkaro is not None:
             updates.append("allow_earnkaro=?")
             params.append(1 if allow_earnkaro else 0)
+        if allow_hypd is not None:
+            updates.append("allow_hypd=?")
+            params.append(1 if allow_hypd else 0)
+        if hypd_store_id is not None:
+            updates.append("hypd_store_id=?")
+            params.append(hypd_store_id.strip())
         if custom_button_enabled is not None:
             updates.append("custom_button_enabled=?")
             params.append(1 if custom_button_enabled else 0)
@@ -590,13 +614,18 @@ def add_bulk_influencers(records: list[dict]) -> int:
             price_filt = (r.get("price_filter") or "all").strip()
             sources = (r.get("allowed_sources") or "").strip()
             strip_amz = bool(r.get("strip_amazon", False))
+            allow_amz = 0 if strip_amz else 1
+            allow_ek = 1
+            allow_hypd = 1
+            hypd_store = (r.get("hypd_store_id") or "93944").strip()
 
             cur = con.execute(
                 "INSERT INTO influencers "
-                "(name, handle, amazon_tag, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "(name, handle, amazon_tag, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (name, handle, tag, 0, 1, 1, insta, phone, price_filt, sources, (r.get("bitly_api_key") or "").strip(),
-                 (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip()),
+                 (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip(),
+                 allow_amz, allow_ek, allow_hypd, hypd_store),
             )
             iid = int(cur.lastrowid)
 
@@ -604,29 +633,31 @@ def add_bulk_influencers(records: list[dict]) -> int:
             if r.get("approval_tg"):
                 ident = r["approval_tg"].strip()
                 con.execute(
-                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, allowed_sources, categories, posting_schedule) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, allowed_sources, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,1,1,0,0,?)",
                     (iid, "telegram", ident, "approval", "ready", sources,
-                     (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip()),
+                     (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip(), hypd_store),
                 )
             if r.get("broadcast_tg"):
                 ident = r["broadcast_tg"].strip()
                 con.execute(
-                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (iid, "telegram", ident, "broadcast", "ready", 1 if strip_amz else 0,
                      price_filt if price_filt != "all" else "", sources, (r.get("bitly_api_key") or "").strip(),
-                     (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip()),
+                     (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip(),
+                     allow_amz, allow_ek, allow_hypd, hypd_store),
                 )
             if r.get("whatsapp_id"):
                 ident = r["whatsapp_id"].strip()
                 con.execute(
-                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (iid, "whatsapp_group", ident, "whatsapp", "ready", 1 if strip_amz else 0,
                      price_filt if price_filt != "all" else "", sources,
                      (r.get("wa_session_key") or "").strip(), (r.get("bitly_api_key") or "").strip(),
-                     (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip()),
+                     (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip(),
+                     allow_amz, allow_ek, allow_hypd, hypd_store),
                 )
             count += 1
         con.commit()

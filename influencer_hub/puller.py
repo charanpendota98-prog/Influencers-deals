@@ -16,6 +16,14 @@ def _source_list(use_dummy: bool) -> list[str]:
     srcs = list(config.SHARED_SOURCES)
     if use_dummy:
         srcs = list(config.DUMMY_SOURCES) + srcs
+    # Also include any active sources stored in the database
+    try:
+        db_sources = [s["spec"] for s in db.list_sources(active_only=True) if s.get("spec")]
+        for s in db_sources:
+            if s not in srcs:
+                srcs.append(s)
+    except Exception:
+        pass
     return [s for s in srcs if s]
 
 

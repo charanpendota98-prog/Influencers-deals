@@ -204,29 +204,38 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 6. Ultra-Smart Granular Merchant Toggles (allow_amazon & allow_earnkaro / only_amazon):
+            # 6. Ultra-Smart Granular Merchant Toggles (allow_amazon & allow_earnkaro & allow_hypd / only_amazon):
             # Rule A: If allow_amazon is OFF (or strip_amazon is active), do NOT post Amazon deals
             allow_amz = bool(ch.get("allow_amazon", 1) and inf.get("allow_amazon", 1))
             # Rule B: If allow_earnkaro is OFF (or only_amazon is active), do NOT post non-Amazon merchant deals
             allow_ek = bool(ch.get("allow_earnkaro", 1) and inf.get("allow_earnkaro", 1))
+            # Rule C: HYPD store deals (Meesho etc.) toggle
+            allow_hypd = bool(ch.get("allow_hypd", 1) and inf.get("allow_hypd", 1))
             only_amz = bool(ch.get("only_amazon", 0) or inf.get("only_amazon", 0))
 
             has_amz = link_router.has_amazon_link(deal_text)
-            has_merchant = any(link_router.classify_url(u) == "merchant" for u in link_router.find_urls(deal_text))
+            urls = link_router.find_urls(deal_text)
+            has_merchant = any(link_router.classify_url(u) == "merchant" for u in urls)
+            has_hypd = any(link_router.classify_url(u) == "hypd" for u in urls)
 
             # If deal is strictly non-Amazon (Flipkart/Myntra/etc) and EarnKaro is disabled (or only_amazon is enabled):
-            if (not allow_ek or only_amz) and not has_amz:
+            if (not allow_ek or only_amz) and not has_amz and not has_hypd:
+                per_channel[ch["id"]] = "skipped"
+                continue
+
+            # If deal has HYPD links but HYPD is disabled (or only_amazon is enabled):
+            if (not allow_hypd or only_amz) and not has_amz and not has_merchant and has_hypd:
                 per_channel[ch["id"]] = "skipped"
                 continue
 
             # If deal is strictly Amazon and Amazon deals are disabled on this channel/influencer:
-            if not allow_amz and not has_merchant:
+            if not allow_amz and not has_merchant and not has_hypd:
                 per_channel[ch["id"]] = "skipped"
                 continue
 
             # 7. If strip_amazon is active on this channel, and deal has ONLY Amazon links,
             # skip it because nothing remains to post.
-            if strip_amz and not has_merchant:
+            if strip_amz and not has_merchant and not has_hypd:
                 per_channel[ch["id"]] = "skipped"
                 continue
 
@@ -238,12 +247,14 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             # Check if this deal needs Bitly URL shortening:
             # ONLY used if influencer has provided their Bitly API key (or channel has its own key)
             effective_bitly_key = (ch.get("bitly_api_key") or inf.get("bitly_api_key") or "").strip()
+            effective_hypd_store = (ch.get("hypd_store_id") or inf.get("hypd_store_id") or "93944").strip()
             shortened_map = {}
 
             if effective_bitly_key and role != "approval":
                 # Render base version to identify final URLs that will appear
                 base_rendered = link_router.render_for_influencer(
-                    deal_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz, clean_promos=True
+                    deal_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz,
+                    clean_promos=True, hypd_store_id=effective_hypd_store
                 )
                 final_urls = link_router.find_urls(base_rendered)
                 should_shorten = (len(final_urls) >= 2) or any(len(u) > 65 for u in final_urls)
@@ -251,7 +262,8 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                     shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
 
             rendered = link_router.render_for_influencer(
-                deal_text, effective_amz_tag, ek_map, shortened_links=shortened_map, role=role, strip_amazon=strip_amz
+                deal_text, effective_amz_tag, ek_map, shortened_links=shortened_map,
+                role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store
             )
             status = await dispatch_to_channel(inf, ch, rendered)
             db.record_post(inf["id"], ch["id"], sig,

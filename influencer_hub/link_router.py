@@ -20,8 +20,10 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 # Hostnames we treat as "Amazon" (taggable).
 AMAZON_DOMAINS = {"amazon.in", "www.amazon.in", "amazon.com", "www.amazon.com"}
 
+HYPD_DOMAINS = {"hypd.store", "www.hypd.store"}
+
 # Merchant domains we monetise through OUR EarnKaro account (everything except
-# Amazon). Add more here as the deal pool grows.
+# Amazon and direct HYPD). Add more here as the deal pool grows.
 MERCHANT_DOMAINS = {
     "flipkart.com", "www.flipkart.com",
     "shopsy.in", "www.shopsy.in",
@@ -48,13 +50,30 @@ def _host_of(url: str) -> str:
 
 
 def classify_url(url: str) -> str:
-    """Return 'amazon' | 'merchant' | 'other'."""
+    """Return 'amazon' | 'hypd' | 'merchant' | 'other'."""
     host = _host_of(url)
     if host in AMAZON_DOMAINS:
         return "amazon"
+    if host in HYPD_DOMAINS:
+        return "hypd"
     if host in MERCHANT_DOMAINS:
         return "merchant"
     return "other"
+
+
+def convert_hypd_store_link(url: str, target_store_id: str = "93944") -> str:
+    """Convert any HYPD affiliate link (whether from another creator or source)
+    into OUR HYPD affiliate store ID (e.g. 93944).
+    Example:
+      https://hypd.store/12345/afflink/daol5bac45l0tc0oo5rg
+      -> https://hypd.store/93944/afflink/daol5bac45l0tc0oo5rg
+    """
+    m = re.search(r"https?://(?:www\.)?hypd\.store/(?:\d+|[A-Za-z0-9_-]+)/afflink/([A-Za-z0-9_-]+)", url, re.I)
+    if m:
+        aff_id = m.group(1)
+        store = (target_store_id or "93944").strip()
+        return f"https://hypd.store/{store}/afflink/{aff_id}"
+    return url
 
 
 def collect_links(text: str) -> dict[str, str]:
@@ -122,7 +141,7 @@ def apply_amazon_tag(url: str, tag: str) -> str:
     return urlunparse(parsed._replace(query=query))
 
 
-def _render_base(text: str, amazon_tag: str, ek: dict[str, str]) -> str:
+def _render_base(text: str, amazon_tag: str, ek: dict[str, str], hypd_store_id: str = "93944") -> str:
     out_parts: list[str] = []
     last = 0
     for m in URL_RE.finditer(text):
@@ -131,6 +150,8 @@ def _render_base(text: str, amazon_tag: str, ek: dict[str, str]) -> str:
         kind = classify_url(url)
         if kind == "amazon":
             replacement = apply_amazon_tag(url, amazon_tag)
+        elif kind == "hypd":
+            replacement = convert_hypd_store_link(url, hypd_store_id)
         elif kind == "merchant":
             replacement = ek.get(url, url)
         else:
@@ -162,9 +183,9 @@ def _approval_render(text: str, amazon_tag: str) -> str:
             kept_lines.append(line)
             continue
 
-        # Line contains URLs: check if any is Amazon vs merchant
+        # Line contains URLs: check if any is Amazon vs merchant/hypd
         line_has_amazon = any(classify_url(u) == "amazon" for u in urls)
-        line_has_merchant = any(classify_url(u) == "merchant" for u in urls)
+        line_has_non_amazon = any(classify_url(u) in ("merchant", "hypd") for u in urls)
 
         if line_has_amazon:
             # Retag all amazon URLs on this line
@@ -172,13 +193,13 @@ def _approval_render(text: str, amazon_tag: str) -> str:
             for u in urls:
                 if classify_url(u) == "amazon":
                     out_line = out_line.replace(u, apply_amazon_tag(u, amazon_tag))
-                elif classify_url(u) == "merchant":
-                    # Drop merchant url from line
+                elif classify_url(u) in ("merchant", "hypd"):
+                    # Drop merchant or hypd url from line
                     out_line = out_line.replace(u, "").strip()
             if out_line.strip():
                 kept_lines.append(out_line)
                 has_amazon = True
-        elif line_has_merchant:
+        elif line_has_non_amazon:
             # Non-amazon merchant link line — drop it completely for approval channel
             continue
         else:
@@ -194,9 +215,10 @@ def _approval_render(text: str, amazon_tag: str) -> str:
     return result
 
 
-def _strip_amazon_render(text: str, ek: dict[str, str]) -> str:
+def _strip_amazon_render(text: str, ek: dict[str, str], hypd_store_id: str = "93944") -> str:
     """Produce a post where Amazon links/lines are completely REMOVED,
-    and all non-Amazon merchant links are converted to our EarnKaro."""
+    and all non-Amazon merchant links are converted to our EarnKaro,
+    and HYPD links rewritten to our hypd_store_id."""
     lines = text.splitlines()
     kept_lines: list[str] = []
 
@@ -207,26 +229,30 @@ def _strip_amazon_render(text: str, ek: dict[str, str]) -> str:
             continue
 
         line_has_amazon = any(classify_url(u) == "amazon" for u in urls)
-        line_has_merchant = any(classify_url(u) == "merchant" for u in urls)
+        line_has_other = any(classify_url(u) in ("merchant", "hypd") for u in urls)
 
-        if line_has_amazon and not line_has_merchant:
+        if line_has_amazon and not line_has_other:
             # Pure Amazon line -> remove completely
             continue
-        elif line_has_amazon and line_has_merchant:
-            # Line has both: remove amazon, rewrite merchant
+        elif line_has_amazon and line_has_other:
+            # Line has both: remove amazon, rewrite merchant/hypd
             out_line = line
             for u in urls:
                 if classify_url(u) == "amazon":
                     out_line = out_line.replace(u, "").strip()
+                elif classify_url(u) == "hypd":
+                    out_line = out_line.replace(u, convert_hypd_store_link(u, hypd_store_id))
                 elif classify_url(u) == "merchant":
                     out_line = out_line.replace(u, ek.get(u, u))
             if out_line.strip():
                 kept_lines.append(out_line)
         else:
-            # Non-amazon line -> rewrite merchant to earnkaro
+            # Non-amazon line -> rewrite merchant to earnkaro / hypd to store id
             out_line = line
             for u in urls:
-                if classify_url(u) == "merchant":
+                if classify_url(u) == "hypd":
+                    out_line = out_line.replace(u, convert_hypd_store_link(u, hypd_store_id))
+                elif classify_url(u) == "merchant":
                     out_line = out_line.replace(u, ek.get(u, u))
             kept_lines.append(out_line)
 
@@ -242,6 +268,7 @@ def render_for_influencer(
     role: str = "broadcast",
     strip_amazon: bool = False,
     clean_promos: bool = True,
+    hypd_store_id: str = "93944",
 ) -> str:
     """Render `text` for one influencer on a given channel `role`.
 
@@ -256,11 +283,11 @@ def render_for_influencer(
 
     strip_amazon:
       If True -> Amazon links and Amazon-only product lines are completely REMOVED.
-      Only Flipkart/Myntra/etc. (monetised through our EarnKaro) are posted.
+      Only Flipkart/Myntra/HYPD/etc. are posted.
 
     role:
       'broadcast' / 'whatsapp' -> full deal: Amazon links retagged to THEIR tag
-          (or omitted if strip_amazon=True), other merchants swapped to OUR EarnKaro.
+          (or omitted if strip_amazon=True), HYPD rewritten to OUR store ID, other merchants swapped to OUR EarnKaro.
       'approval' -> Amazon-only, posted NATIVELY (no shortener, amazon.in visible)
           with the '#ad (paid link)' disclosure.
     """
@@ -268,12 +295,12 @@ def render_for_influencer(
     ek = earnkaro_links or {}
 
     if strip_amazon:
-        rendered = _strip_amazon_render(post_text, ek)
+        rendered = _strip_amazon_render(post_text, ek, hypd_store_id=hypd_store_id)
     elif role == "approval":
         # Approval channel: ALWAYS native Amazon link with #ad disclosure. NEVER Bitly shortened.
         return _approval_render(post_text, amazon_tag)
     else:
-        rendered = _render_base(post_text, amazon_tag, ek)
+        rendered = _render_base(post_text, amazon_tag, ek, hypd_store_id=hypd_store_id)
 
     # Apply Bitly shortener replacements if available (for broadcast/whatsapp channels)
     if shortened_links and role != "approval":

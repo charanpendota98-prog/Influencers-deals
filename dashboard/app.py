@@ -86,8 +86,11 @@ def quick_add():
     only_amazon = request.form.get("only_amazon") == "1"
     allow_amazon = request.form.get("allow_amazon", "1") == "1"
     allow_earnkaro = request.form.get("allow_earnkaro", "1") == "1"
+    allow_hypd = request.form.get("allow_hypd", "1") == "1"
+    hypd_store_id = request.form.get("hypd_store_id", "93944").strip() or "93944"
     if only_amazon:
         allow_earnkaro = False
+        allow_hypd = False
 
     approval_tg = request.form.get("approval_tg", "").strip()
     broadcast_tg = request.form.get("broadcast_tg", "").strip()
@@ -105,14 +108,16 @@ def quick_add():
                             allowed_sources=allowed_src, bitly_api_key=bitly_key,
                             categories=categories, posting_schedule=schedule,
                             only_amazon=only_amazon, allow_amazon=allow_amazon,
-                            allow_earnkaro=allow_earnkaro)
+                            allow_earnkaro=allow_earnkaro, allow_hypd=allow_hypd,
+                            hypd_store_id=hypd_store_id)
 
     # 1. Approval Channel
     if approval_tg:
         ident = clean_identifier(approval_tg)
         db.add_channel(iid, "telegram", ident, role="approval", status="ready",
                        allowed_sources=allowed_src, categories=categories, posting_schedule=schedule,
-                       only_amazon=True, allow_amazon=True, allow_earnkaro=False)
+                       only_amazon=True, allow_amazon=True, allow_earnkaro=False,
+                       allow_hypd=False, hypd_store_id=hypd_store_id)
 
     # 2. Broadcast Channel
     if broadcast_tg:
@@ -123,7 +128,8 @@ def quick_add():
                        allowed_sources=allowed_src, bitly_api_key=bitly_key,
                        categories=categories, posting_schedule=schedule,
                        only_amazon=only_amazon, allow_amazon=allow_amazon,
-                       allow_earnkaro=allow_earnkaro)
+                       allow_earnkaro=allow_earnkaro, allow_hypd=allow_hypd,
+                       hypd_store_id=hypd_store_id)
 
     # 3. WhatsApp Channel/Group
     if whatsapp_id:
@@ -133,7 +139,8 @@ def quick_add():
                        allowed_sources=allowed_src, bitly_api_key=bitly_key,
                        categories=categories, posting_schedule=schedule,
                        only_amazon=only_amazon, allow_amazon=allow_amazon,
-                       allow_earnkaro=allow_earnkaro)
+                       allow_earnkaro=allow_earnkaro, allow_hypd=allow_hypd,
+                       hypd_store_id=hypd_store_id)
 
     return redirect(url_for("influencer_detail", inf_id=iid))
 
@@ -155,6 +162,8 @@ def update_profile(inf_id):
     only_amazon = request.form.get("only_amazon") == "1"
     allow_amazon = request.form.get("allow_amazon", "1") == "1"
     allow_earnkaro = request.form.get("allow_earnkaro", "1") == "1"
+    allow_hypd = request.form.get("allow_hypd", "1") == "1"
+    hypd_store_id = request.form.get("hypd_store_id", "93944").strip() or "93944"
     notes = request.form.get("notes", "").strip()
     active_str = request.form.get("active")
     active = (active_str == "1") if active_str is not None else None
@@ -164,9 +173,10 @@ def update_profile(inf_id):
     btn_text = request.form.get("custom_button_text", "").strip()
     btn_url = request.form.get("custom_button_url", "").strip()
 
-    # If user explicitly selected only_amazon=1, sync allow_earnkaro=0
+    # If user explicitly selected only_amazon=1, sync allow_earnkaro=0, allow_hypd=0
     if only_amazon:
         allow_earnkaro = False
+        allow_hypd = False
 
     db.update_influencer(
         inf_id,
@@ -183,6 +193,8 @@ def update_profile(inf_id):
         only_amazon=only_amazon,
         allow_amazon=allow_amazon,
         allow_earnkaro=allow_earnkaro,
+        allow_hypd=allow_hypd,
+        hypd_store_id=hypd_store_id,
         custom_button_enabled=btn_enabled,
         custom_button_text=btn_text,
         custom_button_url=btn_url,
@@ -210,6 +222,9 @@ def update_channel_route(channel_id):
     allow_amz = (allow_amz_str == "1") if allow_amz_str is not None else None
     allow_ek_str = request.form.get("allow_earnkaro")
     allow_ek = (allow_ek_str == "1") if allow_ek_str is not None else None
+    allow_hypd_str = request.form.get("allow_hypd")
+    allow_hypd = (allow_hypd_str == "1") if allow_hypd_str is not None else None
+    hypd_store_id = request.form.get("hypd_store_id", "").strip()
 
     # Custom button fields per channel
     btn_en_str = request.form.get("custom_button_enabled")
@@ -217,9 +232,10 @@ def update_channel_route(channel_id):
     btn_text = request.form.get("custom_button_text")
     btn_url = request.form.get("custom_button_url")
 
-    # If only_amazon is explicitly toggled on, sync allow_earnkaro=False
+    # If only_amazon is explicitly toggled on, sync allow_earnkaro=False, allow_hypd=False
     if only_amz:
         allow_ek = False
+        allow_hypd = False
 
     if ident:
         ident = clean_identifier(ident) if not ident.startswith("120") else ident
@@ -239,6 +255,8 @@ def update_channel_route(channel_id):
         only_amazon=only_amz,
         allow_amazon=allow_amz,
         allow_earnkaro=allow_ek,
+        allow_hypd=allow_hypd,
+        hypd_store_id=hypd_store_id if hypd_store_id else None,
         custom_button_enabled=btn_en,
         custom_button_text=btn_text,
         custom_button_url=btn_url,
@@ -265,8 +283,11 @@ def add_manual_channel(inf_id):
     strip_amz = request.form.get("strip_amazon") == "1"
     allow_amz = request.form.get("allow_amazon", "1") == "1"
     allow_ek = request.form.get("allow_earnkaro", "1") == "1"
+    allow_hypd = request.form.get("allow_hypd", "1") == "1"
+    hypd_store_id = request.form.get("hypd_store_id", "93944").strip() or "93944"
     if only_amz:
         allow_ek = False
+        allow_hypd = False
 
     if raw_ident:
         ident = clean_identifier(raw_ident) if platform == "telegram" else raw_ident
@@ -286,8 +307,10 @@ def add_manual_channel(inf_id):
             categories=categories,
             posting_schedule=schedule,
             only_amazon=only_amz,
-            allow_amazon=allow_amz,
+            allow_amazon=allow_amazon,
             allow_earnkaro=allow_ek,
+            allow_hypd=allow_hypd,
+            hypd_store_id=hypd_store_id,
         )
 
     return redirect(url_for("influencer_detail", inf_id=inf_id))
@@ -382,6 +405,8 @@ def onboard():
     wa = request.form.get("wa") in ("on", "1", "true")
     allow_amz = request.form.get("allow_amazon") in ("1", "on", "true")
     allow_ek = request.form.get("allow_earnkaro") in ("1", "on", "true")
+    allow_hypd = request.form.get("allow_hypd") in ("1", "on", "true")
+    hypd_store_id = request.form.get("hypd_store_id", "93944").strip() or "93944"
 
     if not name:
         name = "Influencer-" + phone[-4:] if phone else "New Partner"
@@ -391,7 +416,8 @@ def onboard():
     iid = db.add_influencer(name, tag, handle=handle, phone_number=phone,
                             use_dummy_sources=dummy, telegram_enabled=tg,
                             whatsapp_enabled=wa, allow_amazon=allow_amz,
-                            allow_earnkaro=allow_ek)
+                            allow_earnkaro=allow_ek, allow_hypd=allow_hypd,
+                            hypd_store_id=hypd_store_id)
     msgs = []
     # 3-channel auto setup for each influencer:
     # Channel 1: Amazon Approval Telegram channel (pure amazon.in + #ad disclosure)

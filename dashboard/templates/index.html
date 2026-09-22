@@ -219,8 +219,12 @@
         <label style="font-size: 13px; font-weight: 600; color: #fde68a; cursor: pointer; display:flex; align-items:center; gap:8px;">
           <input type="checkbox" name="allow_earnkaro" value="1" checked /> 💰 <b>EARNKARO ON</b> (Flipkart/Myntra Commissions)
         </label>
+        <label style="font-size: 13px; font-weight: 600; color: #f472b6; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="allow_hypd" value="1" checked /> 🛍️ <b>HYPD STORE ON</b> (Meesho Deals)
+        </label>
+        <input type="hidden" name="hypd_store_id" value="93944" />
         <label style="font-size: 13px; font-weight: 600; color: #93c5fd; cursor: pointer; display:flex; align-items:center; gap:8px;">
-          <input type="checkbox" name="only_amazon" value="1" onchange="if(this.checked){document.querySelector('input[name=allow_earnkaro]').checked=false;}else{document.querySelector('input[name=allow_earnkaro]').checked=true;}" /> 🛡️ <b>ONLY AMAZON</b> (Initial Trust Phase)
+          <input type="checkbox" name="only_amazon" value="1" onchange="if(this.checked){document.querySelector('input[name=allow_earnkaro]').checked=false;document.querySelector('input[name=allow_hypd]').checked=false;}else{document.querySelector('input[name=allow_earnkaro]').checked=true;document.querySelector('input[name=allow_hypd]').checked=true;}" /> 🛡️ <b>ONLY AMAZON</b> (Initial Trust Phase)
         </label>
       </div>
       <button type="submit" style="background: #2563eb; color: white; padding: 12px 32px; font-weight: 800; border-radius: 8px; cursor: pointer; border: none; font-size:15px; box-shadow:0 4px 14px rgba(37,99,235,0.4);">⚡ Save &amp; Start Live</button>
