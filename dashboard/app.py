@@ -65,12 +65,44 @@ def index():
     vm = db.latest_vm()
     settings = db.get_all_global_settings()
     sources = db.list_sources(active_only=False)
-    # Ensure standard production source channels exist without duplicates
+    # Master pool of deal sources (Meesho, Shopsy, Loot channels & network sources)
     default_sources = [
         ("Meesho Deals Official", "https://t.me/+6LA1ljXGlbNmMjA1"),
         ("Shopsy Loots Official", "https://t.me/+O3j4ghbtJzhjZjJl"),
         ("Premium Loot Deals", "https://t.me/+HUga1JTHwhBmNDE1"),
         ("Mega Loot Deals", "https://t.me/+8KzU3P58MJ9jN2M1"),
+        ("Under 99 Special Loots", "https://t.me/+LP6MYEpCwi0zOGYx"),
+        ("VIP Secret Loot Pool", "https://t.me/+qhlEwwkhb2hlNWZl"),
+        ("Flash Lootzone Tricks", "https://t.me/+uV5wcTkUWJEwM2Y1"),
+        ("Fast Deals Network", "https://t.me/+WvEWEYf7j3MyYzNl"),
+        ("Instant Trick Alerts", "https://t.me/+t--iQ-QFeJZiNmVl"),
+        ("Prime Lightning Deals", "https://t.me/+ky8g5O5KTr5mZmQ9"),
+        ("Loot Matrix Network", "https://t.me/+LNRQ0Y1-9RkzZDRl"),
+        ("Discount Express", "https://t.me/+-mv6ttVsltczNzFl"),
+        ("OZ Mega Source Pool", "https://t.me/+vZKuuHCZcX44M2I1"),
+        ("Fast Loot Tracker", "https://t.me/+FpXKV70NYNY0NzQ1"),
+        ("PowerLoot Official", "@powerloot"),
+        ("Deals Under 99", "@DealsUnder99_com"),
+        ("Under 99 Loot Deals", "@under_99_loot_deals"),
+        ("Loot Alerts Direct", "@loot_alerts"),
+        ("Telugu Techworld Loots", "@TeluguTechworld"),
+        ("Flipkarthiik Loots", "@Flipkarthiik"),
+        ("SmartBuy Loots & Deals", "@SB_Loots_And_Deals"),
+        ("IDOffers Prime", "@idoffers"),
+        ("IDOffers 2", "@idoffers2"),
+        ("Indian Online Offers", "@indian_online_offer"),
+        ("TechGlare Deals", "@techglaredeals"),
+        ("PriceHistory Deals", "@pricehistory"),
+        ("DealDost Community", "@dealdost"),
+        ("Magix Deals", "@Magixdeals_Magix"),
+        ("Deals Velocity", "@dealsvelocity"),
+        ("Rapid Deals Unlimited", "@rapiddeals_unlimited"),
+        ("Meesho Shopsy Offers", "@msho_shpsy_offers"),
+        ("Myntra Ajio Shopsy Deals", "@Myntra_Ajio_Deals_Shopsy"),
+        ("GrabOn Deals India", "@GrabOnIndiaOfficial"),
+        ("Hidden Deals Amazon", "@hidden_loot_deals_amazon"),
+        ("Real Shopping Deals", "@RealShoppingDeals"),
+        ("iCoolz Tricks & Loots", "@icoolzTricks"),
     ]
     existing_specs = {s["spec"] for s in sources}
     added_any = False
