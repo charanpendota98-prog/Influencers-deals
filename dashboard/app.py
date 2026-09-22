@@ -70,8 +70,19 @@ def index():
         db.add_source("Meesho Deals Channel", "https://t.me/+6LA1ljXGlbNmMjA1")
         sources = db.list_sources(active_only=False)
 
+    vault_err = request.args.get("vault_err")
+    vault_success = request.args.get("vault_success")
+
+    # Current effective affiliate credentials
+    current_ek_key = settings.get("earnkaro_api_key") or config.EARNKARO_API_KEY or ""
+    current_ek_pubid = settings.get("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or "5478322"
+    current_hypd_store = settings.get("hypd_store_id") or "93944"
+
     return render_template("index.html", influencers=influencers, stats=stats, vm=vm,
-                           search_query=q, settings=settings, sources=sources)
+                           search_query=q, settings=settings, sources=sources,
+                           vault_err=vault_err, vault_success=vault_success,
+                           current_ek_key=current_ek_key, current_ek_pubid=current_ek_pubid,
+                           current_hypd_store=current_hypd_store)
 
 
 @app.route("/sources/add", methods=["POST"])
@@ -109,6 +120,26 @@ def update_global_settings():
     db.set_global_setting("nav_button_url", nav_btn_url)
 
     return redirect(url_for("index"))
+
+
+@app.route("/admin/affiliate-vault/update", methods=["POST"])
+def update_affiliate_vault():
+    pwd = request.form.get("admin_password", "").strip()
+    if pwd != config.ADMIN_DELETE_PASSWORD:
+        return redirect(url_for("index", vault_err="invalid_password"))
+
+    ek_key = request.form.get("earnkaro_api_key", "").strip()
+    ek_pubid = request.form.get("earnkaro_publisher_id", "").strip()
+    hypd_store = request.form.get("hypd_store_id", "").strip()
+
+    if ek_key:
+        db.set_global_setting("earnkaro_api_key", ek_key)
+    if ek_pubid:
+        db.set_global_setting("earnkaro_publisher_id", ek_pubid)
+    if hypd_store:
+        db.set_global_setting("hypd_store_id", hypd_store)
+
+    return redirect(url_for("index", vault_success="1"))
 
 
 @app.route("/quick-add", methods=["POST"])

@@ -24,7 +24,7 @@ import time
 
 import aiohttp
 
-from . import config
+from . import config, db
 
 # Affiliate shorteners whose resolved URL carries affExtParam2. We accept the
 # short link but verify (best-effort) that it redirects to OUR publisher id.
@@ -128,7 +128,14 @@ async def convert_one(session: aiohttp.ClientSession, url: str) -> str:
     if key in CACHE and now - CACHE[key][0] < CACHE_TTL:
         return CACHE[key][1]
 
-    if not config.EARNKARO_API_KEY:
+    # Dynamically check global settings from DB first (supports secret admin dashboard update)
+    # falling back to config.py / .env
+    db_ek_key = db.get_global_setting("earnkaro_api_key")
+    db_ek_pubid = db.get_global_setting("earnkaro_publisher_id")
+    effective_ek_key = db_ek_key if db_ek_key else config.EARNKARO_API_KEY
+    effective_ek_pubid = db_ek_pubid if db_ek_pubid else config.EARNKARO_PUBLISHER_ID
+
+    if not effective_ek_key:
         # No key configured (e.g. unit/test env): keep the original so the deal
         # still works, but signal it was not monetised.
         CACHE[key] = (now, url)
@@ -143,7 +150,7 @@ async def convert_one(session: aiohttp.ClientSession, url: str) -> str:
                 config.EARNKARO_API_URL,
                 json={"deal": api_deal_url},
                 headers={
-                    "Authorization": f"Bearer {config.EARNKARO_API_KEY}",
+                    "Authorization": f"Bearer {effective_ek_key}",
                     "Content-Type": "application/json",
                 },
                 timeout=aiohttp.ClientTimeout(total=max(8.0, HTTP_TOTAL_TIMEOUT * 2)),
@@ -151,7 +158,7 @@ async def convert_one(session: aiohttp.ClientSession, url: str) -> str:
                 body = await resp.text()
                 if resp.status in (429, 500, 502, 503, 504):
                     raise RuntimeError(f"EarnKaro HTTP {resp.status}")
-                converted = parse_ek_response(body, config.EARNKARO_PUBLISHER_ID)
+                converted = parse_ek_response(body, effective_ek_pubid)
                 if not converted:
                     # Not a successful conversion — fall back to the original link
                     # so the deal still posts (just without our commission).
@@ -160,9 +167,9 @@ async def convert_one(session: aiohttp.ClientSession, url: str) -> str:
                 # Short-link provenance: fktr.in/ekaro.in etc. don't carry
                 # affExtParam2 directly, so follow the redirect (best-effort) and
                 # confirm it lands on OUR publisher id. A mismatch -> reject.
-                if config.EARNKARO_PUBLISHER_ID and _is_shortener(converted):
+                if effective_ek_pubid and _is_shortener(converted):
                     resolved_pubid = await _resolve_affextparam2(session, converted)
-                    if resolved_pubid and resolved_pubid != config.EARNKARO_PUBLISHER_ID:
+                    if resolved_pubid and resolved_pubid != effective_ek_pubid:
                         CACHE[key] = (now, url)
                         return url
                 if _clean(converted) == _clean(url):

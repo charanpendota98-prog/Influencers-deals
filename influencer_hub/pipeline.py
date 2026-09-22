@@ -263,7 +263,9 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             # Check if this deal needs Bitly URL shortening:
             # ONLY used if influencer has provided their Bitly API key (or channel has its own key)
             effective_bitly_key = (ch.get("bitly_api_key") or inf.get("bitly_api_key") or "").strip()
-            effective_hypd_store = (ch.get("hypd_store_id") or inf.get("hypd_store_id") or "93944").strip()
+            # Resolve HYPD Store ID priority: Channel override -> Influencer profile -> Global Central Secret Setting -> default "93944"
+            global_hypd_store = db.get_global_setting("hypd_store_id", "93944")
+            effective_hypd_store = (ch.get("hypd_store_id") or inf.get("hypd_store_id") or global_hypd_store or "93944").strip()
             shortened_map = {}
 
             if effective_bitly_key and role != "approval":
