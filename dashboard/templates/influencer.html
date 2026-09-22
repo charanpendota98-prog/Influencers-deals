@@ -64,6 +64,14 @@
       <span class="hint" style="font-size:11px;">Multiple keys supported with automatic failover</span>
     </div>
     <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde047;">🛡️ Mode: Only Amazon Deals vs Multi-Store</label>
+      <select name="only_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px; background:#1e1b4b; border:1px solid #eab308; color:#fef08a;">
+        <option value="0" {{ 'selected' if not inf.only_amazon else '' }}>🌐 Multi-Store Active (Amazon + Flipkart + Myntra + Meesho)</option>
+        <option value="1" {{ 'selected' if inf.only_amazon else '' }}>🛡️ Phase 1: ONLY AMAZON DEALS (Trust Builder - Non-Amazon Skipped)</option>
+      </select>
+      <span class="hint" style="font-size:10px; color:#fef08a;">'Only Amazon' select cheste non-Amazon deals skip avthayi. EarnKaro/HYPD off lo untayi.</span>
+    </div>
+    <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">📦 Amazon Deals Switch (Toggle Amazon)</label>
       <select name="allow_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px; background:#0c1a14; border:1px solid #16a34a; color:#86efac;">
         <option value="1" {{ 'selected' if inf.allow_amazon != 0 else '' }}>🟢 AMAZON ON: Post Amazon Deals (with their tag)</option>
