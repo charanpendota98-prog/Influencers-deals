@@ -201,16 +201,15 @@ def secret_vault_tab():
     auth_err = False
     vault_success = request.args.get("vault_success") == "1"
     vault_err = request.args.get("vault_err")
+    unlocked = session.get("vault_unlocked", False)
 
     if request.method == "POST":
         pwd = request.form.get("admin_password", "").strip()
         if pwd == config.ADMIN_DELETE_PASSWORD:
             session["vault_unlocked"] = True
-            return redirect(url_for("secret_vault_tab"))
+            unlocked = True
         else:
             auth_err = True
-
-    unlocked = session.get("vault_unlocked", False)
     current_hypd_store = db.get_global_setting("hypd_store_id") or "93944"
     current_ek_pubid = db.get_global_setting("earnkaro_publisher_id") or "5478322"
     sources = db.list_sources()
