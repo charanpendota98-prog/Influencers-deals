@@ -496,4 +496,92 @@
     </tbody>
   </table>
 </section>
+
+<!-- 🧪 REAL-TIME INTERACTIVE DEAL CONVERSION SIMULATOR & TESTER -->
+<section class="card" style="border: 2px solid #8b5cf6; background: #0f1123; padding: 20px; border-radius: 12px; margin-top: 24px; box-shadow:0 8px 30px rgba(139,92,246,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #2e1065; padding-bottom:12px; margin-bottom:16px;">
+    <div>
+      <h3 style="margin:0; font-size:18px; color:#c4b5fd; display:flex; align-items:center; gap:8px;">
+        🧪 Live Deal Conversion Simulator &amp; Tester
+        <span style="font-size:11px; background:#4c1d95; color:#ede9fe; padding:2px 10px; border-radius:12px; font-weight:700;">INSTANT PREVIEW</span>
+      </h3>
+      <p class="hint" style="margin:4px 0 0; font-size:12px; color:#a78bfa;">
+        మీరు ఏ Telegram/Meesho/Amazon/Flipkart deal text అయినా ఇక్కడ పేస్ట్ చేసి <b>"⚡ Test Convert"</b> క్లిక్ చేయండి. అది మన Affiliate Tag &amp; HYPD Store ID తో ఎలా మారుతుందో లైవ్‌గా చూడవచ్చు!
+      </p>
+    </div>
+    <span style="font-size:12px; color:#34d399; font-weight:bold;">● Zero Risk · 100% Client-Side Safe</span>
+  </div>
+
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+    <div>
+      <label style="font-size:12px; font-weight:700; color:#cbd5e1; display:block; margin-bottom:6px;">
+        📥 Raw Deal Text (From Any Source Channel):
+      </label>
+      <textarea id="sim-input" rows="7" style="width:100%; font-family:monospace; font-size:12px; padding:10px; background:#181829; border:1px solid #3b4261; color:#f8fafc; border-radius:8px;">🔥 Super Loot Deals Today!
+1. Meesho Saree at ₹199: https://hypd.store/88888/afflink/daol5bac45l0tc0oo5rg
+2. Amazon Soundbar at ₹1,499: https://www.amazon.in/dp/B08XYZ1234?tag=competitor-21
+3. Flipkart Shoes at ₹499: https://www.flipkart.com/shoes/p/itm123456?affid=lehlah&affextparam1=test</textarea>
+
+      <div style="display:flex; gap:12px; margin-top:10px; align-items:center;">
+        <div>
+          <label style="font-size:11px; color:#94a3b8; display:block;">Amazon Tag:</label>
+          <input id="sim-tag" value="mypartner-21" style="font-size:12px; padding:4px 8px; width:120px; font-family:monospace;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#94a3b8; display:block;">HYPD Store ID:</label>
+          <input id="sim-hypd" value="{{ current_hypd_store }}" style="font-size:12px; padding:4px 8px; width:90px; font-family:monospace;" />
+        </div>
+        <div style="flex:1; text-align:right; padding-top:14px;">
+          <button type="button" onclick="runLiveSimulator()" style="background:#8b5cf6; color:white; padding:9px 24px; font-weight:800; border-radius:8px; border:none; cursor:pointer; font-size:13px; box-shadow:0 4px 14px rgba(139,92,246,0.4);">
+            ⚡ Test Convert Now
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <label style="font-size:12px; font-weight:700; color:#34d399; display:block; margin-bottom:6px;">
+        📤 Converted Output (What Followers Receive):
+      </label>
+      <div id="sim-output" style="height:175px; overflow-y:auto; font-family:monospace; font-size:12px; padding:12px; background:#0a0d18; border:1px solid #10b981; color:#a7f3d0; border-radius:8px; white-space:pre-wrap;">Click '⚡ Test Convert Now' to see instant transformation...</div>
+      <div id="sim-links-detected" style="margin-top:8px; font-size:11px; color:#93c5fd;"></div>
+    </div>
+  </div>
+</section>
+
+<script>
+function runLiveSimulator() {
+  const text = document.getElementById('sim-input').value;
+  const tag = document.getElementById('sim-tag').value;
+  const hypd = document.getElementById('sim-hypd').value;
+  const outDiv = document.getElementById('sim-output');
+  const linksDiv = document.getElementById('sim-links-detected');
+
+  outDiv.innerHTML = '<span style="color:#fbbf24;">Converting links through pipeline engine...</span>';
+
+  const formData = new FormData();
+  formData.append('sample_text', text);
+  formData.append('amazon_tag', tag);
+  formData.append('hypd_store_id', hypd);
+
+  fetch('/api/test-render-deal', {
+    method: 'POST',
+    body: formData
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      outDiv.textContent = data.rendered;
+      let linksInfo = '<b>Detected Links:</b> ';
+      for (const [url, kind] of Object.entries(data.detected_links || {})) {
+        linksInfo += `<span style="background:#1e293b; padding:2px 6px; border-radius:4px; margin-right:6px;">${kind.toUpperCase()}: ${url.substring(0, 35)}...</span>`;
+      }
+      linksDiv.innerHTML = linksInfo;
+    }
+  })
+  .catch(err => {
+    outDiv.innerHTML = '<span style="color:#f87171;">Error: ' + err + '</span>';
+  });
+}
+</script>
 {% endblock %}

@@ -678,6 +678,39 @@ def wa_connect_chat(inf_id):
     return redirect(url_for("influencer_detail", inf_id=inf_id))
 
 
+@app.route("/api/test-render-deal", methods=["POST"])
+def api_test_render_deal():
+    """Live interactive simulator: tests link rewriting for Amazon, HYPD, and EarnKaro
+    with instant real-time visual output in the dashboard!
+    """
+    sample_text = request.form.get("sample_text", "").strip()
+    amz_tag = request.form.get("amazon_tag", "demo-21").strip()
+    hypd_store = request.form.get("hypd_store_id", "93944").strip()
+    role = request.form.get("role", "broadcast").strip()
+
+    if not sample_text:
+        sample_text = (
+            "🔥 Loot Deals Today!\n"
+            "1. Meesho Kurti: https://hypd.store/12345/afflink/daol5bac45l0tc0oo5rg\n"
+            "2. Amazon Earbuds: https://www.amazon.in/dp/B08XYZ1234?tag=oldcreator-21\n"
+            "3. Flipkart Shoes: https://www.flipkart.com/shoes/p/itm123456?affid=lehlah&affextparam1=test"
+        )
+
+    from influencer_hub import link_router
+    rendered = link_router.render_for_influencer(
+        sample_text,
+        amazon_tag=amz_tag,
+        role=role,
+        hypd_store_id=hypd_store,
+    )
+    return jsonify({
+        "ok": True,
+        "input": sample_text,
+        "rendered": rendered,
+        "detected_links": link_router.collect_links(sample_text),
+    })
+
+
 @app.route("/trigger-all-hourly-loot", methods=["POST"])
 def trigger_all_hourly_loot():
     """Trigger 'Loot of the Hour' highlight across all active channels."""
