@@ -64,8 +64,38 @@ def index():
     stats = db.post_stats()
     vm = db.latest_vm()
     settings = db.get_all_global_settings()
+    sources = db.list_sources(active_only=False)
+    # Ensure default source exists if list is empty
+    if not sources:
+        db.add_source("Meesho Deals Channel", "https://t.me/+6LA1ljXGlbNmMjA1")
+        sources = db.list_sources(active_only=False)
+
     return render_template("index.html", influencers=influencers, stats=stats, vm=vm,
-                           search_query=q, settings=settings)
+                           search_query=q, settings=settings, sources=sources)
+
+
+@app.route("/sources/add", methods=["POST"])
+def add_deal_source():
+    name = request.form.get("name", "").strip()
+    spec = request.form.get("spec", "").strip()
+    kind = request.form.get("kind", "production").strip()
+    if spec:
+        if not name:
+            name = spec.split("/")[-1].replace("+", "").replace("@", "")
+        db.add_source(name, spec, kind=kind)
+    return redirect(url_for("index"))
+
+
+@app.route("/sources/<int:source_id>/delete", methods=["POST"])
+def delete_deal_source(source_id):
+    db.delete_source(source_id)
+    return redirect(url_for("index"))
+
+
+@app.route("/sources/<int:source_id>/toggle", methods=["POST"])
+def toggle_deal_source(source_id):
+    db.toggle_source(source_id)
+    return redirect(url_for("index"))
 
 
 @app.route("/global-settings/update", methods=["POST"])

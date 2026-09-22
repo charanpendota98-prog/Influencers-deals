@@ -680,9 +680,27 @@ def add_source(name: str, spec: str, kind: str = "production", active: bool = Tr
     try:
         cur = con.execute(
             "INSERT INTO sources (name, spec, kind, active) VALUES (?,?,?,?)",
-            (name, spec, kind, 1 if active else 0))
+            (name.strip(), spec.strip(), kind.strip(), 1 if active else 0))
         con.commit()
         return int(cur.lastrowid)
+    finally:
+        con.close()
+
+
+def delete_source(source_id: int) -> None:
+    con = _connect()
+    try:
+        con.execute("DELETE FROM sources WHERE id=?", (source_id,))
+        con.commit()
+    finally:
+        con.close()
+
+
+def toggle_source(source_id: int) -> None:
+    con = _connect()
+    try:
+        con.execute("UPDATE sources SET active = CASE WHEN active=1 THEN 0 ELSE 1 END WHERE id=?", (source_id,))
+        con.commit()
     finally:
         con.close()
 

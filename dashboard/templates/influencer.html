@@ -120,9 +120,12 @@
         <label style="font-size: 13px; font-weight: 700; color:#c7d2fe; margin:0; display:flex; align-items:center; gap:8px;">
           🔘 <b>Telegram / WhatsApp Post Navigation Button</b> (e.g. Join Shpsy Loots ❤️ ↗️)
         </label>
-        <label style="font-size:12px; color:#a5b4fc; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if inf.custom_button_enabled else '' }} /> Enable Navigation Button on Posts
-        </label>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <input type="hidden" name="custom_button_enabled" value="0" />
+          <label style="font-size:12px; color:#a5b4fc; cursor:pointer; display:flex; align-items:center; gap:6px;">
+            <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if inf.custom_button_enabled else '' }} /> Enable Navigation Button on Posts
+          </label>
+        </div>
       </div>
       <p class="hint" style="font-size:11px; margin-top:0; color:#94a3b8;">
         ఇన్‌ఫ్లుయెన్సర్ పోస్ట్ క్రింద మన సొంత ఛానల్ బటన్ అమర్చవచ్చు! క్లిక్ చేయగానే యూజర్లు మన మెయిన్ ఛానల్‌కు నావిగేట్ అవుతారు (Empty unte Universal Settings nunchi teesukuntundi).
@@ -270,21 +273,25 @@
           </td>
           <td>
             <div>
-              <label style="display: block; cursor: pointer; color: #86efac; font-weight: 600; font-size: 11px;">
-                <input type="checkbox" name="allow_amazon" value="1" {{ 'checked' if c.allow_amazon != 0 else '' }} /> 📦 Amazon ON
-              </label>
-              <label style="display: block; cursor: pointer; color: #fde68a; font-weight: 600; font-size: 11px; margin-top:2px;">
-                <input type="checkbox" name="allow_earnkaro" value="1" {{ 'checked' if (c.allow_earnkaro != 0 and not c.only_amazon) else '' }} /> 💰 EarnKaro ON
-              </label>
-              <label style="display: block; cursor: pointer; color: #f472b6; font-weight: 600; font-size: 11px; margin-top:2px;">
-                <input type="checkbox" name="allow_hypd" value="1" {{ 'checked' if (c.allow_hypd != 0 and not c.only_amazon) else '' }} /> 🛍️ HYPD ON
-              </label>
-              <input name="hypd_store_id" value="{{ c.hypd_store_id or '93944' }}" placeholder="HYPD Store ID" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px; font-family: monospace;" title="Channel HYPD Store ID" />
-              <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt Tag" style="font-size: 11px; padding: 3px 5px; width: 100px; margin-top: 3px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
-              <div style="margin-top:4px; padding-top:3px; border-top:1px dashed #334155;">
-                <label style="display: block; cursor: pointer; color: #c7d2fe; font-size: 10px;">
-                  <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if c.custom_button_enabled else '' }} /> 🔘 Custom Button
+                <input type="hidden" name="allow_amazon" value="0" />
+                <label style="display: block; cursor: pointer; color: #86efac; font-weight: 600; font-size: 11px;">
+                  <input type="checkbox" name="allow_amazon" value="1" {{ 'checked' if c.allow_amazon != 0 else '' }} /> 📦 Amazon ON
                 </label>
+                <input type="hidden" name="allow_earnkaro" value="0" />
+                <label style="display: block; cursor: pointer; color: #fde68a; font-weight: 600; font-size: 11px; margin-top:2px;">
+                  <input type="checkbox" name="allow_earnkaro" value="1" {{ 'checked' if (c.allow_earnkaro != 0 and not c.only_amazon) else '' }} /> 💰 EarnKaro ON
+                </label>
+                <input type="hidden" name="allow_hypd" value="0" />
+                <label style="display: block; cursor: pointer; color: #f472b6; font-weight: 600; font-size: 11px; margin-top:2px;">
+                  <input type="checkbox" name="allow_hypd" value="1" {{ 'checked' if (c.allow_hypd != 0 and not c.only_amazon) else '' }} /> 🛍️ HYPD ON
+                </label>
+                <input name="hypd_store_id" value="{{ c.hypd_store_id or '93944' }}" placeholder="HYPD Store ID" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px; font-family: monospace;" title="Channel HYPD Store ID" />
+                <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt Tag" style="font-size: 11px; padding: 3px 5px; width: 100px; margin-top: 3px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
+                <div style="margin-top:4px; padding-top:3px; border-top:1px dashed #334155;">
+                  <input type="hidden" name="custom_button_enabled" value="0" />
+                  <label style="display: block; cursor: pointer; color: #c7d2fe; font-size: 10px;">
+                    <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if c.custom_button_enabled else '' }} /> 🔘 Custom Button
+                  </label>
                 <input name="custom_button_text" value="{{ c.custom_button_text or '' }}" placeholder="Join Shpsy Loots ❤️" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px;" title="Button Label" />
                 <input name="custom_button_url" value="{{ c.custom_button_url or '' }}" placeholder="https://t.me/channel" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px; font-family:monospace;" title="Target Channel Link" />
               </div>

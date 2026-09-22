@@ -86,6 +86,57 @@
   </form>
 </section>
 
+<!-- TELEGRAM DEAL SOURCES MANAGER (PERFECT SOURCE CHANNELS POOL) -->
+<section class="card" style="border: 2px solid #0284c7; background: #0c182a; padding: 16px 20px; border-radius: 12px; margin-bottom: 20px; box-shadow:0 4px 20px rgba(2,132,199,0.2);">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #1e293b; padding-bottom:12px; margin-bottom:14px;">
+    <div>
+      <h3 style="margin:0; font-size:17px; color:#38bdf8; display:flex; align-items:center; gap:8px;">
+        📡 Shared Telegram Source Channels Pool (Ingestion Engine)
+        <span style="font-size:11px; background:#0369a1; color:#e0f2fe; padding:2px 8px; border-radius:12px;">AUTO-POLL &amp; CONVERT</span>
+      </h3>
+      <p class="hint" style="margin:4px 0 0; font-size:12px; color:#94a3b8;">
+        ఇక్కడున్న Telegram Source Channels (e.g. Meesho Deals, Powerloot etc.) నుండి deals ఆటోమేటిక్‌గా లాగి, మన Affiliate Links తో ప్రతి influencer ఛానల్‌కు పంపిస్తుంది.
+      </p>
+    </div>
+    <div>
+      <span style="font-size:12px; color:#bae6fd; font-weight:600;">
+        Active Sources: <b style="color:#38bdf8;">{{ sources|selectattr('active', 'equalto', 1)|list|length }}</b> / {{ sources|length }}
+      </span>
+    </div>
+  </div>
+
+  <!-- Source Channels List -->
+  <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
+    {% for s in sources %}
+      <div style="background:#0f172a; border:1px solid {{ '#0284c7' if s.active else '#475569' }}; padding:8px 14px; border-radius:8px; display:flex; align-items:center; gap:10px; font-size:12px;">
+        <span style="color: {{ '#34d399' if s.active else '#94a3b8' }}; font-weight:bold;">●</span>
+        <b style="color:#f8fafc;">{{ s.name }}</b>
+        <code style="color:#7dd3fc; font-size:11px;">{{ s.spec }}</code>
+        <form method="post" action="{{ url_for('toggle_deal_source', source_id=s.id) }}" style="display:inline; margin:0;">
+          <button type="submit" style="background:none; border:none; color:{{ '#f59e0b' if s.active else '#10b981' }}; cursor:pointer; font-size:11px; text-decoration:underline;">
+            {{ 'Pause' if s.active else 'Activate' }}
+          </button>
+        </form>
+        <form method="post" action="{{ url_for('delete_deal_source', source_id=s.id) }}" style="display:inline; margin:0;" onsubmit="return confirm('Remove source channel?');">
+          <button type="submit" style="background:none; border:none; color:#ef4444; cursor:pointer; font-size:13px;" title="Delete Source">✕</button>
+        </form>
+      </div>
+    {% endfor %}
+  </div>
+
+  <!-- Add New Source Channel Form -->
+  <form method="post" action="{{ url_for('add_deal_source') }}" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:#07101e; padding:10px 14px; border-radius:8px; border:1px dashed #1e3a8a;">
+    <span style="font-size:12px; font-weight:700; color:#38bdf8;">➕ Add Source:</span>
+    <input name="name" placeholder="Channel Name (e.g. Meesho Deals)" style="font-size:12px; width:180px;" />
+    <input name="spec" placeholder="Invite link or @channel (e.g. https://t.me/+6LA1ljXGlbNmMjA1)" required style="font-size:12px; flex:1; min-width:260px; font-family:monospace;" />
+    <select name="kind" style="font-size:12px; padding:6px;">
+      <option value="production">Production Source</option>
+      <option value="dummy">Staging / Test Source</option>
+    </select>
+    <button type="submit" style="background:#0284c7; color:white; padding:7px 16px; font-weight:700; border-radius:6px; border:none; cursor:pointer; font-size:12px;">+ Connect Source</button>
+  </form>
+</section>
+
 <!-- SEARCH & BULK TOOLBAR -->
 <section class="card" style="border: 1px solid #1e3a8a; background: #0f172a; padding: 14px 20px; border-radius: 10px;">
   <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
