@@ -66,9 +66,9 @@
       </div>
     </div>
     <div style="display:flex; align-items:center; gap:14px;">
-      <button onclick="document.getElementById('affiliate-vault-section').scrollIntoView({behavior: 'smooth'});" style="background:#831843; border:1px solid #db2777; color:#fbcfe8; font-size:12px; font-weight:700; padding:6px 14px; border-radius:6px; cursor:pointer;">
-        🔒 Secret Central Affiliate Vault
-      </button>
+      <a href="/admin/secret-vault" style="background: linear-gradient(135deg, #ec4899, #db2777); border:1px solid #f472b6; color:#fff; font-size:12px; font-weight:800; padding:8px 16px; border-radius:8px; text-decoration:none; display:inline-flex; align-items:center; gap:6px; box-shadow:0 4px 12px rgba(236,72,153,0.35);">
+        🔒 Open Secret Vault &amp; Sources
+      </a>
       {% if vm %}
         <div style="font-size:12px; color:#94a3b8; text-align:right;">
           CPU: <b style="color:#fff;">{{ vm.cpu_pct }}%</b> | RAM: <b style="color:#fff;">{{ vm.mem_pct }}%</b> | Bot: <b class="{% if vm.bot_running %}ok{% else %}bad{% endif %}">{% if vm.bot_running %}ONLINE{% else %}DOWN{% endif %}</b>
@@ -76,70 +76,6 @@
       {% endif %}
     </div>
   </div>
-</section>
-
-<!-- 🔒 SECRET CENTRAL AFFILIATE VAULT (EARNKARO & HYPD PASSWORD-PROTECTED MANAGER) -->
-<section id="affiliate-vault-section" class="card" style="border: 2px solid #ec4899; background: #1a0b1c; padding: 16px 20px; border-radius: 12px; margin-bottom: 20px; box-shadow:0 4px 25px rgba(236,72,153,0.25);">
-  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #4a044e; padding-bottom:12px; margin-bottom:14px;">
-    <div>
-      <h3 style="margin:0; font-size:17px; color:#f472b6; display:flex; align-items:center; gap:8px;">
-        🔒 Secret Central Affiliate Credentials Vault (Password Protected)
-        <span style="font-size:11px; background:#701a75; color:#fdf4ff; padding:2px 8px; border-radius:12px;">ADMIN ONLY</span>
-      </h3>
-      <p class="hint" style="margin:4px 0 0; font-size:12px; color:#e879f9;">
-        మన EarnKaro API Key / Publisher ID మరియు HYPD Affiliate Store ID eppudaina secret gaa change cheskovachu. Server restart avasaram ledu!
-      </p>
-    </div>
-    {% if vault_success %}
-      <span style="background:#065f46; color:#6ee7b7; padding:4px 12px; border-radius:6px; font-size:12px; font-weight:bold;">
-        ✅ Affiliate Credentials Updated Successfully!
-      </span>
-    {% elif vault_err %}
-      <span style="background:#7f1d1d; color:#fca5a5; padding:4px 12px; border-radius:6px; font-size:12px; font-weight:bold;">
-        ❌ Invalid Admin Password! Access Denied.
-      </span>
-    {% endif %}
-  </div>
-
-  <form method="post" action="{{ url_for('update_affiliate_vault') }}" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)) auto; gap:14px; align-items:flex-end;">
-    <div>
-      <label style="font-size:11px; color:#fbcfe8; display:block; margin-bottom:4px; font-weight:700;">
-        🛍️ Central HYPD Store ID (Meesho)
-      </label>
-      <input name="hypd_store_id" value="{{ current_hypd_store }}" placeholder="93944" style="width:100%; font-size:13px; font-family:monospace; background:#2e1065; border:1px solid #a855f7; color:#f3e8ff; padding:8px 10px; border-radius:6px;" required />
-      <span class="hint" style="font-size:10px; color:#c084fc;">All incoming Meesho deals will use this store ID.</span>
-    </div>
-
-    <div>
-      <label style="font-size:11px; color:#fbcfe8; display:block; margin-bottom:4px; font-weight:700;">
-        💰 EarnKaro Publisher ID
-      </label>
-      <input name="earnkaro_publisher_id" value="{{ current_ek_pubid }}" placeholder="5478322" style="width:100%; font-size:13px; font-family:monospace; background:#2e1065; border:1px solid #a855f7; color:#f3e8ff; padding:8px 10px; border-radius:6px;" required />
-      <span class="hint" style="font-size:10px; color:#c084fc;">Your locked EarnKaro Publisher ID for verification.</span>
-    </div>
-
-    <div>
-      <label style="font-size:11px; color:#fbcfe8; display:block; margin-bottom:4px; font-weight:700;">
-        🔑 EarnKaro Bearer API Token (JWT)
-      </label>
-      <input type="password" name="earnkaro_api_key" placeholder="Enter new API Token (or leave blank to keep)" style="width:100%; font-size:13px; font-family:monospace; background:#2e1065; border:1px solid #a855f7; color:#f3e8ff; padding:8px 10px; border-radius:6px;" />
-      <span class="hint" style="font-size:10px; color:#c084fc;">Token stays hidden securely in the vault.</span>
-    </div>
-
-    <div>
-      <label style="font-size:11px; color:#f87171; display:block; margin-bottom:4px; font-weight:800;">
-        🔐 Secret Admin Password *
-      </label>
-      <input type="password" name="admin_password" placeholder="Admin Password" required style="width:100%; font-size:13px; background:#450a0a; border:1px solid #dc2626; color:#fecaca; padding:8px 10px; border-radius:6px;" />
-      <span class="hint" style="font-size:10px; color:#fca5a5;">Requires password to apply changes.</span>
-    </div>
-
-    <div>
-      <button type="submit" style="background: linear-gradient(135deg, #db2777, #9d174d); color:white; padding:10px 22px; font-weight:800; border-radius:8px; border:none; cursor:pointer; font-size:13px; box-shadow:0 4px 15px rgba(219,39,119,0.4); white-space:nowrap;">
-        🛡️ Update Secret Vault
-      </button>
-    </div>
-  </form>
 </section>
 
 <!-- GLOBAL POST NAVIGATION BUTTON (UNIVERSAL SETTINGS BAR) -->
@@ -178,57 +114,6 @@
         💾 Save Universal Button
       </button>
     </div>
-  </form>
-</section>
-
-<!-- TELEGRAM DEAL SOURCES MANAGER (PERFECT SOURCE CHANNELS POOL) -->
-<section class="card" style="border: 2px solid #0284c7; background: #0c182a; padding: 16px 20px; border-radius: 12px; margin-bottom: 20px; box-shadow:0 4px 20px rgba(2,132,199,0.2);">
-  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #1e293b; padding-bottom:12px; margin-bottom:14px;">
-    <div>
-      <h3 style="margin:0; font-size:17px; color:#38bdf8; display:flex; align-items:center; gap:8px;">
-        📡 Shared Telegram Source Channels Pool (Ingestion Engine)
-        <span style="font-size:11px; background:#0369a1; color:#e0f2fe; padding:2px 8px; border-radius:12px;">AUTO-POLL &amp; CONVERT</span>
-      </h3>
-      <p class="hint" style="margin:4px 0 0; font-size:12px; color:#94a3b8;">
-        ఇక్కడున్న Telegram Source Channels (e.g. Meesho Deals, Powerloot etc.) నుండి deals ఆటోమేటిక్‌గా లాగి, మన Affiliate Links తో ప్రతి influencer ఛానల్‌కు పంపిస్తుంది.
-      </p>
-    </div>
-    <div>
-      <span style="font-size:12px; color:#bae6fd; font-weight:600;">
-        Active Sources: <b style="color:#38bdf8;">{{ sources|selectattr('active', 'equalto', 1)|list|length }}</b> / {{ sources|length }}
-      </span>
-    </div>
-  </div>
-
-  <!-- Source Channels List -->
-  <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
-    {% for s in sources %}
-      <div style="background:#0f172a; border:1px solid {{ '#0284c7' if s.active else '#475569' }}; padding:8px 14px; border-radius:8px; display:flex; align-items:center; gap:10px; font-size:12px;">
-        <span style="color: {{ '#34d399' if s.active else '#94a3b8' }}; font-weight:bold;">●</span>
-        <b style="color:#f8fafc;">{{ s.name }}</b>
-        <code style="color:#7dd3fc; font-size:11px;">{{ s.spec }}</code>
-        <form method="post" action="{{ url_for('toggle_deal_source', source_id=s.id) }}" style="display:inline; margin:0;">
-          <button type="submit" style="background:none; border:none; color:{{ '#f59e0b' if s.active else '#10b981' }}; cursor:pointer; font-size:11px; text-decoration:underline;">
-            {{ 'Pause' if s.active else 'Activate' }}
-          </button>
-        </form>
-        <form method="post" action="{{ url_for('delete_deal_source', source_id=s.id) }}" style="display:inline; margin:0;" onsubmit="return confirm('Remove source channel?');">
-          <button type="submit" style="background:none; border:none; color:#ef4444; cursor:pointer; font-size:13px;" title="Delete Source">✕</button>
-        </form>
-      </div>
-    {% endfor %}
-  </div>
-
-  <!-- Add New Source Channel Form -->
-  <form method="post" action="{{ url_for('add_deal_source') }}" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:#07101e; padding:10px 14px; border-radius:8px; border:1px dashed #1e3a8a;">
-    <span style="font-size:12px; font-weight:700; color:#38bdf8;">➕ Add Source:</span>
-    <input name="name" placeholder="Channel Name (e.g. Meesho Deals)" style="font-size:12px; width:180px;" />
-    <input name="spec" placeholder="Invite link or @channel (e.g. https://t.me/+6LA1ljXGlbNmMjA1)" required style="font-size:12px; flex:1; min-width:260px; font-family:monospace;" />
-    <select name="kind" style="font-size:12px; padding:6px;">
-      <option value="production">Production Source</option>
-      <option value="dummy">Staging / Test Source</option>
-    </select>
-    <button type="submit" style="background:#0284c7; color:white; padding:7px 16px; font-weight:700; border-radius:6px; border:none; cursor:pointer; font-size:12px;">+ Connect Source</button>
   </form>
 </section>
 

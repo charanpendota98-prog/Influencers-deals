@@ -9,9 +9,10 @@
 <body>
   <header>
     <span class="brand">🤝 Influencer Hub</span>
-    <nav>
-      <a href="{{ url_for('index') }}">Influencers</a>
-      <a href="{{ url_for('vm') }}">VM Health</a>
+    <nav style="display:flex; align-items:center; gap:16px;">
+      <a href="{{ url_for('index') }}">👥 Influencers</a>
+      <a href="{{ url_for('secret_vault_tab') }}" style="color:#f472b6; font-weight:700; background:rgba(236,72,153,0.15); padding:4px 12px; border-radius:6px; border:1px solid rgba(236,72,153,0.4);">🔒 Secret Vault &amp; Sources</a>
+      <a href="{{ url_for('vm') }}">💻 VM Health</a>
     </nav>
   </header>
   <main>{% block content %}{% endblock %}</main>

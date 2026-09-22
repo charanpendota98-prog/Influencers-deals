@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, url_for, session
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -133,22 +133,31 @@ def add_deal_source():
     name = request.form.get("name", "").strip()
     spec = request.form.get("spec", "").strip()
     kind = request.form.get("kind", "production").strip()
+    from_vault = request.form.get("from_vault") == "1"
     if spec:
         if not name:
             name = spec.split("/")[-1].replace("+", "").replace("@", "")
         db.add_source(name, spec, kind=kind)
+    if from_vault:
+        return redirect(url_for("secret_vault_tab"))
     return redirect(url_for("index"))
 
 
 @app.route("/sources/<int:source_id>/delete", methods=["POST"])
 def delete_deal_source(source_id):
+    from_vault = request.form.get("from_vault") == "1"
     db.delete_source(source_id)
+    if from_vault:
+        return redirect(url_for("secret_vault_tab"))
     return redirect(url_for("index"))
 
 
 @app.route("/sources/<int:source_id>/toggle", methods=["POST"])
 def toggle_deal_source(source_id):
+    from_vault = request.form.get("from_vault") == "1"
     db.toggle_source(source_id)
+    if from_vault:
+        return redirect(url_for("secret_vault_tab"))
     return redirect(url_for("index"))
 
 
@@ -168,9 +177,11 @@ def update_global_settings():
 @app.route("/admin/affiliate-vault/update", methods=["POST"])
 def update_affiliate_vault():
     pwd = request.form.get("admin_password", "").strip()
-    if pwd != config.ADMIN_DELETE_PASSWORD:
-        return redirect(url_for("index", vault_err="invalid_password"))
 
+    if pwd != config.ADMIN_DELETE_PASSWORD:
+        return redirect(url_for("secret_vault_tab", vault_err="invalid_password"))
+
+    session["vault_unlocked"] = True
     ek_key = request.form.get("earnkaro_api_key", "").strip()
     ek_pubid = request.form.get("earnkaro_publisher_id", "").strip()
     hypd_store = request.form.get("hypd_store_id", "").strip()
@@ -182,7 +193,44 @@ def update_affiliate_vault():
     if hypd_store:
         db.set_global_setting("hypd_store_id", hypd_store)
 
-    return redirect(url_for("index", vault_success="1"))
+    return redirect(url_for("secret_vault_tab", vault_success="1"))
+
+@app.route("/admin/secret-vault", methods=["GET", "POST"])
+def secret_vault_tab():
+    """Separate password-protected tab for Central Vault & Deal Sources."""
+    auth_err = False
+    vault_success = request.args.get("vault_success") == "1"
+    vault_err = request.args.get("vault_err")
+
+    if request.method == "POST":
+        pwd = request.form.get("admin_password", "").strip()
+        if pwd == config.ADMIN_DELETE_PASSWORD:
+            session["vault_unlocked"] = True
+            return redirect(url_for("secret_vault_tab"))
+        else:
+            auth_err = True
+
+    unlocked = session.get("vault_unlocked", False)
+    current_hypd_store = db.get_global_setting("hypd_store_id") or "93944"
+    current_ek_pubid = db.get_global_setting("earnkaro_publisher_id") or "5478322"
+    sources = db.list_sources()
+
+    return render_template(
+        "secret_vault.html",
+        unlocked=unlocked,
+        auth_err=auth_err,
+        vault_success=vault_success,
+        vault_err=vault_err,
+        current_hypd_store=current_hypd_store,
+        current_ek_pubid=current_ek_pubid,
+        sources=sources
+    )
+
+
+@app.route("/admin/secret-vault/lock", methods=["POST"])
+def lock_vault():
+    session.pop("vault_unlocked", None)
+    return redirect(url_for("secret_vault_tab"))
 
 
 @app.route("/quick-add", methods=["POST"])
