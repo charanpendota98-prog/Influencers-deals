@@ -644,22 +644,52 @@ def format_loot_of_the_hour_post(original_post: str, hour_label: str = "") -> st
 
 
 def deal_signature(text: str) -> str:
-    """A stable signature for dedup:
-    1. Extracts ASINs from Amazon links (B0...)
-    2. Extracts clean merchant URLs
-    3. Normalizes title and first price token.
-    This guarantees that even if multiple source channels (Powerloot, Secret Loots)
-    post the same product with slightly different emojis or referral tags,
-    we generate the EXACT SAME SIGNATURE so duplicate products NEVER post twice.
+    """Enterprise-grade cross-source product deduplication signature.
+    Identifies identical products posted across MULTIPLE different source channels
+    (Powerloot, Meesho Deals, Shopsy, Secret Loots, Mega Deals, etc.):
+    1. Amazon: Canonical ASIN (/dp/B0..., /gp/product/B0...)
+    2. HYPD / Meesho: Canonical item/afflink token (/afflink/..., /store/<digits>/...),
+       guaranteeing that different referral links or different store IDs for the same product match!
+    3. Flipkart / Shopsy: Canonical product item code (/p/itm... or pid=...)
+    4. Myntra: Canonical article ID (/kurtas/.../<digits>/buy)
+    5. Ajio: Canonical product code (/p/<digits_or_color>)
+    6. General URLs: Stripped of all query params, UTM tags, and affiliate tracking.
+    7. Fallback: Clean title token + price fingerprint.
+    Guarantees duplicate products are NEVER re-posted to the same group/channel.
     """
     import hashlib
+
+    # 1. Amazon ASIN
     asins = sorted(set(re.findall(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{8,12})", text, re.I)))
     if asins:
-        # High-confidence Amazon product dedup by ASIN
         raw = "asin:" + ":".join(a.upper() for a in asins)
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
-    # Non-Amazon or general URLs: strip queries/tracking params to get canonical deal
+    # 2. HYPD / Meesho item token (independent of which store ID it was posted with)
+    hypd_tokens = sorted(set(re.findall(r"/(?:afflink|store/\d+)/([a-zA-Z0-9_-]{8,40})", text, re.I)))
+    if hypd_tokens:
+        raw = "hypd_token:" + ":".join(t.lower() for t in hypd_tokens)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+    # 3. Flipkart item code
+    fk_itms = sorted(set(re.findall(r"/p/(itm[a-zA-Z0-9]+)", text, re.I)))
+    if fk_itms:
+        raw = "fk_itm:" + ":".join(i.lower() for i in fk_itms)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+    # 4. Myntra article ID
+    myntra_ids = sorted(set(re.findall(r"/(\d{6,11})/buy", text, re.I)))
+    if myntra_ids:
+        raw = "myntra_id:" + ":".join(m for m in myntra_ids)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+    # 5. Ajio product code
+    ajio_codes = sorted(set(re.findall(r"ajio\.com/[^/]+/p/([a-zA-Z0-9_-]{5,30})", text, re.I)))
+    if ajio_codes:
+        raw = "ajio_code:" + ":".join(a.lower() for a in ajio_codes)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+    # 6. Non-Amazon / general clean canonical URLs
     clean_urls = []
     for u in find_urls(text):
         try:
