@@ -30,6 +30,15 @@
     {% if request.args.get('hourly_loot') == '1' %}
       <div style="color: #34d399; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">✅ Loot of the Hour Analyzed &amp; Dispatched!</div>
     {% endif %}
+    {% if request.args.get('test_status') == 'posted' %}
+      <div style="background:#065f46; color: #a7f3d0; padding:4px 10px; border-radius:6px; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">
+        🚀 Test Message Dispatched Successfully to {{ request.args.get('ch_name') }}!
+      </div>
+    {% elif request.args.get('test_status') == 'failed' %}
+      <div style="background:#7f1d1d; color: #fca5a5; padding:4px 10px; border-radius:6px; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">
+        ⚠️ Test Message Failed to {{ request.args.get('ch_name') }}: {{ request.args.get('test_err') }}
+      </div>
+    {% endif %}
   </div>
 </div>
 

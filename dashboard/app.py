@@ -834,19 +834,29 @@ def send_test_message(channel_id):
     channels = db.list_channels(inf_id)
     ch = next((c for c in channels if c["id"] == channel_id), None)
 
+    status = "ok"
+    err_msg = ""
     if ch and inf:
         test_payload = (
             f"✅ Test Alert: {inf['name']} Channel Connected Successfully!\n"
             f"Role: {ch['role'].upper()}\n"
+            f"Channel: {ch['identifier']}\n"
             f"Timestamp: Auto-verification test."
         )
         try:
             from influencer_hub import pipeline
-            _run(pipeline.dispatch_to_channel(inf, ch, test_payload))
+            res = _run(pipeline.dispatch_to_channel(inf, ch, test_payload))
+            if res.startswith("failed:"):
+                status = "failed"
+                err_msg = res[len("failed:"):]
+            else:
+                status = "posted"
         except Exception as e:
+            status = "failed"
+            err_msg = str(e)
             print(f"Test dispatch failed: {e}")
 
-    return redirect(url_for("influencer_detail", inf_id=inf_id, tested=1))
+    return redirect(url_for("influencer_detail", inf_id=inf_id, test_status=status, test_err=err_msg, ch_name=ch['identifier'] if ch else ''))
 
 
 @app.route("/influencer/<int:inf_id>/create-newsletter", methods=["POST"])
