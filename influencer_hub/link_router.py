@@ -488,11 +488,31 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
         "car", "bike", "helmet", "helmets", "dashcam", "car wash", "tyre", "puncture", "riding gloves",
         "mobile holder", "motorcycle",
     ],
+    "footwear": [
+        "shoes", "sneakers", "sandals", "slippers", "crocs", "boots", "loafers", "heels", "flats",
+        "flip flops", "slides", "clogs", "sports shoes", "formal shoes", "casual shoes",
+    ],
+    "travel_luggage": [
+        "luggage", "trolley", "suitcase", "duffle", "backpack", "travel bag", "rucksack", "cabin bag",
+        "safari", "american tourister", "skybags", "vip", "aristocrat",
+    ],
+    "jewellery_accessories": [
+        "jewellery", "jewelry", "necklace", "earrings", "bangles", "bracelet", "ring", "chain",
+        "gold", "silver", "diamond", "pendant", "anklet", "mangalsutra", "hair clips",
+    ],
+    "gaming": [
+        "gaming", "game", "games", "playstation", "ps5", "xbox", "nintendo", "joystick", "controller",
+        "gaming mouse", "gaming keyboard", "headset", "gpu", "graphics card", "steam",
+    ],
+    "pet_supplies": [
+        "dog food", "cat food", "pet", "pets", "puppy", "pedigree", "whiskas", "leash", "pet shampoo",
+        "litter", "aquarium", "bird food",
+    ],
 }
 
 
 def classify_deal_category(text: str) -> list[str]:
-    """Identify which categories (clothing, electronics, home, daily) a deal belongs to."""
+    """Identify which categories a deal belongs to."""
     lower = text.lower()
     matched = []
     for cat, kws in CATEGORY_KEYWORDS.items():
@@ -504,17 +524,18 @@ def classify_deal_category(text: str) -> list[str]:
 def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> bool:
     """Return True if the deal belongs to any of the allowed categories.
     allowed_categories_spec: comma-separated list like 'clothing,electronics' or empty/all for all.
+    When set to 'all' or empty, NO restrictions are applied: ANY deal in the world is allowed!
     """
     s = (allowed_categories_spec or "").strip().lower()
-    if not s or s == "all":
+    if not s or s == "all" or s == "any" or "all" in [x.strip() for x in s.split(",")]:
         return True
     allowed_set = {x.strip() for x in s.split(",") if x.strip()}
     deal_cats = set(classify_deal_category(deal_text))
     # If the deal matches any allowed category, return True
     if deal_cats.intersection(allowed_set):
         return True
-    # If deal has uncategorized items, let it pass if 'other' is in allowed or allow graceful pass
-    if "other" in deal_cats and ("all" in allowed_set or not allowed_set):
+    # If deal has uncategorized items ('other'), let it pass if explicitly permitted or 'other' in allowed_set
+    if "other" in deal_cats and ("other" in allowed_set or not allowed_set):
         return True
     return False
 

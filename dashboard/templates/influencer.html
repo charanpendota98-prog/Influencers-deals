@@ -147,45 +147,63 @@
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         <label style="font-size: 13px; font-weight: 700; color:#a78bfa; margin:0;">🛍️ Allowed Deal Categories (Select All or Pick Specific)</label>
         <div style="font-size:11px;">
-          <a href="javascript:void(0)" onclick="document.querySelectorAll('.inf-cat-cb').forEach(el => el.checked=true); syncInfCategories();" style="color:#38bdf8; text-decoration:underline; margin-right:8px;">Select All</a>
+          <a href="javascript:void(0)" onclick="document.querySelectorAll('.inf-cat-cb').forEach(el => el.checked=true); syncInfCategories();" style="color:#34d399; font-weight:bold; text-decoration:underline; margin-right:8px;">⚡ SELECT ALL (No Restrictions)</a>
           <a href="javascript:void(0)" onclick="document.querySelectorAll('.inf-cat-cb').forEach(el => el.checked=false); syncInfCategories();" style="color:#94a3b8; text-decoration:underline;">Clear All</a>
         </div>
       </div>
       <input type="hidden" id="inf-categories-input" name="categories" value="{{ inf.categories or '' }}" />
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px;">
         {% set cur_cats = (inf.categories or '').split(',') if inf.categories else [] %}
-        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="clothing" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'clothing' in cur_cats) else '' }} /> 👗 Fashion &amp; Clothing
+        <label style="color:#fde047; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px; font-weight:bold;">
+          <input type="checkbox" class="inf-cat-cb" value="all" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'all' in cur_cats) else '' }} /> 🌟 ALL CATEGORIES (Any Loot)
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="electronics" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'electronics' in cur_cats) else '' }} /> 📱 Electronics &amp; Tech
+          <input type="checkbox" class="inf-cat-cb" value="clothing" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'clothing' in cur_cats or 'all' in cur_cats) else '' }} /> 👗 Fashion &amp; Clothing
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="home" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'home' in cur_cats) else '' }} /> 🏠 Home &amp; Kitchen
+          <input type="checkbox" class="inf-cat-cb" value="electronics" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'electronics' in cur_cats or 'all' in cur_cats) else '' }} /> 📱 Electronics &amp; Tech
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="daily" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'daily' in cur_cats) else '' }} /> 🛒 Daily &amp; Grocery
+          <input type="checkbox" class="inf-cat-cb" value="footwear" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'footwear' in cur_cats or 'all' in cur_cats) else '' }} /> 👟 Footwear &amp; Shoes
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="beauty" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'beauty' in cur_cats) else '' }} /> 💄 Beauty &amp; Personal Care
+          <input type="checkbox" class="inf-cat-cb" value="home" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'home' in cur_cats or 'all' in cur_cats) else '' }} /> 🏠 Home &amp; Kitchen
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="appliances" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'appliances' in cur_cats) else '' }} /> 🔌 Large &amp; Small Appliances
+          <input type="checkbox" class="inf-cat-cb" value="daily" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'daily' in cur_cats or 'all' in cur_cats) else '' }} /> 🛒 Daily &amp; Grocery
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="baby" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'baby' in cur_cats) else '' }} /> 🍼 Baby &amp; Kids Toys
+          <input type="checkbox" class="inf-cat-cb" value="beauty" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'beauty' in cur_cats or 'all' in cur_cats) else '' }} /> 💄 Beauty &amp; Personal Care
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="sports" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'sports' in cur_cats) else '' }} /> 🏏 Sports &amp; Fitness
+          <input type="checkbox" class="inf-cat-cb" value="appliances" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'appliances' in cur_cats or 'all' in cur_cats) else '' }} /> 🔌 Appliances &amp; AC/Fridge
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="recharge_freebies" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'recharge_freebies' in cur_cats) else '' }} /> 🎁 Recharge &amp; Freebies
+          <input type="checkbox" class="inf-cat-cb" value="baby" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'baby' in cur_cats or 'all' in cur_cats) else '' }} /> 🍼 Baby &amp; Kids Toys
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="books_stationery" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'books_stationery' in cur_cats) else '' }} /> 📚 Books &amp; Stationery
+          <input type="checkbox" class="inf-cat-cb" value="sports" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'sports' in cur_cats or 'all' in cur_cats) else '' }} /> 🏏 Sports &amp; Fitness
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" class="inf-cat-cb" value="automotive" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'automotive' in cur_cats) else '' }} /> 🚗 Automotive &amp; Bike
+          <input type="checkbox" class="inf-cat-cb" value="travel_luggage" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'travel_luggage' in cur_cats or 'all' in cur_cats) else '' }} /> 🧳 Luggage &amp; Bags
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="jewellery_accessories" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'jewellery_accessories' in cur_cats or 'all' in cur_cats) else '' }} /> 💍 Jewellery &amp; Watches
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="gaming" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'gaming' in cur_cats or 'all' in cur_cats) else '' }} /> 🎮 Gaming &amp; Accessories
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="recharge_freebies" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'recharge_freebies' in cur_cats or 'all' in cur_cats) else '' }} /> 🎁 Recharge &amp; Freebies
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="books_stationery" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'books_stationery' in cur_cats or 'all' in cur_cats) else '' }} /> 📚 Books &amp; Stationery
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="automotive" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'automotive' in cur_cats or 'all' in cur_cats) else '' }} /> 🚗 Automotive &amp; Bike
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="pet_supplies" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'pet_supplies' in cur_cats or 'all' in cur_cats) else '' }} /> 🐶 Pet Food &amp; Supplies
         </label>
       </div>
     </div>

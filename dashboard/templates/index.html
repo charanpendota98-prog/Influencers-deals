@@ -297,21 +297,27 @@
       <span class="hint" style="font-size:11px;">If provided, multi-links will shorten cleanly</span>
     </div>
 
-    <!-- 11 CATEGORIES MULTI-CHECKBOX GRID -->
+    <!-- 16 COMPREHENSIVE CATEGORIES MULTI-CHECKBOX GRID -->
     <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         <label style="font-size: 13px; font-weight: 700; color:#a78bfa; margin:0;">🛍️ Allowed Deal Categories (Select All or Required)</label>
         <div style="font-size:11px;">
-          <a href="javascript:void(0)" onclick="document.querySelectorAll('input[name=categories]').forEach(el => el.checked=true);" style="color:#38bdf8; text-decoration:underline; margin-right:8px;">Select All</a>
+          <a href="javascript:void(0)" onclick="document.querySelectorAll('input[name=categories]').forEach(el => el.checked=true);" style="color:#34d399; font-weight:bold; text-decoration:underline; margin-right:8px;">⚡ SELECT ALL (No Restrictions)</a>
           <a href="javascript:void(0)" onclick="document.querySelectorAll('input[name=categories]').forEach(el => el.checked=false);" style="color:#94a3b8; text-decoration:underline;">Clear All</a>
         </div>
       </div>
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px;">
+        <label style="color:#fde047; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px; font-weight:bold;">
+          <input type="checkbox" name="categories" value="all" checked onchange="if(this.checked){document.querySelectorAll('input[name=categories]:not([value=all])').forEach(el=>el.checked=true);}" /> 🌟 ALL CATEGORIES (Any Loot)
+        </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" name="categories" value="clothing" checked /> 👗 Fashion &amp; Clothing
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" name="categories" value="electronics" checked /> 📱 Electronics &amp; Gadgets
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="footwear" checked /> 👟 Footwear &amp; Shoes
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" name="categories" value="home" checked /> 🏠 Home &amp; Kitchen
@@ -332,6 +338,15 @@
           <input type="checkbox" name="categories" value="sports" checked /> 🏋️ Sports &amp; Fitness
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="travel_luggage" checked /> 🧳 Luggage &amp; Bags
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="jewellery_accessories" checked /> 💍 Jewellery &amp; Watches
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="gaming" checked /> 🎮 Gaming &amp; Accessories
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" name="categories" value="recharge_freebies" checked /> 🎁 Freebies, Cashback &amp; Coupons
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
@@ -339,6 +354,9 @@
         </label>
         <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" name="categories" value="automotive" checked /> 🚗 Automotive &amp; Bike
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="pet_supplies" checked /> 🐶 Pet Food &amp; Supplies
         </label>
       </div>
     </div>
