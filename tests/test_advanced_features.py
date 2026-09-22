@@ -18,7 +18,7 @@ def test_only_amazon_filter_channel_and_influencer():
 
     posted_messages = []
 
-    async def fake_post(chan, text):
+    async def fake_post(chan, text, **kwargs):
         posted_messages.append((chan, text))
 
     with patch("influencer_hub.telegram_ops.post_to_channel", side_effect=fake_post):

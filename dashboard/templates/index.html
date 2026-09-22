@@ -47,6 +47,45 @@
   </div>
 </section>
 
+<!-- GLOBAL POST NAVIGATION BUTTON (UNIVERSAL SETTINGS BAR) -->
+<section class="card" style="border: 2px solid #6366f1; background: #0f172a; padding: 16px 20px; border-radius: 12px; margin-bottom: 20px; box-shadow:0 4px 20px rgba(99,102,241,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #1e293b; padding-bottom:12px; margin-bottom:14px;">
+    <div>
+      <h3 style="margin:0; font-size:17px; color:#c7d2fe; display:flex; align-items:center; gap:8px;">
+        🔘 Universal Post Navigation Button (Global Main Channel Linker)
+        <span style="font-size:11px; background:#4338ca; color:#e0e7ff; padding:2px 8px; border-radius:12px;">EVERY INFLUENCER / ALL POSTS</span>
+      </h3>
+      <p class="hint" style="margin:4px 0 0; font-size:12px; color:#94a3b8;">
+        Telegram లో ప్రతి post కింద inline button (ex: <b>Join Shpsy Loots ❤️ ↗️</b>) &amp; WhatsApp లో footer link automatically attach avthundi!
+      </p>
+    </div>
+    <div>
+      <span style="font-size:12px; font-weight:700; color: {{ '#4ade80' if settings.get('nav_button_enabled') == '1' else '#94a3b8' }};">
+        ● Global Status: {{ 'ACTIVE (Attached to All Posts)' if settings.get('nav_button_enabled') == '1' else 'OFF (Using Per-Influencer Settings)' }}
+      </span>
+    </div>
+  </div>
+
+  <form method="post" action="{{ url_for('update_global_settings') }}" style="display:grid; grid-template-columns: auto 1fr 1.5fr auto; gap:14px; align-items:center;">
+    <label style="font-size: 13px; font-weight: 700; color: #a5b4fc; cursor: pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; background:#1e1b4b; padding:10px 14px; border-radius:8px; border:1px solid #4338ca;">
+      <input type="checkbox" name="nav_button_enabled" value="1" {{ 'checked' if settings.get('nav_button_enabled') == '1' else '' }} /> 🔘 <b>UNIVERSAL BUTTON ON</b>
+    </label>
+    <div>
+      <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px; font-weight:600;">Button Text / Label</label>
+      <input name="nav_button_text" value="{{ settings.get('nav_button_text', 'Join Shpsy Loots ❤️') }}" placeholder="Join Shpsy Loots ❤️" style="width:100%; font-size:13px; font-weight:bold; color:#f8fafc;" />
+    </div>
+    <div>
+      <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px; font-weight:600;">Main Channel Link or Username</label>
+      <input name="nav_button_url" value="{{ settings.get('nav_button_url', '') }}" placeholder="https://t.me/your_main_channel or https://t.me/+invite_link" style="width:100%; font-size:13px; font-family:monospace;" />
+    </div>
+    <div style="padding-top:16px;">
+      <button type="submit" style="background:#4f46e5; color:white; padding:10px 20px; font-weight:700; border-radius:8px; border:none; cursor:pointer; font-size:13px; box-shadow:0 2px 10px rgba(79,70,229,0.4); white-space:nowrap;">
+        💾 Save Universal Button
+      </button>
+    </div>
+  </form>
+</section>
+
 <!-- SEARCH & BULK TOOLBAR -->
 <section class="card" style="border: 1px solid #1e3a8a; background: #0f172a; padding: 14px 20px; border-radius: 10px;">
   <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
@@ -207,6 +246,28 @@
       <div style="margin-top:8px;">
         <input name="custom_schedule" placeholder="Or custom windows: e.g. 06:00-02:00 (Hold/Sleep from 2AM to 6AM)" style="width:100%; font-size:12px;" />
         <span class="hint" style="font-size:10px;">Outside active hours, deals are skipped cleanly so queue never clusters! Empty = 24/7.</span>
+      </div>
+    </div>
+
+    <!-- CUSTOM NAVIGATION BUTTON OPTION IN QUICK ADD -->
+    <div style="grid-column: 1 / -1; background:#1e1b4b; border:1px solid #4338ca; padding:14px; border-radius:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <label style="font-size: 13px; font-weight: 700; color:#c7d2fe; margin:0; display:flex; align-items:center; gap:8px;">
+          🔘 <b>Telegram / WhatsApp Post Navigation Button</b> (e.g. Join Shpsy Loots ❤️)
+        </label>
+        <label style="font-size:12px; color:#a5b4fc; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="custom_button_enabled" value="1" /> Enable Custom Button on Posts
+        </label>
+      </div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button Title / Label</label>
+          <input name="custom_button_text" value="Join Shpsy Loots ❤️" placeholder="Join Shpsy Loots ❤️" style="width:100%; font-size:12px;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Target Channel Invite Link / Username</label>
+          <input name="custom_button_url" placeholder="https://t.me/your_main_channel or @channel" style="width:100%; font-size:12px; font-family:monospace;" />
+        </div>
       </div>
     </div>
 

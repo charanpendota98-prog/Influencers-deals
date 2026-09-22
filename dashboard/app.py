@@ -63,7 +63,22 @@ def index():
     influencers = db.search_influencers(q) if q else db.list_influencers()
     stats = db.post_stats()
     vm = db.latest_vm()
-    return render_template("index.html", influencers=influencers, stats=stats, vm=vm, search_query=q)
+    settings = db.get_all_global_settings()
+    return render_template("index.html", influencers=influencers, stats=stats, vm=vm,
+                           search_query=q, settings=settings)
+
+
+@app.route("/global-settings/update", methods=["POST"])
+def update_global_settings():
+    nav_btn_en = "1" if request.form.get("nav_button_enabled") in ("1", "on", "true") else "0"
+    nav_btn_text = request.form.get("nav_button_text", "Join Shpsy Loots ❤️").strip()
+    nav_btn_url = request.form.get("nav_button_url", "").strip()
+
+    db.set_global_setting("nav_button_enabled", nav_btn_en)
+    db.set_global_setting("nav_button_text", nav_btn_text)
+    db.set_global_setting("nav_button_url", nav_btn_url)
+
+    return redirect(url_for("index"))
 
 
 @app.route("/quick-add", methods=["POST"])
@@ -97,6 +112,11 @@ def quick_add():
     whatsapp_id = request.form.get("whatsapp_id", "").strip()
     strip_amz_all = request.form.get("strip_amazon_broadcast") == "1"
 
+    # Custom button fields on quick add
+    btn_enabled = request.form.get("custom_button_enabled") == "1"
+    btn_text = request.form.get("custom_button_text", "Join Shpsy Loots ❤️").strip()
+    btn_url = request.form.get("custom_button_url", "").strip()
+
     # Fallback to defaults so form never fails silently if minor details missed
     if not name:
         name = "Influencer-" + phone[-4:] if phone else "New Partner"
@@ -110,6 +130,10 @@ def quick_add():
                             only_amazon=only_amazon, allow_amazon=allow_amazon,
                             allow_earnkaro=allow_earnkaro, allow_hypd=allow_hypd,
                             hypd_store_id=hypd_store_id)
+
+    if btn_enabled or btn_url:
+        db.update_influencer(iid, custom_button_enabled=btn_enabled,
+                             custom_button_text=btn_text, custom_button_url=btn_url)
 
     # 1. Approval Channel
     if approval_tg:

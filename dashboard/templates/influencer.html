@@ -118,19 +118,19 @@
     <div style="grid-column: 1 / -1; background:#1e1b4b; border:1px solid #6366f1; padding:14px; border-radius:8px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
         <label style="font-size: 13px; font-weight: 700; color:#c7d2fe; margin:0; display:flex; align-items:center; gap:8px;">
-          🔘 <b>Telegram / WhatsApp Post Navigation Button</b> (Grow Our Main Channel)
+          🔘 <b>Telegram / WhatsApp Post Navigation Button</b> (e.g. Join Shpsy Loots ❤️ ↗️)
         </label>
         <label style="font-size:12px; color:#a5b4fc; cursor:pointer; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if inf.custom_button_enabled else '' }} /> Enable Navigation Button on Posts
         </label>
       </div>
       <p class="hint" style="font-size:11px; margin-top:0; color:#94a3b8;">
-        ఇన్‌ఫ్లుయెన్సర్ పోస్ట్ క్రింద మన సొంత ఛానల్ బటన్ అమర్చవచ్చు! క్లిక్ చేయగానే యూజర్లు మన మెయిన్ ఛానల్‌కు నావిగేట్ అవుతారు.
+        ఇన్‌ఫ్లుయెన్సర్ పోస్ట్ క్రింద మన సొంత ఛానల్ బటన్ అమర్చవచ్చు! క్లిక్ చేయగానే యూజర్లు మన మెయిన్ ఛానల్‌కు నావిగేట్ అవుతారు (Empty unte Universal Settings nunchi teesukuntundi).
       </p>
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:8px;">
         <div>
-          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button Title / Label</label>
-          <input name="custom_button_text" value="{{ inf.custom_button_text or '' }}" placeholder="🔥 Join Our VIP Loot Deals" style="width:100%; font-size:12px;" />
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button Title / Tag Name (e.g. Join Shpsy Loots ❤️)</label>
+          <input name="custom_button_text" value="{{ inf.custom_button_text or '' }}" placeholder="Join Shpsy Loots ❤️" style="width:100%; font-size:12px; font-weight:bold;" />
         </div>
         <div>
           <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Target Channel Invite Link / Username</label>
@@ -281,6 +281,13 @@
               </label>
               <input name="hypd_store_id" value="{{ c.hypd_store_id or '93944' }}" placeholder="HYPD Store ID" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px; font-family: monospace;" title="Channel HYPD Store ID" />
               <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt Tag" style="font-size: 11px; padding: 3px 5px; width: 100px; margin-top: 3px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
+              <div style="margin-top:4px; padding-top:3px; border-top:1px dashed #334155;">
+                <label style="display: block; cursor: pointer; color: #c7d2fe; font-size: 10px;">
+                  <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if c.custom_button_enabled else '' }} /> 🔘 Custom Button
+                </label>
+                <input name="custom_button_text" value="{{ c.custom_button_text or '' }}" placeholder="Join Shpsy Loots ❤️" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px;" title="Button Label" />
+                <input name="custom_button_url" value="{{ c.custom_button_url or '' }}" placeholder="https://t.me/channel" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px; font-family:monospace;" title="Target Channel Link" />
+              </div>
             </div>
           </td>
           <td><span class="ok">{{ c.status }}</span></td>

@@ -84,17 +84,36 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
     so WhatsApp accounts (which belong to the individual influencers) remain 100% safe
     and never get flagged for robotic spamming.
 
-    Telegram Navigation Button: If custom_button_enabled is True on channel or influencer,
-    attaches an inline navigation button underneath the post directing users to our main channel.
+    Telegram Navigation Button: If custom_button_enabled is True on channel, influencer,
+    OR globally in Settings, attaches an inline navigation button underneath the post
+    directing users to our main channel (e.g. 'Join Shpsy Loots ❤️' -> link).
     """
     platform = channel["platform"]
     try:
-        if platform == "telegram":
-            # Check custom navigation button
-            btn_enabled = bool(channel.get("custom_button_enabled") or influencer.get("custom_button_enabled"))
-            btn_text = channel.get("custom_button_text") or influencer.get("custom_button_text") or "🔥 Join Main Deals Channel"
-            btn_url = channel.get("custom_button_url") or influencer.get("custom_button_url") or ""
+        # Resolve button configuration with priority: Channel -> Influencer -> Global
+        global_btn_en = db.get_global_setting("nav_button_enabled", "0") == "1"
+        global_btn_text = db.get_global_setting("nav_button_text", "Join Shpsy Loots ❤️")
+        global_btn_url = db.get_global_setting("nav_button_url", "")
 
+        ch_btn_en = channel.get("custom_button_enabled")
+        inf_btn_en = influencer.get("custom_button_enabled")
+
+        # Enabled if specifically enabled on channel or influencer, or if global is enabled
+        btn_enabled = bool(ch_btn_en or inf_btn_en or global_btn_en)
+        btn_text = (
+            channel.get("custom_button_text")
+            or influencer.get("custom_button_text")
+            or global_btn_text
+            or "Join Shpsy Loots ❤️"
+        ).strip()
+        btn_url = (
+            channel.get("custom_button_url")
+            or influencer.get("custom_button_url")
+            or global_btn_url
+            or ""
+        ).strip()
+
+        if platform == "telegram":
             if btn_enabled and btn_url:
                 await telegram_ops.post_to_channel(channel["identifier"], text,
                                                     button_text=btn_text, button_url=btn_url)
@@ -104,11 +123,8 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
             # Support separate WA session per channel if configured, else default influencer session
             key = channel.get("wa_session_key") or WA_SESSION_KEY(influencer["id"])
 
-            # If custom navigation link is enabled, we can append a clean text footer to WhatsApp posts
+            # If custom navigation link is enabled, append clean text footer to WhatsApp posts
             wa_text = text
-            btn_enabled = bool(channel.get("custom_button_enabled") or influencer.get("custom_button_enabled"))
-            btn_text = channel.get("custom_button_text") or influencer.get("custom_button_text") or "Join Our Deals Channel"
-            btn_url = channel.get("custom_button_url") or influencer.get("custom_button_url") or ""
             if btn_enabled and btn_url and btn_url not in wa_text:
                 wa_text = f"{text}\n\n👉 {btn_text}: {btn_url}"
 

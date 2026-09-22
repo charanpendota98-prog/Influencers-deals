@@ -78,6 +78,11 @@ CREATE TABLE IF NOT EXISTS vm_stats (
     bot_running INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS global_settings (
+    key   TEXT PRIMARY KEY,
+    val   TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_channels_influencer ON channels(influencer_id);
 CREATE INDEX IF NOT EXISTS idx_posts_sig ON posts(deal_sig, influencer_id);
 CREATE INDEX IF NOT EXISTS idx_wa_influencer ON wa_sessions(influencer_id);
@@ -353,17 +358,21 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 allow_amazon: bool = True,
                 allow_earnkaro: bool = True,
                 allow_hypd: bool = True,
-                hypd_store_id: str = "93944") -> int:
+                hypd_store_id: str = "93944",
+                custom_button_enabled: bool = False,
+                custom_button_text: str = "",
+                custom_button_url: str = "") -> int:
     con = _connect()
     try:
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
              amazon_override_tag.strip(), 1 if strip_amazon else 0, price_filter.strip(), allowed_sources.strip(),
              wa_session_key.strip(), bitly_api_key.strip(), categories.strip(), posting_schedule.strip(),
              1 if only_amazon else 0, 1 if allow_amazon else 0, 1 if allow_earnkaro else 0,
-             1 if allow_hypd else 0, hypd_store_id.strip() or "93944"),
+             1 if allow_hypd else 0, hypd_store_id.strip() or "93944",
+             1 if custom_button_enabled else 0, custom_button_text.strip(), custom_button_url.strip()),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -778,6 +787,39 @@ def latest_vm() -> Optional[dict]:
     try:
         row = con.execute("SELECT * FROM vm_stats ORDER BY id DESC LIMIT 1").fetchone()
         return dict(row) if row else None
+    finally:
+        con.close()
+
+
+# --------------------------- global settings ---------------------------
+
+def get_global_setting(key: str, default: str = "") -> str:
+    con = _connect()
+    try:
+        row = con.execute("SELECT val FROM global_settings WHERE key=?", (key,)).fetchone()
+        return row["val"] if row else default
+    finally:
+        con.close()
+
+
+def set_global_setting(key: str, val: str) -> None:
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO global_settings (key, val) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET val=excluded.val",
+            (key, val),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def get_all_global_settings() -> dict[str, str]:
+    con = _connect()
+    try:
+        rows = con.execute("SELECT key, val FROM global_settings").fetchall()
+        return {r["key"]: r["val"] for r in rows}
     finally:
         con.close()
 
