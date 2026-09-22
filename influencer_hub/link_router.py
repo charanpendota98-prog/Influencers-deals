@@ -67,12 +67,17 @@ def convert_hypd_store_link(url: str, target_store_id: str = "93944") -> str:
     Example:
       https://hypd.store/12345/afflink/daol5bac45l0tc0oo5rg
       -> https://hypd.store/93944/afflink/daol5bac45l0tc0oo5rg
+      https://hypd.store/product/123?aff=other
+      -> https://hypd.store/93944?aff=93944
     """
+    store = (target_store_id or "93944").strip()
     m = re.search(r"https?://(?:www\.)?hypd\.store/(?:\d+|[A-Za-z0-9_-]+)/afflink/([A-Za-z0-9_-]+)", url, re.I)
     if m:
         aff_id = m.group(1)
-        store = (target_store_id or "93944").strip()
         return f"https://hypd.store/{store}/afflink/{aff_id}"
+    m_direct = re.search(r"https?://(?:www\.)?hypd\.store/([A-Za-z0-9_-]+)/?$", url, re.I)
+    if m_direct and m_direct.group(1).isdigit():
+        return f"https://hypd.store/{store}"
     return url
 
 
@@ -390,7 +395,7 @@ def clean_source_post(text: str) -> str:
                 continue
 
             # 2. Promotional text banners / watermarks
-            if re.search(r"(?i)^\s*(?:join|subscribe|follow|join channel|join fast|share with friends|for more|posted by|credit|powered by|loot alert by)\b", stripped):
+            if re.search(r"(?i)^\s*(?:join|subscribe|follow|join channel|join fast|share with friends|for more|posted by|credit|powered by|loot alert by|admin|contact|dm|queries|support)\b", stripped):
                 continue
 
             # 3. Pure channel handles
@@ -405,9 +410,11 @@ def clean_source_post(text: str) -> str:
         # Remove channel tag / handle (e.g. @PowerLoots or @secretdeal) but don't damage normal text
         line_out = re.sub(r"(?i)\s*@(?:[a-zA-Z0-9_]{3,30})\b", "", line_out)
         # Remove trailing promo phrases
-        line_out = re.sub(r"(?i)\s*[-|•~]\s*(?:join|loot by|powered by|credit)\s*.*$", "", line_out)
+        line_out = re.sub(r"(?i)\s*[-|•~]\s*(?:join|loot by|powered by|credit|admin|dm|contact)\s*.*$", "", line_out)
 
         line_out = line_out.strip()
+        # Clean dangling colons or dashes left behind by stripped handles (e.g. "Admin contact:" or "Credit:")
+        line_out = re.sub(r"(?i)^(?:admin\s*(?:contact)?|credit|dm|queries|support)\s*[:\-–]?\s*$", "", line_out).strip()
         if line_out:
             cleaned_lines.append(line_out)
 
