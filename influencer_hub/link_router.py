@@ -39,7 +39,14 @@ URL_RE = re.compile(r"https?://[^\s)>\]]+", re.I)
 
 
 def find_urls(text: str) -> list[str]:
-    return URL_RE.findall(text)
+    raw_urls = URL_RE.findall(text)
+    cleaned = []
+    for u in raw_urls:
+        while u and u[-1] in ".,;!?:'\"":
+            u = u[:-1]
+        if u:
+            cleaned.append(u)
+    return cleaned
 
 
 def _host_of(url: str) -> str:
@@ -151,18 +158,23 @@ def _render_base(text: str, amazon_tag: str, ek: dict[str, str], hypd_store_id: 
     last = 0
     for m in URL_RE.finditer(text):
         start, end = m.span()
-        url = m.group(0)
-        kind = classify_url(url)
+        raw_url = m.group(0)
+        trailing = ""
+        while raw_url and raw_url[-1] in ".,;!?:'\"":
+            trailing = raw_url[-1] + trailing
+            raw_url = raw_url[:-1]
+
+        kind = classify_url(raw_url)
         if kind == "amazon":
-            replacement = apply_amazon_tag(url, amazon_tag)
+            replacement = apply_amazon_tag(raw_url, amazon_tag)
         elif kind == "hypd":
-            replacement = convert_hypd_store_link(url, hypd_store_id)
+            replacement = convert_hypd_store_link(raw_url, hypd_store_id)
         elif kind == "merchant":
-            replacement = ek.get(url, url)
+            replacement = ek.get(raw_url, raw_url)
         else:
-            replacement = url
+            replacement = raw_url
         out_parts.append(text[last:start])
-        out_parts.append(replacement)
+        out_parts.append(replacement + trailing)
         last = end
     out_parts.append(text[last:])
     return "".join(out_parts)
