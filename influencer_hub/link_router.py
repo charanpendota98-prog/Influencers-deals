@@ -96,6 +96,40 @@ def collect_links(text: str) -> dict[str, str]:
     return out
 
 
+def compact_merchant_url(url: str) -> str:
+    """Compact clumsy Flipkart/Shopsy/Myntra/Ajio URLs by stripping cluttering tracking
+    queries, search strings, and affiliate hashes, keeping only the exact clean canonical product path.
+    Prevents long clumsy URLs from breaking WhatsApp and Telegram message layouts."""
+    try:
+        p = urlparse(url)
+        host = p.netloc.lower()
+
+        # Flipkart / Shopsy: keep clean /product/p/itmXXX?pid=YYY
+        if "flipkart.com" in host or "shopsy.in" in host:
+            m_itm = re.search(r"(/[^/]+/p/itm[a-zA-Z0-9]+)", p.path)
+            q = dict(parse_qsl(p.query, keep_blank_values=True))
+            pid = q.get("pid")
+            clean_query = f"pid={pid}" if pid else ""
+            clean_path = m_itm.group(1) if m_itm else p.path
+            return urlunparse((p.scheme, p.netloc, clean_path, "", clean_query, ""))
+
+        # Myntra: keep clean /.../<id>/buy
+        if "myntra.com" in host:
+            m_myn = re.search(r"(/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+/\d+/buy)", p.path)
+            clean_path = m_myn.group(1) if m_myn else p.path
+            return urlunparse((p.scheme, p.netloc, clean_path, "", "", ""))
+
+        # Ajio: keep clean /p/<id>
+        if "ajio.com" in host:
+            m_ajio = re.search(r"(/[a-zA-Z0-9_-]+/p/[a-zA-Z0-9_-]+)", p.path)
+            clean_path = m_ajio.group(1) if m_ajio else p.path
+            return urlunparse((p.scheme, p.netloc, clean_path, "", "", ""))
+
+        return url
+    except Exception:
+        return url
+
+
 def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
     """Normalise an Amazon URL to https://www.amazon.in/dp/<ASIN>?tag=<tag>.
 
@@ -170,7 +204,7 @@ def _render_base(text: str, amazon_tag: str, ek: dict[str, str], hypd_store_id: 
         elif kind == "hypd":
             replacement = convert_hypd_store_link(raw_url, hypd_store_id)
         elif kind == "merchant":
-            replacement = ek.get(raw_url, raw_url)
+            replacement = ek.get(raw_url) or compact_merchant_url(raw_url)
         else:
             replacement = raw_url
         out_parts.append(text[last:start])

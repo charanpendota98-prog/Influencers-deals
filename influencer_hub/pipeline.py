@@ -25,6 +25,7 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
     urls = {u for u, k in link_router.collect_links(text).items() if k == "merchant"}
     if not urls:
         return {}
+    # Convert through EarnKaro API (which shortens them to clean ekaro.in links)
     return await earnkaro.convert_links(urls)
 
 
