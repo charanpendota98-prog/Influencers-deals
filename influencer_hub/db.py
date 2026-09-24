@@ -91,9 +91,15 @@ CREATE INDEX IF NOT EXISTS idx_wa_influencer ON wa_sessions(influencer_id);
 
 def _connect() -> sqlite3.Connection:
     Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(config.DB_PATH))
+    con = sqlite3.connect(str(config.DB_PATH), timeout=30.0)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys = ON")
+    try:
+        con.execute("PRAGMA foreign_keys = ON")
+        con.execute("PRAGMA journal_mode = WAL")
+        con.execute("PRAGMA busy_timeout = 30000")
+        con.execute("PRAGMA synchronous = NORMAL")
+    except Exception:
+        pass
     return con
 
 

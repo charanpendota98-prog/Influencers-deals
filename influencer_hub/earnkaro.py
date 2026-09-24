@@ -70,7 +70,7 @@ def clean_merchant_url_for_api(url: str) -> str:
     p = urlparse(url)
     tracking_params = {
         "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
-        "affid", "aff_siteid", "affextparam1", "affextparam2", "clickid", "pid",
+        "affid", "aff_siteid", "affextparam1", "affextparam2", "clickid",
         "is_retargeting", "af_force_deeplink", "af_dp", "product_name", "host_internal",
         "external_product_id", "product_id", "ref", "tag", "cmpid", "mcn", "src",
         "source", "subid", "subid1"
