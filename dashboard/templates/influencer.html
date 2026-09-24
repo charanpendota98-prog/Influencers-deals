@@ -372,8 +372,13 @@
 
   <!-- ADD EXTRA CHANNELS FORM -->
   <div style="background:#0d1322; border:1px solid #1e293b; padding:16px; border-radius:8px;">
-    <h3 style="margin-top:0; color:#cbd5e1; font-size:14px;">➕ Add Additional Channel (Extra Telegram / Extra WhatsApp Channel)</h3>
-    <p class="hint" style="font-size:12px; margin-bottom:10px;">Influencer ki inkoka WhatsApp channel unna, leda special Under 99 Telegram channel unna ikkada instant ga connect cheyachu:</p>
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+      <h3 style="margin:0; color:#38bdf8; font-size:16px; font-weight:800;">➕ Add Additional Channel (Extra Telegram / Extra WhatsApp Channel)</h3>
+      <span style="background:rgba(56,189,248,0.15); color:#38bdf8; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:700;">Unlimited Multi-Channel Support</span>
+    </div>
+    <p class="hint" style="font-size:13px; color:#94a3b8; margin-bottom:14px; line-height:1.5;">
+      ఈ ఇన్‌ఫ్లుయెన్సర్‌కు <b>రెండో టెలిగ్రామ్ ఛానల్ (Extra Telegram #2)</b> ఉన్నా, లేదా <b>2 లక్షల మంది ఫాలోవర్స్ ఉన్న పెద్ద వాట్సాప్ ఛానల్ / గ్రూప్ (WhatsApp Channel / Group)</b> ఉన్నా — ఎన్ని ఛానెల్స్ అయినా సరే ఇక్కడ 1-క్లిక్‌తో ఈజీగా లింక్ చేయవచ్చు:
+    </p>
     <form method="post" action="{{ url_for('add_manual_channel', inf_id=inf.id) }}" class="row">
       <select name="role">
         <option value="approval">🛡️ APPROVAL CHANNEL</option>
