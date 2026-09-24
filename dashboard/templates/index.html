@@ -1,6 +1,26 @@
 {% extends "layout.html" %}
 {% block title %}Influencers Hub - India's Top-Tier Deals Platform{% endblock %}
 {% block content %}
+  <!-- 24-HOUR PULSE / LIVE INSIGHTS CARDS (MOBILE & DESKTOP) -->
+  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px;">
+    <div class="card" style="margin-bottom:0; padding:12px; text-align:center; border-left: 4px solid #10b981;">
+      <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; font-weight:700;">Delivered (24h)</div>
+      <div style="font-size:22px; font-weight:800; color:#10b981;">{{ insights.posted_24h if insights else 0 }}</div>
+    </div>
+    <div class="card" style="margin-bottom:0; padding:12px; text-align:center; border-left: 4px solid #38bdf8;">
+      <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; font-weight:700;">Delivery Rate</div>
+      <div style="font-size:22px; font-weight:800; color:#38bdf8;">{{ insights.delivery_rate_pct if insights else 100 }}%</div>
+    </div>
+    <div class="card" style="margin-bottom:0; padding:12px; text-align:center; border-left: 4px solid #818cf8;">
+      <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; font-weight:700;">Active Creators</div>
+      <div style="font-size:22px; font-weight:800; color:#818cf8;">{{ insights.active_influencers if insights else 0 }}</div>
+    </div>
+    <div class="card" style="margin-bottom:0; padding:12px; text-align:center; border-left: 4px solid #f472b6;">
+      <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; font-weight:700;">Active Channels</div>
+      <div style="font-size:22px; font-weight:800; color:#f472b6;">{{ insights.active_channels if insights else 0 }}</div>
+    </div>
+  </div>
+
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap:wrap; gap:12px;">
   <div>
     <h1 style="margin:0; font-size: 26px; display:flex; align-items:center; gap:8px;">

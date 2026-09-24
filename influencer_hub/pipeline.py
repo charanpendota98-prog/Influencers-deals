@@ -295,6 +295,12 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
 
 
 async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] | None = None) -> dict:
+    # Auto-prune aged logs (older than 14 days) periodically to keep DB ultra-lean and zero-lag
+    try:
+        if random.random() < 0.05: # ~5% of run cycles
+            db.purge_old_posts_and_stats(days_to_keep=14)
+    except Exception:
+        pass
     """Process a batch of deal items (either dict with {"text", "source"} or plain strings)."""
     all_results: dict[int, dict[int, str]] = {}
     for deal in deals:

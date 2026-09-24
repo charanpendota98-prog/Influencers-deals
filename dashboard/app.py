@@ -135,11 +135,13 @@ def index():
     current_ek_pubid = settings.get("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or "5478322"
     current_hypd_store = settings.get("hypd_store_id") or "93944"
 
+    insights = db.get_live_deal_insights()
     return render_template("index.html", influencers=influencers, stats=stats, vm=vm,
                            search_query=q, settings=settings, sources=sources,
                            vault_err=vault_err, vault_success=vault_success,
                            current_ek_key=current_ek_key, current_ek_pubid=current_ek_pubid,
-                           current_hypd_store=current_hypd_store)
+                           current_hypd_store=current_hypd_store,
+                           insights=insights)
 
 
 @app.route("/sources/add", methods=["POST"])

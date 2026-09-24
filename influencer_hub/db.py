@@ -855,3 +855,42 @@ def get_all_global_settings() -> dict[str, str]:
 
 def close() -> None:  # pragma: no cover - placeholder for future pooling
     pass
+
+
+def purge_old_posts_and_stats(days_to_keep: int = 14) -> int:
+    """Prune posted records and vm_stats older than N days to keep SQLite light, fast, and resilient."""
+    from datetime import datetime, timezone, timedelta
+    con = _connect()
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_to_keep)).isoformat(timespec="seconds")
+        # Keep distinct signatures safe in dedup while trimming bulky raw text/errors
+        cur = con.execute("DELETE FROM posts WHERE posted_at < ? AND status IN ('posted', 'failed', 'skipped')", (cutoff,))
+        deleted = cur.rowcount
+        con.execute("DELETE FROM vm_stats WHERE recorded_at < ?", (cutoff,))
+        con.commit()
+        return deleted
+    finally:
+        con.close()
+
+
+def get_live_deal_insights() -> dict:
+    """Return 24h operational performance metrics for mobile & desktop analytics."""
+    from datetime import datetime, timezone, timedelta
+    con = _connect()
+    try:
+        cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+        total_24h = con.execute("SELECT COUNT(*) FROM posts WHERE posted_at >= ?", (cutoff_24h,)).fetchone()[0]
+        posted_24h = con.execute("SELECT COUNT(*) FROM posts WHERE posted_at >= ? AND status='posted'", (cutoff_24h,)).fetchone()[0]
+        failed_24h = con.execute("SELECT COUNT(*) FROM posts WHERE posted_at >= ? AND status='failed'", (cutoff_24h,)).fetchone()[0]
+        active_influencers = con.execute("SELECT COUNT(*) FROM influencers WHERE active=1").fetchone()[0]
+        active_channels = con.execute("SELECT COUNT(*) FROM channels WHERE status='active'").fetchone()[0]
+        return {
+            "total_24h": total_24h,
+            "posted_24h": posted_24h,
+            "failed_24h": failed_24h,
+            "active_influencers": active_influencers,
+            "active_channels": active_channels,
+            "delivery_rate_pct": round((posted_24h / total_24h * 100), 1) if total_24h > 0 else 100.0
+        }
+    finally:
+        con.close()
