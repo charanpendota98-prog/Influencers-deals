@@ -17,6 +17,17 @@
     </p>
   </div>
   <div style="display:flex; gap:10px; align-items:center;">
+    <form method="post" action="{{ url_for('toggle_influencer_active', inf_id=inf.id) }}" style="display:inline; margin:0;">
+      {% if inf.active %}
+        <button type="submit" style="background:#065f46; border:1px solid #10b981; color:#a7f3d0; padding:8px 16px; border-radius:6px; font-size:13px; font-weight:800; cursor:pointer;" title="Click to Stop all posts to this creator immediately">
+          🟢 Master Switch: POSTING ACTIVE (Click to STOP)
+        </button>
+      {% else %}
+        <button type="submit" style="background:#7f1d1d; border:1px solid #ef4444; color:#fecaca; padding:8px 16px; border-radius:6px; font-size:13px; font-weight:800; cursor:pointer;" title="Click to Start posting deals again">
+          🔴 Master Switch: TOTAL OFF / PAUSED (Click to START)
+        </button>
+      {% endif %}
+    </form>
     <form method="post" action="{{ url_for('trigger_hourly_loot', inf_id=inf.id) }}">
       <button type="submit" style="background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight:bold; cursor:pointer; border:none; box-shadow:0 2px 10px rgba(245, 158, 11, 0.3);" title="Analyzes deals from the last 1 hour and highlights the best deal">⚡ Post Loot of the Hour</button>
     </form>
@@ -332,7 +343,13 @@
               </div>
             </div>
           </td>
-          <td><span class="ok">{{ c.status }}</span></td>
+          <td>
+            <select name="status" style="font-size: 11px; font-weight:bold; padding: 4px; border-radius:4px; background: {{ '#064e3b' if c.status == 'ready' else '#450a0a' }}; color: {{ '#6ee7b7' if c.status == 'ready' else '#fca5a5' }}; border: 1px solid {{ '#10b981' if c.status == 'ready' else '#ef4444' }};">
+              <option value="ready" {{ 'selected' if c.status == 'ready' else '' }}>🟢 Active (Posting ON)</option>
+              <option value="paused" {{ 'selected' if c.status == 'paused' else '' }}>🔴 Paused (Zero Posts)</option>
+              <option value="pending" {{ 'selected' if c.status == 'pending' else '' }}>⏳ Pending Setup</option>
+            </select>
+          </td>
           <td>
             <button type="submit" formaction="{{ url_for('send_test_message', channel_id=c.id) }}" style="background: #10b981; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: bold; cursor: pointer;" title="Send instant test alert message">🚀 Test</button>
           </td>

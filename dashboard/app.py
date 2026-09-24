@@ -384,6 +384,7 @@ def update_channel_route(channel_id):
     inf_id = request.form.get("inf_id")
     ident = request.form.get("identifier", "").strip()
     role = request.form.get("role", "").strip()
+    status = request.form.get("status", "").strip()
     override_tag = request.form.get("amazon_override_tag", "").strip()
     price_filt = request.form.get("price_filter", "").strip()
     allowed_src = request.form.get("allowed_sources", "").strip()
@@ -419,6 +420,7 @@ def update_channel_route(channel_id):
         channel_id,
         identifier=ident if ident else None,
         role=role if role else None,
+        status=status if status else None,
         amazon_override_tag=override_tag,
         strip_amazon=strip_amz,
         price_filter=price_filt,
@@ -547,6 +549,31 @@ def bulk_import():
 def delete_channel(channel_id):
     inf_id = request.form.get("inf_id")
     db.delete_channel(channel_id)
+    if inf_id:
+        return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
+    return redirect(url_for("index"))
+
+
+@app.route("/influencer/<int:inf_id>/toggle-active", methods=["POST"])
+def toggle_influencer_active(inf_id):
+    """Instant 1-click master switch to turn posting ON or totally OFF for this creator."""
+    inf = db.get_influencer(inf_id)
+    if inf:
+        new_active = not bool(inf.get("active", 1))
+        db.set_influencer_active(inf_id, new_active)
+    ref = request.referrer or url_for("index")
+    return redirect(ref)
+
+
+@app.route("/channel/<int:channel_id>/toggle-status", methods=["POST"])
+def toggle_channel_status(channel_id):
+    """Instant 1-click switch to turn posting ON (ready) or totally OFF (paused) for this specific channel."""
+    inf_id = request.form.get("inf_id")
+    channels = db.list_channels(int(inf_id)) if inf_id else []
+    ch = next((c for c in channels if c["id"] == channel_id), None)
+    if ch:
+        new_status = "paused" if ch.get("status") == "ready" else "ready"
+        db.update_channel_details(channel_id, status=new_status)
     if inf_id:
         return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
     return redirect(url_for("index"))

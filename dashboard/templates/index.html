@@ -411,11 +411,17 @@
           {% endif %}
         </td>
         <td>
-          {% if i.active %}
-            <span style="background:#064e3b; color:#6ee7b7; padding:2px 8px; border-radius:4px; font-weight:700; font-size:12px;">🟢 ACTIVE</span>
-          {% else %}
-            <span style="background:#450a0a; color:#fca5a5; padding:2px 8px; border-radius:4px; font-weight:700; font-size:12px;">🔴 PAUSED</span>
-          {% endif %}
+          <form method="post" action="{{ url_for('toggle_influencer_active', inf_id=i.id) }}" style="display:inline; margin:0;">
+            {% if i.active %}
+              <button type="submit" title="Click to STOP all deals (Total OFF)" style="background:#064e3b; border:1px solid #10b981; color:#6ee7b7; padding:4px 10px; border-radius:6px; font-weight:700; font-size:11px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">
+                🟢 POSTING ON
+              </button>
+            {% else %}
+              <button type="submit" title="Click to RESUME deals (Turn ON)" style="background:#450a0a; border:1px solid #ef4444; color:#fca5a5; padding:4px 10px; border-radius:6px; font-weight:700; font-size:11px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">
+                🔴 TOTAL OFF (PAUSED)
+              </button>
+            {% endif %}
+          </form>
         </td>
         <td style="text-align:right;">
           <a class="btn" style="padding:6px 14px; font-size:13px; text-decoration:none; background:#3b82f6;" href="{{ url_for('influencer_detail', inf_id=i.id) }}">⚙️ Channels &amp; Test</a>
