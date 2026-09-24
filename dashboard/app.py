@@ -38,18 +38,32 @@ def _run(coro):
 def clean_identifier(raw: str) -> str:
     """Normalize Telegram channel link/username or WhatsApp JID.
     e.g.:
-      'https://t.me/ravi_loots' -> '@ravi_loots'
-      't.me/ravi_loots'         -> '@ravi_loots'
-      'ravi_loots'              -> '@ravi_loots'
-      '-100123456789'           -> '-100123456789'
+      'https://t.me/ravi_loots'         -> '@ravi_loots'
+      'https://t.me/+AbCdEf'            -> 'https://t.me/+AbCdEf' (Preserves invite links!)
+      'https://chat.whatsapp.com/...'   -> WhatsApp invite link preserved
+      '120363xxx@g.us'                  -> WhatsApp group JID preserved
+      'ravi_loots'                      -> '@ravi_loots'
+      '-100123456789'                   -> '-100123456789'
     """
     s = raw.strip()
     if not s:
         return ""
-    # Strip url junk
+
+    # Preserve WhatsApp links and JIDs
+    if "chat.whatsapp.com" in s or s.endswith("@g.us") or s.endswith("@newsletter") or s.startswith("120363"):
+        return s
+
+    # Preserve private Telegram invite links (+hash or joinchat/hash)
+    if "t.me/+" in s or "telegram.me/+" in s or "joinchat/" in s or s.startswith("+"):
+        if not s.startswith("http") and s.startswith("+"):
+            return f"https://t.me/{s}"
+        return s
+
+    # Strip url prefix for standard public channels
     s = re.sub(r"^https?://(?:t\.me|telegram\.me)/", "", s, flags=re.I)
     s = re.sub(r"^t\.me/", "", s, flags=re.I)
     s = s.strip("/")
+
     if s.startswith("-100") or s.isdigit():
         return s
     if "@" in s:
