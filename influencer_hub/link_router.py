@@ -104,9 +104,12 @@ def compact_merchant_url(url: str) -> str:
         p = urlparse(url)
         host = p.netloc.lower()
 
-        # Flipkart / Shopsy: keep clean /product/p/itmXXX?pid=YYY
+        # Flipkart / Shopsy: keep clean canonical /product/p/itmXXX?pid=YYY
         if "flipkart.com" in host or "shopsy.in" in host:
-            m_itm = re.search(r"(/[^/]+/p/itm[a-zA-Z0-9]+)", p.path)
+            # Don't touch short redirects like /s/ or dl.flipkart.com
+            if "/s/" in p.path or "dl.flipkart.com" in host or "fktr.in" in host:
+                return url
+            m_itm = re.search(r"(/[^/]+/p/itm[a-zA-Z0-9]+|/p/itm[a-zA-Z0-9]+)", p.path)
             q = dict(parse_qsl(p.query, keep_blank_values=True))
             pid = q.get("pid")
             clean_query = f"pid={pid}" if pid else ""
