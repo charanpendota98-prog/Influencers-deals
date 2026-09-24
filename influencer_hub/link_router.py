@@ -337,7 +337,8 @@ def extract_price(text: str) -> float | None:
     patterns = [
         r"(?:₹|rs\.?|inr)\s*(\d+(?:\.\d{1,2})?)",
         r"@\s*(\d+(?:\.\d{1,2})?)",
-        r"(?:deal price|price|at)\s*(?:₹|rs\.?|inr|:)?\s*(\d+(?:\.\d{1,2})?)",
+        r"(?:deal price|price|at|for|just)\s*(?:₹|rs\.?|inr|:)?\s*(\d+(?:\.\d{1,2})?)",
+        r"(\d+)\s*/-",
     ]
     prices: list[float] = []
     for pat in patterns:
