@@ -226,7 +226,10 @@ def secret_vault_tab():
             auth_err = True
     current_hypd_store = db.get_global_setting("hypd_store_id") or "93944"
     current_ek_pubid = db.get_global_setting("earnkaro_publisher_id") or "5478322"
-    sources = db.list_sources()
+    from influencer_hub.puller import PRIORITY_SOURCE_SPECS
+    raw_sources = db.list_sources()
+    p_map = {spec: idx for idx, spec in enumerate(PRIORITY_SOURCE_SPECS)}
+    sources = sorted(raw_sources, key=lambda s: p_map.get(s.get("spec", ""), 999))
 
     return render_template(
         "secret_vault.html",

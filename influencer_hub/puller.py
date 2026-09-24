@@ -12,11 +12,19 @@ from typing import Iterable
 from . import config, db, telegram_ops
 
 
+# Top Tier Priority Channels (First Preference Ingestion Engine)
+PRIORITY_SOURCE_SPECS = [
+    "https://t.me/+O3j4ghbtJzhjZjJl",
+    "https://t.me/+8KzU3P58MJ9jN2M1",
+    "https://t.me/+6LA1ljXGlbNmMjA1",
+]
+
+
 def _source_list(use_dummy: bool) -> list[str]:
     srcs = list(config.SHARED_SOURCES)
     if use_dummy:
         srcs = list(config.DUMMY_SOURCES) + srcs
-    # Also include any active sources stored in the database
+    # Include all active sources stored in the database
     try:
         db_sources = [s["spec"] for s in db.list_sources(active_only=True) if s.get("spec")]
         for s in db_sources:
@@ -24,7 +32,17 @@ def _source_list(use_dummy: bool) -> list[str]:
                 srcs.append(s)
     except Exception:
         pass
-    return [s for s in srcs if s]
+
+    # Ensure valid specs
+    valid_srcs = [s for s in srcs if s]
+
+    # Sort so that the 3 Main Priority Channels ALWAYS come first:
+    # 1. https://t.me/+O3j4ghbtJzhjZjJl (Shopsy Loots Official)
+    # 2. https://t.me/+8KzU3P58MJ9jN2M1 (Mega Loot Deals)
+    # 3. https://t.me/+6LA1ljXGlbNmMjA1 (Meesho Deals Official)
+    priority_order = {spec: idx for idx, spec in enumerate(PRIORITY_SOURCE_SPECS)}
+    sorted_sources = sorted(valid_srcs, key=lambda s: priority_order.get(s, 999))
+    return sorted_sources
 
 
 async def pull_recent_deals(limit: int = 10, use_dummy: bool = False) -> list[str]:
