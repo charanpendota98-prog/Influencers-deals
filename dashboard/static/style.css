@@ -317,3 +317,74 @@ button:active, .btn:active {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* =========================================================================
+   NATIVE MOBILE APP BOTTOM NAVIGATION DOCK
+   ========================================================================= */
+.mobile-bottom-dock {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  body {
+    padding-bottom: 75px !important; /* Space for the bottom dock */
+  }
+
+  .mobile-bottom-dock {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 65px;
+    background: rgba(15, 23, 42, 0.95);
+    backdrop-filter: blur(16px);
+    border-top: 1px solid rgba(59, 130, 246, 0.3);
+    z-index: 9999;
+    justify-content: space-around;
+    align-items: center;
+    box-shadow: 0 -4px 25px rgba(0,0,0,0.6);
+  }
+
+  .dock-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 700;
+    transition: all 0.15s ease;
+    flex: 1;
+    height: 100%;
+  }
+
+  .dock-item:active, .dock-item:hover {
+    color: #38bdf8;
+  }
+
+  .dock-icon {
+    font-size: 20px;
+    margin-bottom: 2px;
+  }
+
+  .dock-add-btn {
+    transform: translateY(-8px);
+  }
+
+  .dock-add-icon {
+    background: linear-gradient(135deg, #2563eb, #7c3aed);
+    color: white;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    box-shadow: 0 4px 15px rgba(37, 99, 235, 0.6);
+    border: 2px solid #0f172a;
+    margin-bottom: 2px;
+  }
+}

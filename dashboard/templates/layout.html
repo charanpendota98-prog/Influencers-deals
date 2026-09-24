@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#090d16" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>{% block title %}Influencer Hub{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
@@ -16,6 +19,25 @@
     </nav>
   </header>
   <main>{% block content %}{% endblock %}</main>
+  <!-- MOBILE BOTTOM APP DOCK (NATIVE APP FEEL) -->
+  <div class="mobile-bottom-dock">
+    <a href="{{ url_for('index') }}" class="dock-item">
+      <span class="dock-icon">👥</span>
+      <span class="dock-label">Partners</span>
+    </a>
+    <a href="javascript:void(0)" onclick="const q = document.getElementById('quick-add-form'); if(q){q.scrollIntoView({behavior:'smooth'}); document.getElementById('name-input').focus();} else {window.location.href='/#quick-add-form';}" class="dock-item dock-add-btn">
+      <span class="dock-add-icon">➕</span>
+      <span class="dock-label">Add Fast</span>
+    </a>
+    <a href="{{ url_for('secret_vault_tab') }}" class="dock-item">
+      <span class="dock-icon">🔒</span>
+      <span class="dock-label">Vault</span>
+    </a>
+    <a href="{{ url_for('vm') }}" class="dock-item">
+      <span class="dock-icon">💻</span>
+      <span class="dock-label">Server</span>
+    </a>
+  </div>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
