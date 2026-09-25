@@ -1,0 +1,542 @@
+{% extends "layout.html" %}
+{% block title %}Influencers Hub - India's Top-Tier Deals Platform{% endblock %}
+{% block content %}
+  <!-- 24-HOUR PULSE / LIVE INSIGHTS CARDS (MOBILE & DESKTOP) -->
+  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px;">
+    <div class="card" style="margin-bottom:0; padding:12px; text-align:center; border-left: 4px solid #10b981;">
+      <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; font-weight:700;">Delivered (24h)</div>
+      <div style="font-size:22px; font-weight:800; color:#10b981;">{{ insights.posted_24h if insights else 0 }}</div>
+    </div>
+    <div class="card" style="margin-bottom:0; padding:12px; text-align:center; border-left: 4px solid #38bdf8;">
+      <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; font-weight:700;">Delivery Rate</div>
+      <div style="font-size:22px; font-weight:800; color:#38bdf8;">{{ insights.delivery_rate_pct if insights else 100 }}%</div>
+    </div>
+    <div class="card" style="margin-bottom:0; padding:12px; text-align:center; border-left: 4px solid #818cf8;">
+      <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; font-weight:700;">Active Creators</div>
+      <div style="font-size:22px; font-weight:800; color:#818cf8;">{{ insights.active_influencers if insights else 0 }}</div>
+    </div>
+    <div class="card" style="margin-bottom:0; padding:12px; text-align:center; border-left: 4px solid #f472b6;">
+      <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; font-weight:700;">Active Channels</div>
+      <div style="font-size:22px; font-weight:800; color:#f472b6;">{{ insights.active_channels if insights else 0 }}</div>
+    </div>
+  </div>
+
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap:wrap; gap:12px;">
+  <div>
+    <h1 style="margin:0; font-size: 26px; display:flex; align-items:center; gap:8px;">
+      ⚡ Influencer Deals Command Center
+      <span style="font-size:12px; background:#1e3a8a; color:#93c5fd; padding:3px 10px; border-radius:20px; font-weight:700;">PRO v4.0</span>
+    </h1>
+    <p class="hint" style="margin-top:4px;">Multi-Influencer Automated Affiliate Network · 3-Channel Architecture · Zero-Mistake Operations</p>
+  </div>
+  <div style="display:flex; gap:10px; align-items:center;">
+    <form method="post" action="{{ url_for('trigger_all_hourly_loot') }}">
+      <button type="submit" class="btn" style="background: linear-gradient(135deg, #f59e0b, #d97706); color:white; padding:10px 18px; border-radius:8px; font-weight:700; border:none; cursor:pointer; box-shadow:0 4px 12px rgba(245, 158, 11, 0.3);">👑 Broadcast Loot of the Hour (All Channels)</button>
+    </form>
+    <button onclick="document.getElementById('quick-add-form').scrollIntoView({behavior: 'smooth'}); document.getElementById('name-input').focus();" class="btn" style="background:#2563eb; color:white; padding:10px 18px; border-radius:8px; font-weight:700;">➕ Add Influencer Instantly</button>
+    <a class="btn" style="background:#10b981; color:white; padding:10px 18px; border-radius:8px; font-weight:700; text-decoration:none;" href="{{ url_for('onboard') }}">✨ Self-Onboard Link</a>
+  </div>
+</div>
+
+<!-- 🌟 ARCHITECTURE & FLOW EXPLAINER BAR (ZERO CONFUSION GUARANTEE) -->
+<section class="card" style="border: 1px solid #1e3a8a; background: linear-gradient(135deg, #0d1527 0%, #09101f 100%); padding: 16px 20px; border-radius: 12px; margin-bottom: 20px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+    <span style="font-size:14px; font-weight:800; color:#38bdf8; display:flex; align-items:center; gap:8px;">
+      ⚡ Automated Deals Highway Flow: 36 Source Channels ➔ Intelligent Engine ➔ Influencer Followers
+    </span>
+    <span style="font-size:11px; background:#0369a1; color:#e0f2fe; padding:3px 10px; border-radius:12px; font-weight:700;">
+      100% AUTOMATED · ZERO MANUAL POSTING
+    </span>
+  </div>
+  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:12px; font-size:12px;">
+    <div style="background:#131d33; border:1px solid #1e293b; padding:12px; border-radius:8px;">
+      <b style="color:#60a5fa; display:block; margin-bottom:4px;">1️⃣ Ingestion (36 Loot Channels)</b>
+      <span style="color:#94a3b8; line-height:1.4;">Telegram లో 36 top channels (Meesho, Shopsy, Loot Deals) నుండి deals ఆటోమేటిక్‌గా ఇక్కడకు లాగబడతాయి.</span>
+    </div>
+    <div style="background:#131d33; border:1px solid #1e293b; padding:12px; border-radius:8px;">
+      <b style="color:#f59e0b; display:block; margin-bottom:4px;">2️⃣ Affiliate Re-Tagging Engine</b>
+      <span style="color:#94a3b8; line-height:1.4;">Amazon డీల్స్ కి <b>వారి Amazon Tag</b>, Meesho కి <b>మన HYPD</b>, Flipkart/Myntra కి <b>మన EarnKaro</b> ఆటోమేటిక్‌గా రీ-ట్యాగ్ అవుతాయి.</span>
+    </div>
+    <div style="background:#131d33; border:1px solid #1e293b; padding:12px; border-radius:8px;">
+      <b style="color:#34d399; display:block; margin-bottom:4px;">3️⃣ Dispatch with Anti-Ban</b>
+      <span style="color:#94a3b8; line-height:1.4;">45-65s రాండమ్ గ్యాప్, 1 గంటకు రెస్ట్ తో టెలిగ్రామ్ & వాట్సాప్ ఛానల్స్‌కి నైట్ రెస్ట్ పాటిస్తూ క్లీన్‌గా పోస్ట్ అవుతాయి.</span>
+    </div>
+  </div>
+</section>
+
+<!-- TOP METRICS BAR -->
+<section class="card" style="padding:16px; background:#0f172a; border-color:#1e3a8a;">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+    <div style="display:flex; gap:12px; flex-wrap:wrap;">
+      <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
+        <span style="color:#94a3b8; font-size:12px; display:block;">ACTIVE INFLUENCERS</span>
+        <b style="color:#fff; font-size:18px;">{{ influencers|length }} Partners</b>
+      </div>
+      <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
+        <span style="color:#94a3b8; font-size:12px; display:block;">POSTED DEALS</span>
+        <b style="color:#34d399; font-size:18px;">{{ stats.posted }} Deals</b>
+      </div>
+      <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
+        <span style="color:#94a3b8; font-size:12px; display:block;">PROTECTED SKIPS (DEDUP/TIMING)</span>
+        <b style="color:#93c5fd; font-size:18px;">{{ stats.skipped }} Deals</b>
+      </div>
+      <div style="background:#1e293b; padding:10px 16px; border-radius:8px; border:1px solid #334155;">
+        <span style="color:#94a3b8; font-size:12px; display:block;">EARNKARO &amp; HYPD VAULT</span>
+        <code style="color:#fbbf24; font-size:13px; font-weight:bold;">PubID: {{ current_ek_pubid }} · HYPD: {{ current_hypd_store }}</code>
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:14px;">
+      <a href="/admin/secret-vault" style="background: linear-gradient(135deg, #ec4899, #db2777); border:1px solid #f472b6; color:#fff; font-size:12px; font-weight:800; padding:8px 16px; border-radius:8px; text-decoration:none; display:inline-flex; align-items:center; gap:6px; box-shadow:0 4px 12px rgba(236,72,153,0.35);">
+        🔒 Open Secret Vault &amp; Sources
+      </a>
+      {% if vm %}
+        <div style="font-size:12px; color:#94a3b8; text-align:right;">
+          CPU: <b style="color:#fff;">{{ vm.cpu_pct }}%</b> | RAM: <b style="color:#fff;">{{ vm.mem_pct }}%</b> | Bot: <b class="{% if vm.bot_running %}ok{% else %}bad{% endif %}">{% if vm.bot_running %}ONLINE{% else %}DOWN{% endif %}</b>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<!-- GLOBAL POST NAVIGATION BUTTON (UNIVERSAL SETTINGS BAR) -->
+<section class="card" style="border: 2px solid #6366f1; background: #0f172a; padding: 16px 20px; border-radius: 12px; margin-bottom: 20px; box-shadow:0 4px 20px rgba(99,102,241,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #1e293b; padding-bottom:12px; margin-bottom:14px;">
+    <div>
+      <h3 style="margin:0; font-size:17px; color:#c7d2fe; display:flex; align-items:center; gap:8px;">
+        🔘 Universal Post Navigation Button (Global Main Channel Linker)
+        <span style="font-size:11px; background:#4338ca; color:#e0e7ff; padding:2px 8px; border-radius:12px;">EVERY INFLUENCER / ALL POSTS</span>
+      </h3>
+      <p class="hint" style="margin:4px 0 0; font-size:12px; color:#94a3b8;">
+        Telegram లో ప్రతి post కింద inline button (ex: <b>Join Shpsy Loots ❤️ ↗️</b>) &amp; WhatsApp లో footer link automatically attach avthundi!
+      </p>
+    </div>
+    <div>
+      <span style="font-size:12px; font-weight:700; color: {{ '#4ade80' if settings.get('nav_button_enabled') == '1' else '#94a3b8' }};">
+        ● Global Status: {{ 'ACTIVE (Attached to All Posts)' if settings.get('nav_button_enabled') == '1' else 'OFF (Using Per-Influencer Settings)' }}
+      </span>
+    </div>
+  </div>
+
+  <form method="post" action="{{ url_for('update_global_settings') }}" style="display:grid; grid-template-columns: auto 1fr 1.5fr auto; gap:14px; align-items:center;">
+    <label style="font-size: 13px; font-weight: 700; color: #a5b4fc; cursor: pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; background:#1e1b4b; padding:10px 14px; border-radius:8px; border:1px solid #4338ca;">
+      <input type="checkbox" name="nav_button_enabled" value="1" {{ 'checked' if settings.get('nav_button_enabled') == '1' else '' }} /> 🔘 <b>UNIVERSAL BUTTON ON</b>
+    </label>
+    <div>
+      <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px; font-weight:600;">Button Text / Label</label>
+      <input name="nav_button_text" value="{{ settings.get('nav_button_text', 'Join Shpsy Loots ❤️') }}" placeholder="Join Shpsy Loots ❤️" style="width:100%; font-size:13px; font-weight:bold; color:#f8fafc;" />
+    </div>
+    <div>
+      <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px; font-weight:600;">Main Channel Link or Username</label>
+      <input name="nav_button_url" value="{{ settings.get('nav_button_url', '') }}" placeholder="https://t.me/your_main_channel or https://t.me/+invite_link" style="width:100%; font-size:13px; font-family:monospace;" />
+    </div>
+    <div style="padding-top:16px;">
+      <button type="submit" style="background:#4f46e5; color:white; padding:10px 20px; font-weight:700; border-radius:8px; border:none; cursor:pointer; font-size:13px; box-shadow:0 2px 10px rgba(79,70,229,0.4); white-space:nowrap;">
+        💾 Save Universal Button
+      </button>
+    </div>
+  </form>
+</section>
+
+<!-- SEARCH & BULK TOOLBAR -->
+<section class="card" style="border: 1px solid #1e3a8a; background: #0f172a; padding: 14px 20px; border-radius: 10px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+    <form method="get" action="{{ url_for('index') }}" style="display: flex; gap: 10px; align-items: center; flex:1; min-width:300px;">
+      <span style="font-size: 18px;">🔍</span>
+      <input name="q" value="{{ search_query or '' }}" placeholder="Search by Phone Number, Name, Insta ID, Amazon Tag, or ID..." style="flex: 1; padding: 10px 14px;" />
+      <button type="submit" style="background: #2563eb; color: white;">Search</button>
+      {% if search_query %}
+        <a class="btn" style="background: #475569; color: white;" href="{{ url_for('index') }}">Clear</a>
+      {% endif %}
+    </form>
+    <div>
+      <details style="display:inline-block; position:relative;">
+        <summary style="cursor:pointer; background:#4f46e5; color:white; padding:9px 16px; border-radius:8px; font-weight:700; font-size:13px; list-style:none;">
+          📂 Bulk Import 1000+ CSV
+        </summary>
+        <div style="position:absolute; right:0; margin-top:8px; z-index:100; background:#1e1b4b; border:1px solid #4338ca; padding:16px; border-radius:8px; width:340px; box-shadow:0 10px 25px rgba(0,0,0,0.5);">
+          <h4 style="margin:0 0 8px; color:#c7d2fe;">Upload CSV (1000+ Scale)</h4>
+          <p class="hint" style="font-size:11px; margin-bottom:10px;">Columns: <code>name,tag,phone,insta,approval_tg,broadcast_tg,whatsapp_id</code></p>
+          <form method="post" action="{{ url_for('bulk_import') }}" enctype="multipart/form-data">
+            <input type="file" name="csv_file" accept=".csv" style="width:100%; font-size:12px; margin-bottom:10px;" />
+            <button type="submit" style="width:100%; background:#10b981; font-weight:700;">🚀 Import Now</button>
+          </form>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ➕ ADD NEW INFLUENCER FORM (INSTANT 1-CLICK) -->
+<section id="quick-add-form" class="card" style="border: 2px solid #3b82f6; background: #131b2e; border-radius: 12px; box-shadow:0 8px 30px rgba(0,0,0,0.4);">
+  <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #283759; padding-bottom:12px; margin-bottom:14px;">
+    <div>
+      <h2 style="color: #60a5fa; margin: 0; font-size: 19px; display:flex; align-items:center; gap:8px;">
+        ➕ Quick Add Influencer &amp; Channels
+        <span style="background:#065f46; color:#a7f3d0; font-size:11px; padding:2px 8px; border-radius:4px;">NO EXCEL NEEDED</span>
+      </h2>
+      <p class="hint" style="margin:4px 0 0;">Fill details directly here &amp; click 'Save &amp; Start Live'. The influencer is instantly saved and their channel is ready!</p>
+    </div>
+    <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:4px 10px; border-radius:6px; font-weight:700;">3-CHANNELS AUTO-SETUP</span>
+  </div>
+  
+  <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;">
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Influencer Name *</label>
+      <input id="name-input" name="name" placeholder="e.g. Ramesh Deals" required style="width: 100%; font-size:14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📞 Mobile / WhatsApp Number *</label>
+      <input name="phone_number" placeholder="e.g. 919876543210" required style="width: 100%; font-family: monospace; font-size:14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Amazon Associate Tag *</label>
+      <input name="tag" placeholder="e.g. ramesh-21" required style="width: 100%; font-family: monospace; font-size:14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">📸 Instagram ID</label>
+      <input name="insta_id" placeholder="@instagram_handle" style="width: 100%;" />
+    </div>
+
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#6ee7b7;">🛡️ 1) APPROVAL CHANNEL (Telegram)</label>
+      <input name="approval_tg" placeholder="@approval_channel or link" style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:10px;">Amazon-only + #ad for associate approval</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#93c5fd;">📢 2) MAIN CHANNEL (Telegram Broadcast)</label>
+      <input name="broadcast_tg" placeholder="@main_channel or link" style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:10px;">Full deals (Amazon + our EarnKaro)</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde68a;">💬 3) WHATSAPP CHANNEL (Invite / JID)</label>
+      <input name="whatsapp_id" placeholder="https://chat.whatsapp.com/... or 120363xxx" style="width: 100%;" />
+      <span class="hint" style="font-size:10px;">Paste invite link or phone chat JID</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Deal Budget Filter</label>
+      <select name="price_filter" style="width: 100%;">
+        <option value="all" selected>All Deals (No Price Limit)</option>
+        <option value="under_99">🔥 Under ₹99 Only</option>
+        <option value="under_199">⚡ Under ₹199 Only</option>
+        <option value="under_499">🎁 Under ₹499 Only</option>
+        <option value="under_999">🏷️ Under ₹999 Only</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Tokens (Optional)</label>
+      <input name="bitly_api_key" placeholder="Key1, Key2..." style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:11px;">If provided, multi-links will shorten cleanly</span>
+    </div>
+
+    <!-- 16 COMPREHENSIVE CATEGORIES MULTI-CHECKBOX GRID -->
+    <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <label style="font-size: 13px; font-weight: 700; color:#a78bfa; margin:0;">🛍️ Allowed Deal Categories (Select All or Required)</label>
+        <div style="font-size:11px;">
+          <a href="javascript:void(0)" onclick="document.querySelectorAll('input[name=categories]').forEach(el => el.checked=true);" style="color:#34d399; font-weight:bold; text-decoration:underline; margin-right:8px;">⚡ SELECT ALL (No Restrictions)</a>
+          <a href="javascript:void(0)" onclick="document.querySelectorAll('input[name=categories]').forEach(el => el.checked=false);" style="color:#94a3b8; text-decoration:underline;">Clear All</a>
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px;">
+        <label style="color:#fde047; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px; font-weight:bold;">
+          <input type="checkbox" name="categories" value="all" checked onchange="if(this.checked){document.querySelectorAll('input[name=categories]:not([value=all])').forEach(el=>el.checked=true);}" /> 🌟 ALL CATEGORIES (Any Loot)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="clothing" checked /> 👗 Fashion &amp; Clothing
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="electronics" checked /> 📱 Electronics &amp; Gadgets
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="footwear" checked /> 👟 Footwear &amp; Shoes
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="home" checked /> 🏠 Home &amp; Kitchen
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="daily" checked /> 🧴 Daily Essentials &amp; Grocery
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="beauty" checked /> 💄 Beauty &amp; Personal Care
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="appliances" checked /> ❄️ Appliances &amp; AC/Fridge
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="baby" checked /> 👶 Baby Products &amp; Toys
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="sports" checked /> 🏋️ Sports &amp; Fitness
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="travel_luggage" checked /> 🧳 Luggage &amp; Bags
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="jewellery_accessories" checked /> 💍 Jewellery &amp; Watches
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="gaming" checked /> 🎮 Gaming &amp; Accessories
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="recharge_freebies" checked /> 🎁 Freebies, Cashback &amp; Coupons
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="books_stationery" checked /> 📚 Books &amp; Stationery
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="automotive" checked /> 🚗 Automotive &amp; Bike
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="pet_supplies" checked /> 🐶 Pet Food &amp; Supplies
+        </label>
+      </div>
+    </div>
+
+    <!-- INDIAN TIMINGS SESSIONS & BREAKS -->
+    <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
+      <label style="font-size: 13px; font-weight: 700; color:#34d399; display: block; margin-bottom: 8px;">⏰ Indian Timings (IST Active Posting Sessions &amp; Night Sleep Breaks)</label>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px;">
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="06:00-02:00" /> 🌙 <b>Next-Day Late Session</b> (6:00 AM – 2:00 AM Next Day)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="06:00-09:00" /> 🌅 <b>Morning Prime</b> (6:00 AM – 9:00 AM)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="11:00-14:00" /> ☀️ <b>Mid-Day Loot</b> (11:00 AM – 2:00 PM)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="18:00-23:00" /> 🌆 <b>Evening Rush</b> (6:00 PM – 11:00 PM)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="20:00-00:00" /> 🌙 <b>Night Loot</b> (8:00 PM – 12:00 Midnight)
+        </label>
+      </div>
+      <div style="margin-top:8px;">
+        <input name="custom_schedule" placeholder="Or custom windows: e.g. 06:00-02:00 (Hold/Sleep from 2AM to 6AM)" style="width:100%; font-size:12px;" />
+        <span class="hint" style="font-size:10px;">Outside active hours, deals are skipped cleanly so queue never clusters! Empty = 24/7.</span>
+      </div>
+    </div>
+
+    <!-- CUSTOM NAVIGATION BUTTON OPTION IN QUICK ADD -->
+    <div style="grid-column: 1 / -1; background:#1e1b4b; border:1px solid #4338ca; padding:14px; border-radius:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <label style="font-size: 13px; font-weight: 700; color:#c7d2fe; margin:0; display:flex; align-items:center; gap:8px;">
+          🔘 <b>Telegram / WhatsApp Post Navigation Button</b> (e.g. Join Shpsy Loots ❤️)
+        </label>
+        <label style="font-size:12px; color:#a5b4fc; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="custom_button_enabled" value="1" /> Enable Custom Button on Posts
+        </label>
+      </div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button Title / Label</label>
+          <input name="custom_button_text" value="Join Shpsy Loots ❤️" placeholder="Join Shpsy Loots ❤️" style="width:100%; font-size:12px;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Target Channel Invite Link / Username</label>
+          <input name="custom_button_url" placeholder="https://t.me/your_main_channel or @channel" style="width:100%; font-size:12px; font-family:monospace;" />
+        </div>
+      </div>
+    </div>
+
+    <!-- TOGGLE SWITCHES & SAVE -->
+    <div style="grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; background: #0d1322; padding: 12px 16px; border-radius: 8px; border: 1px solid #283759; margin-top: 4px; flex-wrap:wrap; gap:10px;">
+      <div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
+        <label style="font-size: 13px; font-weight: 600; color: #86efac; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="allow_amazon" value="1" checked /> 📦 <b>AMAZON ON</b> (Amazon Deals)
+        </label>
+        <label style="font-size: 13px; font-weight: 600; color: #fde68a; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="allow_earnkaro" value="1" checked /> 💰 <b>EARNKARO ON</b> (Flipkart/Myntra Commissions)
+        </label>
+        <label style="font-size: 13px; font-weight: 600; color: #f472b6; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="allow_hypd" value="1" checked /> 🛍️ <b>HYPD STORE ON</b> (Meesho Deals)
+        </label>
+        <input type="hidden" name="hypd_store_id" value="93944" />
+        <label style="font-size: 13px; font-weight: 600; color: #93c5fd; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="only_amazon" value="1" onchange="if(this.checked){document.querySelector('input[name=allow_earnkaro]').checked=false;document.querySelector('input[name=allow_hypd]').checked=false;}else{document.querySelector('input[name=allow_earnkaro]').checked=true;document.querySelector('input[name=allow_hypd]').checked=true;}" /> 🛡️ <b>ONLY AMAZON</b> (Initial Trust Phase)
+        </label>
+      </div>
+      <button type="submit" style="background: #2563eb; color: white; padding: 12px 32px; font-weight: 800; border-radius: 8px; cursor: pointer; border: none; font-size:15px; box-shadow:0 4px 14px rgba(37,99,235,0.4);">⚡ Save &amp; Start Live</button>
+    </div>
+  </form>
+</section>
+
+<!-- INFLUENCERS LIST TABLE -->
+<section class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0; font-size:18px;">Active Influencers ({{ influencers|length }})</h2>
+    <span class="hint">Instant Channel Control &amp; Direct QR Linking</span>
+  </div>
+  
+  {% if not influencers %}
+    <p class="hint" style="margin-top:14px;">No influencers found matching "{{ search_query }}" — add one above.</p>
+  {% endif %}
+  
+  <table style="margin-top: 14px;">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Influencer &amp; Mobile</th>
+        <th>Instagram</th>
+        <th>Amazon Tag</th>
+        <th>Budget &amp; Category</th>
+        <th>Posting Schedule</th>
+        <th>Only Amz</th>
+        <th>Status</th>
+        <th style="text-align:right;">Control</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for i in influencers %}
+      <tr>
+        <td><b>#{{ i.id }}</b></td>
+        <td>
+          <b style="color:#fff; font-size:15px;">{{ i.name }}</b>
+          {% if i.phone_number %}<div style="color:#38bdf8; font-size:12px; font-family:monospace;">📞 {{ i.phone_number }}</div>{% endif %}
+          {% if i.handle %}<div style="color:var(--muted); font-size:12px;">{{ i.handle }}</div>{% endif %}
+        </td>
+        <td>
+          {% if i.insta_id %}
+            <a href="https://instagram.com/{{ i.insta_id.lstrip('@') }}" target="_blank" style="color: #e879f9; font-weight: 600; text-decoration: none;">📸 {{ i.insta_id }}</a>
+          {% else %}
+            <span style="color: #475569;">—</span>
+          {% endif %}
+        </td>
+        <td><code>{{ i.amazon_tag }}</code></td>
+        <td>
+          <div>
+            {% if i.price_filter and i.price_filter != 'all' %}
+              <span style="background:#78350f; color:#fde68a; padding:2px 6px; border-radius:4px; font-weight:700; font-size:11px;">🎯 {{ i.price_filter|upper }}</span>
+            {% else %}
+              <span style="color:#64748b; font-size:12px;">All Deals</span>
+            {% endif %}
+          </div>
+          {% if i.categories and i.categories != 'all' %}
+            <div style="font-size:10px; color:#c084fc; margin-top:2px;">🛍️ {{ i.categories }}</div>
+          {% endif %}
+        </td>
+        <td>
+          {% if i.posting_schedule and i.posting_schedule != 'all' %}
+            <span style="background:#065f46; color:#a7f3d0; padding:2px 6px; border-radius:4px; font-weight:700; font-size:11px;">⏰ {{ i.posting_schedule }}</span>
+          {% else %}
+            <span style="color:#10b981; font-size:12px;">24/7 Active</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if i.only_amazon %}
+            <span style="background:#854d0e; color:#fef08a; padding:2px 6px; border-radius:4px; font-weight:bold; font-size:11px;">🛡️ ONLY AMZ</span>
+          {% else %}
+            <span style="color:#64748b; font-size:11px;">All Stores</span>
+          {% endif %}
+        </td>
+        <td>
+          <form method="post" action="{{ url_for('toggle_influencer_active', inf_id=i.id) }}" style="display:inline; margin:0;">
+            {% if i.active %}
+              <button type="submit" title="Click to STOP all deals (Total OFF)" style="background:#064e3b; border:1px solid #10b981; color:#6ee7b7; padding:4px 10px; border-radius:6px; font-weight:700; font-size:11px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">
+                🟢 POSTING ON
+              </button>
+            {% else %}
+              <button type="submit" title="Click to RESUME deals (Turn ON)" style="background:#450a0a; border:1px solid #ef4444; color:#fca5a5; padding:4px 10px; border-radius:6px; font-weight:700; font-size:11px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;">
+                🔴 TOTAL OFF (PAUSED)
+              </button>
+            {% endif %}
+          </form>
+        </td>
+        <td style="text-align:right;">
+          <a class="btn" style="padding:6px 14px; font-size:13px; text-decoration:none; background:#3b82f6;" href="{{ url_for('influencer_detail', inf_id=i.id) }}">⚙️ Channels &amp; Test</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<!-- 🧪 REAL-TIME INTERACTIVE DEAL CONVERSION SIMULATOR & TESTER -->
+<section class="card" style="border: 2px solid #8b5cf6; background: #0f1123; padding: 20px; border-radius: 12px; margin-top: 24px; box-shadow:0 8px 30px rgba(139,92,246,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #2e1065; padding-bottom:12px; margin-bottom:16px;">
+    <div>
+      <h3 style="margin:0; font-size:18px; color:#c4b5fd; display:flex; align-items:center; gap:8px;">
+        🧪 Live Deal Conversion Simulator &amp; Tester
+        <span style="font-size:11px; background:#4c1d95; color:#ede9fe; padding:2px 10px; border-radius:12px; font-weight:700;">INSTANT PREVIEW</span>
+      </h3>
+      <p class="hint" style="margin:4px 0 0; font-size:12px; color:#a78bfa;">
+        మీరు ఏ Telegram/Meesho/Amazon/Flipkart deal text అయినా ఇక్కడ పేస్ట్ చేసి <b>"⚡ Test Convert"</b> క్లిక్ చేయండి. అది మన Affiliate Tag &amp; HYPD Store ID తో ఎలా మారుతుందో లైవ్‌గా చూడవచ్చు!
+      </p>
+    </div>
+    <span style="font-size:12px; color:#34d399; font-weight:bold;">● Zero Risk · 100% Client-Side Safe</span>
+  </div>
+
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+    <div>
+      <label style="font-size:12px; font-weight:700; color:#cbd5e1; display:block; margin-bottom:6px;">
+        📥 Raw Deal Text (From Any Source Channel):
+      </label>
+      <textarea id="sim-input" rows="7" style="width:100%; font-family:monospace; font-size:12px; padding:10px; background:#181829; border:1px solid #3b4261; color:#f8fafc; border-radius:8px;">🔥 Super Loot Deals Today!
+1. Meesho Saree at ₹199: https://hypd.store/88888/afflink/daol5bac45l0tc0oo5rg
+2. Amazon Soundbar at ₹1,499: https://www.amazon.in/dp/B08XYZ1234?tag=competitor-21
+3. Flipkart Shoes at ₹499: https://www.flipkart.com/shoes/p/itm123456?affid=lehlah&affextparam1=test</textarea>
+
+      <div style="display:flex; gap:12px; margin-top:10px; align-items:center;">
+        <div>
+          <label style="font-size:11px; color:#94a3b8; display:block;">Amazon Tag:</label>
+          <input id="sim-tag" value="mypartner-21" style="font-size:12px; padding:4px 8px; width:120px; font-family:monospace;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#94a3b8; display:block;">HYPD Store ID:</label>
+          <input id="sim-hypd" value="{{ current_hypd_store }}" style="font-size:12px; padding:4px 8px; width:90px; font-family:monospace;" />
+        </div>
+        <div style="flex:1; text-align:right; padding-top:14px;">
+          <button type="button" onclick="runLiveSimulator()" style="background:#8b5cf6; color:white; padding:9px 24px; font-weight:800; border-radius:8px; border:none; cursor:pointer; font-size:13px; box-shadow:0 4px 14px rgba(139,92,246,0.4);">
+            ⚡ Test Convert Now
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <label style="font-size:12px; font-weight:700; color:#34d399; display:block; margin-bottom:6px;">
+        📤 Converted Output (What Followers Receive):
+      </label>
+      <div id="sim-output" style="height:175px; overflow-y:auto; font-family:monospace; font-size:12px; padding:12px; background:#0a0d18; border:1px solid #10b981; color:#a7f3d0; border-radius:8px; white-space:pre-wrap;">Click '⚡ Test Convert Now' to see instant transformation...</div>
+      <div id="sim-links-detected" style="margin-top:8px; font-size:11px; color:#93c5fd;"></div>
+    </div>
+  </div>
+</section>
+
+<script>
+function runLiveSimulator() {
+  const text = document.getElementById('sim-input').value;
+  const tag = document.getElementById('sim-tag').value;
+  const hypd = document.getElementById('sim-hypd').value;
+  const outDiv = document.getElementById('sim-output');
+  const linksDiv = document.getElementById('sim-links-detected');
+
+  outDiv.innerHTML = '<span style="color:#fbbf24;">Converting links through pipeline engine...</span>';
+
+  const formData = new FormData();
+  formData.append('sample_text', text);
+  formData.append('amazon_tag', tag);
+  formData.append('hypd_store_id', hypd);
+
+  fetch('/api/test-render-deal', {
+    method: 'POST',
+    body: formData
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      outDiv.textContent = data.rendered;
+      let linksInfo = '<b>Detected Links:</b> ';
+      for (const [url, kind] of Object.entries(data.detected_links || {})) {
+        linksInfo += `<span style="background:#1e293b; padding:2px 6px; border-radius:4px; margin-right:6px;">${kind.toUpperCase()}: ${url.substring(0, 35)}...</span>`;
+      }
+      linksDiv.innerHTML = linksInfo;
+    }
+  })
+  .catch(err => {
+    outDiv.innerHTML = '<span style="color:#f87171;">Error: ' + err + '</span>';
+  });
+}
+</script>
+{% endblock %}

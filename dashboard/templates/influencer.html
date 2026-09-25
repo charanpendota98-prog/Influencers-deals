@@ -1,0 +1,528 @@
+{% extends "layout.html" %}
+{% block title %}{{ inf.name }} - Channels Control Center{% endblock %}
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap:wrap; gap:12px;">
+  <div>
+    <h1 style="margin-bottom: 4px; display:flex; align-items:center; gap:8px;">
+      {{ inf.name }} <small style="color: var(--muted); font-size:16px;">#{{ inf.id }}</small>
+      {% if inf.only_amazon %}
+        <span style="font-size:11px; background:#854d0e; color:#fef08a; padding:2px 8px; border-radius:4px; font-weight:bold;">🛡️ ONLY AMAZON ACTIVE</span>
+      {% endif %}
+    </h1>
+    <p class="hint" style="margin: 0;">
+      Amazon Associate Tag: <code style="font-size: 14px; font-weight: bold; background: #1e3a8a; color: #93c5fd; padding: 3px 8px; border-radius: 4px;">{{ inf.amazon_tag }}</code> · 
+      {% if inf.phone_number %}<span style="color:#38bdf8; font-family:monospace; margin-right:8px;">📞 {{ inf.phone_number }}</span> · {% endif %}
+      Status: <b>{{ '🟢 Active' if inf.active else '🔴 Paused' }}</b> ·
+      {% if inf.insta_id %}<a href="https://instagram.com/{{ inf.insta_id.lstrip('@') }}" target="_blank" style="color:#e879f9; text-decoration:none;">📸 {{ inf.insta_id }}</a>{% endif %}
+    </p>
+  </div>
+  <div style="display:flex; gap:10px; align-items:center;">
+    <form method="post" action="{{ url_for('toggle_influencer_active', inf_id=inf.id) }}" style="display:inline; margin:0;">
+      {% if inf.active %}
+        <button type="submit" style="background:#065f46; border:1px solid #10b981; color:#a7f3d0; padding:8px 16px; border-radius:6px; font-size:13px; font-weight:800; cursor:pointer;" title="Click to Stop all posts to this creator immediately">
+          🟢 Master Switch: POSTING ACTIVE (Click to STOP)
+        </button>
+      {% else %}
+        <button type="submit" style="background:#7f1d1d; border:1px solid #ef4444; color:#fecaca; padding:8px 16px; border-radius:6px; font-size:13px; font-weight:800; cursor:pointer;" title="Click to Start posting deals again">
+          🔴 Master Switch: TOTAL OFF / PAUSED (Click to START)
+        </button>
+      {% endif %}
+    </form>
+    <form method="post" action="{{ url_for('trigger_hourly_loot', inf_id=inf.id) }}">
+      <button type="submit" style="background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight:bold; cursor:pointer; border:none; box-shadow:0 2px 10px rgba(245, 158, 11, 0.3);" title="Analyzes deals from the last 1 hour and highlights the best deal">⚡ Post Loot of the Hour</button>
+    </form>
+    <form method="post" action="{{ url_for('delete_influencer', inf_id=inf.id) }}" onsubmit="var p = prompt('Enter Admin Password to delete this influencer:'); if (!p) return false; this.admin_password.value = p; return true;">
+      <input type="hidden" name="admin_password" value="" />
+      <button type="submit" style="background: #dc2626; color: white; padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight:bold; cursor:pointer;">🔒 Delete Influencer (Password Protected)</button>
+    </form>
+    {% if request.args.get('err') == 'invalid_password' %}
+      <div style="color: #ef4444; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">❌ Incorrect Admin Password!</div>
+    {% endif %}
+    {% if request.args.get('hourly_loot') == '1' %}
+      <div style="color: #34d399; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">✅ Loot of the Hour Analyzed &amp; Dispatched!</div>
+    {% endif %}
+    {% if request.args.get('test_status') == 'posted' %}
+      <div style="background:#065f46; color: #a7f3d0; padding:4px 10px; border-radius:6px; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">
+        🚀 Test Message Dispatched Successfully to {{ request.args.get('ch_name') }}!
+      </div>
+    {% elif request.args.get('test_status') == 'failed' %}
+      <div style="background:#7f1d1d; color: #fca5a5; padding:4px 10px; border-radius:6px; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">
+        ⚠️ Test Message Failed to {{ request.args.get('ch_name') }}: {{ request.args.get('test_err') }}
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- INFLUENCER PROFILE EDIT FORM -->
+<section class="card" style="border: 1px solid #4338ca; background: #13172c;">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="color: #a5b4fc; margin-top: 0; font-size:17px;">👤 Influencer Profile Settings &amp; Rules</h2>
+    <span style="font-size:11px; background:#312e81; color:#c7d2fe; padding:2px 8px; border-radius:4px;">ZERO DOWNTIME EDIT</span>
+  </div>
+  
+  <form method="post" action="{{ url_for('update_profile', inf_id=inf.id) }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-top: 14px;">
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Name</label>
+      <input name="name" value="{{ inf.name }}" required style="width: 100%;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📞 Mobile / WhatsApp</label>
+      <input name="phone_number" value="{{ inf.phone_number or '' }}" placeholder="919876543210" style="width: 100%; font-family:monospace;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Amazon Associate Tag * (Instant Live Update)</label>
+      <input name="amazon_tag" value="{{ inf.amazon_tag }}" required style="width: 100%; font-family: monospace; font-weight:bold; color:#fbbf24; background:#070d18;" />
+      <span class="hint" style="font-size:10px;">Vere Amazon Tag update cheste ventsne fresh deals anni aa new tag tho post avthayi!</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">📸 Instagram ID</label>
+      <input name="insta_id" value="{{ inf.insta_id or '' }}" placeholder="@user" style="width: 100%;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Tokens (Comma-Separated Pool)</label>
+      <input name="bitly_api_key" value="{{ inf.bitly_api_key or '' }}" placeholder="Token1, Token2..." style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:11px;">Multiple keys supported with automatic failover</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde047;">🛡️ Mode: Only Amazon Deals vs Multi-Store</label>
+      <select name="only_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px; background:#1e1b4b; border:1px solid #eab308; color:#fef08a;">
+        <option value="0" {{ 'selected' if not inf.only_amazon else '' }}>🌐 Multi-Store Active (Amazon + Flipkart + Myntra + Meesho)</option>
+        <option value="1" {{ 'selected' if inf.only_amazon else '' }}>🛡️ Phase 1: ONLY AMAZON DEALS (Trust Builder - Non-Amazon Skipped)</option>
+      </select>
+      <span class="hint" style="font-size:10px; color:#fef08a;">'Only Amazon' select cheste non-Amazon deals skip avthayi. EarnKaro/HYPD off lo untayi.</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#34d399;">📦 Amazon Deals Switch (Toggle Amazon)</label>
+      <select name="allow_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px; background:#0c1a14; border:1px solid #16a34a; color:#86efac;">
+        <option value="1" {{ 'selected' if inf.allow_amazon != 0 else '' }}>🟢 AMAZON ON: Post Amazon Deals (with their tag)</option>
+        <option value="0" {{ 'selected' if inf.allow_amazon == 0 else '' }}>🔴 AMAZON OFF: Stop Amazon Deals (No Amazon Posts)</option>
+      </select>
+      <span class="hint" style="font-size:10px; color:#86efac;">Amazon deals post avvala vadda anedi ee toggle tho instant ga control cheyachu.</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">💰 EarnKaro Deals Switch (Toggle EarnKaro Commission)</label>
+      <select name="allow_earnkaro" style="width: 100%; font-weight:bold; font-size:13px; padding:6px; background:#1c1917; border:1px solid #d97706; color:#fde68a;">
+        <option value="1" {{ 'selected' if inf.allow_earnkaro != 0 and not inf.only_amazon else '' }}>🟢 EARNKARO ON: Post Flipkart/Myntra (Our Commission ON)</option>
+        <option value="0" {{ 'selected' if inf.allow_earnkaro == 0 or inf.only_amazon else '' }}>🔴 EARNKARO OFF: No Non-Amazon / EarnKaro (Trust Phase)</option>
+      </select>
+      <span class="hint" style="font-size:10px; color:#fde68a;">Off cheste kevalam Amazon veltundi. On cheste mana EarnKaro links veltayi!</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🛍️ HYPD Store Deals Switch (Meesho Deals)</label>
+      <select name="allow_hypd" style="width: 100%; font-weight:bold; font-size:13px; padding:6px; background:#1e1022; border:1px solid #db2777; color:#fbcfe8;">
+        <option value="1" {{ 'selected' if inf.allow_hypd != 0 and not inf.only_amazon else '' }}>🟢 HYPD ON: Post Meesho Deals (HYPD Affiliate Active)</option>
+        <option value="0" {{ 'selected' if inf.allow_hypd == 0 or inf.only_amazon else '' }}>🔴 HYPD OFF: Skip Meesho / HYPD Deals</option>
+      </select>
+      <div style="margin-top: 4px; display:flex; align-items:center; gap:6px;">
+        <span style="font-size:11px; color:#cbd5e1;">Store ID:</span>
+        <input name="hypd_store_id" value="{{ inf.hypd_store_id or '93944' }}" placeholder="93944" style="width:90px; font-size:11px; padding:2px 4px; font-family:monospace;" />
+      </div>
+      <span class="hint" style="font-size:10px; color:#fbcfe8;">Meesho deals HYPD store link tho automatically retag avthayi (Default: 93944).</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📡 Allowed Deal Sources (Comma-Separated)</label>
+      <input name="allowed_sources" value="{{ inf.allowed_sources or '' }}" placeholder="powerloot,secret_loots (Empty = All Sources)" style="width: 100%; font-size: 12px;" />
+      <span class="hint" style="font-size:10px;">Specific source channel nunchi mathrame deals raavalante ikkada rayandi</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">🎯 Default Budget Filter</label>
+      <select name="price_filter" style="width: 100%;">
+        <option value="all" {{ 'selected' if (not inf.price_filter or inf.price_filter == 'all') else '' }}>All Loot Deals</option>
+        <option value="under_99" {{ 'selected' if inf.price_filter == 'under_99' else '' }}>🔥 Under ₹99 Only</option>
+        <option value="under_199" {{ 'selected' if inf.price_filter == 'under_199' else '' }}>⚡ Under ₹199 Only</option>
+        <option value="under_499" {{ 'selected' if inf.price_filter == 'under_499' else '' }}>🎁 Under ₹499 Only</option>
+        <option value="under_999" {{ 'selected' if inf.price_filter == 'under_999' else '' }}>🏷️ Under ₹999 Only</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Posting Status</label>
+      <select name="active" style="width: 100%;">
+        <option value="1" {{ 'selected' if inf.active else '' }}>🟢 Active (Posting ON)</option>
+        <option value="0" {{ 'selected' if not inf.active else '' }}>🔴 Paused (Stop)</option>
+      </select>
+    </div>
+
+    <!-- TELEGRAM & WHATSAPP CUSTOM NAVIGATION BUTTON / PROMO BANNER -->
+    <div style="grid-column: 1 / -1; background:#1e1b4b; border:1px solid #6366f1; padding:14px; border-radius:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <label style="font-size: 13px; font-weight: 700; color:#c7d2fe; margin:0; display:flex; align-items:center; gap:8px;">
+          🔘 <b>Telegram / WhatsApp Post Navigation Button</b> (e.g. Join Shpsy Loots ❤️ ↗️)
+        </label>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <input type="hidden" name="custom_button_enabled" value="0" />
+          <label style="font-size:12px; color:#a5b4fc; cursor:pointer; display:flex; align-items:center; gap:6px;">
+            <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if inf.custom_button_enabled else '' }} /> Enable Navigation Button on Posts
+          </label>
+        </div>
+      </div>
+      <p class="hint" style="font-size:11px; margin-top:0; color:#94a3b8;">
+        ఇన్‌ఫ్లుయెన్సర్ పోస్ట్ క్రింద మన సొంత ఛానల్ బటన్ అమర్చవచ్చు! క్లిక్ చేయగానే యూజర్లు మన మెయిన్ ఛానల్‌కు నావిగేట్ అవుతారు (Empty unte Universal Settings nunchi teesukuntundi).
+      </p>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:8px;">
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button Title / Tag Name (e.g. Join Shpsy Loots ❤️)</label>
+          <input name="custom_button_text" value="{{ inf.custom_button_text or '' }}" placeholder="Join Shpsy Loots ❤️" style="width:100%; font-size:12px; font-weight:bold;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Target Channel Invite Link / Username</label>
+          <input name="custom_button_url" value="{{ inf.custom_button_url or '' }}" placeholder="https://t.me/our_vip_deals or @our_deals" style="width:100%; font-size:12px; font-family:monospace;" />
+        </div>
+      </div>
+    </div>
+
+    <!-- CATEGORIES EDIT (MULTI-CHECKBOX PICKER + SYNC) -->
+    <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <label style="font-size: 13px; font-weight: 700; color:#a78bfa; margin:0;">🛍️ Allowed Deal Categories (Select All or Pick Specific)</label>
+        <div style="font-size:11px;">
+          <a href="javascript:void(0)" onclick="document.querySelectorAll('.inf-cat-cb').forEach(el => el.checked=true); syncInfCategories();" style="color:#34d399; font-weight:bold; text-decoration:underline; margin-right:8px;">⚡ SELECT ALL (No Restrictions)</a>
+          <a href="javascript:void(0)" onclick="document.querySelectorAll('.inf-cat-cb').forEach(el => el.checked=false); syncInfCategories();" style="color:#94a3b8; text-decoration:underline;">Clear All</a>
+        </div>
+      </div>
+      <input type="hidden" id="inf-categories-input" name="categories" value="{{ inf.categories or '' }}" />
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px;">
+        {% set cur_cats = (inf.categories or '').split(',') if inf.categories else [] %}
+        <label style="color:#fde047; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px; font-weight:bold;">
+          <input type="checkbox" class="inf-cat-cb" value="all" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'all' in cur_cats) else '' }} /> 🌟 ALL CATEGORIES (Any Loot)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="clothing" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'clothing' in cur_cats or 'all' in cur_cats) else '' }} /> 👗 Fashion &amp; Clothing
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="electronics" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'electronics' in cur_cats or 'all' in cur_cats) else '' }} /> 📱 Electronics &amp; Tech
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="footwear" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'footwear' in cur_cats or 'all' in cur_cats) else '' }} /> 👟 Footwear &amp; Shoes
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="home" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'home' in cur_cats or 'all' in cur_cats) else '' }} /> 🏠 Home &amp; Kitchen
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="daily" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'daily' in cur_cats or 'all' in cur_cats) else '' }} /> 🛒 Daily &amp; Grocery
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="beauty" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'beauty' in cur_cats or 'all' in cur_cats) else '' }} /> 💄 Beauty &amp; Personal Care
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="appliances" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'appliances' in cur_cats or 'all' in cur_cats) else '' }} /> 🔌 Appliances &amp; AC/Fridge
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="baby" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'baby' in cur_cats or 'all' in cur_cats) else '' }} /> 🍼 Baby &amp; Kids Toys
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="sports" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'sports' in cur_cats or 'all' in cur_cats) else '' }} /> 🏏 Sports &amp; Fitness
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="travel_luggage" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'travel_luggage' in cur_cats or 'all' in cur_cats) else '' }} /> 🧳 Luggage &amp; Bags
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="jewellery_accessories" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'jewellery_accessories' in cur_cats or 'all' in cur_cats) else '' }} /> 💍 Jewellery &amp; Watches
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="gaming" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'gaming' in cur_cats or 'all' in cur_cats) else '' }} /> 🎮 Gaming &amp; Accessories
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="recharge_freebies" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'recharge_freebies' in cur_cats or 'all' in cur_cats) else '' }} /> 🎁 Recharge &amp; Freebies
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="books_stationery" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'books_stationery' in cur_cats or 'all' in cur_cats) else '' }} /> 📚 Books &amp; Stationery
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="automotive" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'automotive' in cur_cats or 'all' in cur_cats) else '' }} /> 🚗 Automotive &amp; Bike
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="inf-cat-cb" value="pet_supplies" onchange="syncInfCategories()" {{ 'checked' if (not inf.categories or 'pet_supplies' in cur_cats or 'all' in cur_cats) else '' }} /> 🐶 Pet Food &amp; Supplies
+        </label>
+      </div>
+    </div>
+
+    <!-- SCHEDULE EDIT (SMART CHIPS + CUSTOM INPUT) -->
+    <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
+      <label style="font-size: 13px; font-weight: 700; display: block; margin-bottom: 8px; color:#34d399;">⏰ Indian Timings (IST Active Schedule / Night Sleep Windows)</label>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+        <button type="button" onclick="setInfSchedule('06:00-02:00')" class="btn" style="background:#1e293b; color:#93c5fd; border:1px solid #3b82f6; font-size:11px; padding:4px 10px; border-radius:15px; cursor:pointer;">🌙 6AM – 2AM Next Day (Sleep 2AM-6AM)</button>
+        <button type="button" onclick="setInfSchedule('06:00-09:00,18:00-23:00')" class="btn" style="background:#1e293b; color:#a7f3d0; border:1px solid #10b981; font-size:11px; padding:4px 10px; border-radius:15px; cursor:pointer;">⚡ Morning Loot (6-9AM) + Evening Prime (6-11PM)</button>
+        <button type="button" onclick="setInfSchedule('11:00-14:00,18:00-23:00')" class="btn" style="background:#1e293b; color:#fde68a; border:1px solid #f59e0b; font-size:11px; padding:4px 10px; border-radius:15px; cursor:pointer;">🔥 Afternoon (11AM-2PM) + Prime (6-11PM)</button>
+        <button type="button" onclick="setInfSchedule('')" class="btn" style="background:#1e293b; color:#e2e8f0; border:1px solid #64748b; font-size:11px; padding:4px 10px; border-radius:15px; cursor:pointer;">🌐 24/7 All Day &amp; Night</button>
+      </div>
+      <input id="inf-schedule-input" name="posting_schedule" value="{{ inf.posting_schedule or '' }}" placeholder="06:00-02:00 or 06:00-09:00,18:00-23:00 (Empty=24/7)" style="width: 100%; font-size: 13px;" />
+      <span class="hint" style="font-size:11px;">Outside active time, deals pause cleanly without queue clutter. When active, only fresh deals post!</span>
+    </div>
+
+    <div style="grid-column: 1 / -1; display:flex; justify-content:flex-end;">
+      <button type="submit" style="background: #4f46e5; color: white; padding: 10px 24px; font-weight: 700; border-radius: 8px; cursor: pointer; border: none;">💾 Save Profile &amp; Rules</button>
+    </div>
+  </form>
+</section>
+
+<!-- CONFIGURED CHANNELS TABLE -->
+<section class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0; font-size:18px;">📺 Configured Channels for {{ inf.name }}</h2>
+    <span class="hint">Approval Channel · Main Channel · WhatsApp Channel (+ Any Extra Channels)</span>
+  </div>
+  <p class="hint">Every channel has individual settings: Budget, Source, Amazon Tag Override, Strip Amazon, and <b>🚀 Send Test Alert</b>:</p>
+  
+  <table style="margin-top: 14px; margin-bottom: 20px;">
+    <thead>
+      <tr>
+        <th>Channel Type (Role)</th>
+        <th>Platform</th>
+        <th>Channel Username / Invite Link</th>
+        <th>Budget Limit</th>
+        <th>Bitly Token / WA Session</th>
+        <th>Categories &amp; Timings</th>
+        <th>Amazon Filter / Override</th>
+        <th>Status</th>
+        <th>Instant Test</th>
+        <th>Save</th>
+        <th>Delete</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in channels %}
+      <tr>
+        <form method="post" action="{{ url_for('update_channel_route', channel_id=c.id) }}">
+          <input type="hidden" name="inf_id" value="{{ inf.id }}" />
+          <td>
+            <select name="role" style="font-size: 12px; padding: 6px; font-weight: bold;">
+              <option value="approval" {{ 'selected' if c.role == 'approval' else '' }}>🛡️ APPROVAL CHANNEL</option>
+              <option value="broadcast" {{ 'selected' if c.role == 'broadcast' else '' }}>📢 MAIN CHANNEL</option>
+              <option value="whatsapp" {{ 'selected' if c.role == 'whatsapp' else '' }}>💬 WHATSAPP CHANNEL</option>
+            </select>
+          </td>
+          <td><b>{{ c.platform }}</b></td>
+          <td>
+            <input name="identifier" value="{{ c.identifier }}" style="font-size: 13px; padding: 6px; width: 140px; font-family: monospace;" />
+            {% if c.invite_link %}<a href="{{ c.invite_link }}" target="_blank" style="font-size: 12px; margin-left: 4px; color:var(--accent);">(link)</a>{% endif %}
+          </td>
+          <td>
+            <select name="price_filter" style="font-size: 12px; padding: 5px;">
+              <option value="" {{ 'selected' if not c.price_filter else '' }}>Default ({{ inf.price_filter or 'All' }})</option>
+              <option value="all" {{ 'selected' if c.price_filter == 'all' else '' }}>All Deals</option>
+              <option value="under_99" {{ 'selected' if c.price_filter == 'under_99' else '' }}>🔥 Under ₹99</option>
+              <option value="under_199" {{ 'selected' if c.price_filter == 'under_199' else '' }}>⚡ Under ₹199</option>
+              <option value="under_499" {{ 'selected' if c.price_filter == 'under_499' else '' }}>🎁 Under ₹499</option>
+              <option value="under_999" {{ 'selected' if c.price_filter == 'under_999' else '' }}>🏷️ Under ₹999</option>
+            </select>
+          </td>
+          <td>
+            <input name="bitly_api_key" value="{{ c.bitly_api_key or '' }}" placeholder="Bitly Key..." style="font-size: 11px; padding: 3px 5px; width: 100px; font-family: monospace; display:block; margin-bottom:3px;" title="Channel Bitly Token" />
+            {% if c.platform != 'telegram' %}
+              <input name="wa_session_key" value="{{ c.wa_session_key or '' }}" placeholder="WA Session..." style="font-size: 11px; padding: 3px 5px; width: 100px; font-family: monospace;" title="Custom WA session for 2nd phone" />
+            {% endif %}
+          </td>
+          <td>
+            <input name="categories" value="{{ c.categories or '' }}" placeholder="clothing,electronics (All)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Allowed categories" />
+            <input name="posting_schedule" value="{{ c.posting_schedule or '' }}" placeholder="06:00-02:00 (24/7)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Timing schedule" />
+            <input name="allowed_sources" value="{{ c.allowed_sources or '' }}" placeholder="powerloot (All Src)" style="font-size: 10px; padding: 2px 4px; width: 110px; font-family: monospace;" title="Specific deal source for this channel" />
+          </td>
+          <td>
+            <div>
+                <input type="hidden" name="allow_amazon" value="0" />
+                <label style="display: block; cursor: pointer; color: #86efac; font-weight: 600; font-size: 11px;">
+                  <input type="checkbox" name="allow_amazon" value="1" {{ 'checked' if c.allow_amazon != 0 else '' }} /> 📦 Amazon ON
+                </label>
+                <input type="hidden" name="allow_earnkaro" value="0" />
+                <label style="display: block; cursor: pointer; color: #fde68a; font-weight: 600; font-size: 11px; margin-top:2px;">
+                  <input type="checkbox" name="allow_earnkaro" value="1" {{ 'checked' if (c.allow_earnkaro != 0 and not c.only_amazon) else '' }} /> 💰 EarnKaro ON
+                </label>
+                <input type="hidden" name="allow_hypd" value="0" />
+                <label style="display: block; cursor: pointer; color: #f472b6; font-weight: 600; font-size: 11px; margin-top:2px;">
+                  <input type="checkbox" name="allow_hypd" value="1" {{ 'checked' if (c.allow_hypd != 0 and not c.only_amazon) else '' }} /> 🛍️ HYPD ON
+                </label>
+                <input name="hypd_store_id" value="{{ c.hypd_store_id or '93944' }}" placeholder="HYPD Store ID" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px; font-family: monospace;" title="Channel HYPD Store ID" />
+                <input name="amazon_override_tag" value="{{ c.amazon_override_tag or '' }}" placeholder="Alt Tag" style="font-size: 11px; padding: 3px 5px; width: 100px; margin-top: 3px; font-family: monospace;" title="Specific Amazon Tag for this channel" />
+                <div style="margin-top:4px; padding-top:3px; border-top:1px dashed #334155;">
+                  <input type="hidden" name="custom_button_enabled" value="0" />
+                  <label style="display: block; cursor: pointer; color: #c7d2fe; font-size: 10px;">
+                    <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if c.custom_button_enabled else '' }} /> 🔘 Custom Button
+                  </label>
+                <input name="custom_button_text" value="{{ c.custom_button_text or '' }}" placeholder="Join Shpsy Loots ❤️" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px;" title="Button Label" />
+                <input name="custom_button_url" value="{{ c.custom_button_url or '' }}" placeholder="https://t.me/channel" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px; font-family:monospace;" title="Target Channel Link" />
+              </div>
+            </div>
+          </td>
+          <td>
+            <select name="status" style="font-size: 11px; font-weight:bold; padding: 4px; border-radius:4px; background: {{ '#064e3b' if c.status == 'ready' else '#450a0a' }}; color: {{ '#6ee7b7' if c.status == 'ready' else '#fca5a5' }}; border: 1px solid {{ '#10b981' if c.status == 'ready' else '#ef4444' }};">
+              <option value="ready" {{ 'selected' if c.status == 'ready' else '' }}>🟢 Active (Posting ON)</option>
+              <option value="paused" {{ 'selected' if c.status == 'paused' else '' }}>🔴 Paused (Zero Posts)</option>
+              <option value="pending" {{ 'selected' if c.status == 'pending' else '' }}>⏳ Pending Setup</option>
+            </select>
+          </td>
+          <td>
+            <button type="submit" formaction="{{ url_for('send_test_message', channel_id=c.id) }}" style="background: #10b981; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: bold; cursor: pointer;" title="Send instant test alert message">🚀 Test</button>
+          </td>
+          <td>
+            <button type="submit" style="background: #0284c7; color: white; border: none; padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;">Save</button>
+          </td>
+        </form>
+        <td>
+          <form method="post" action="{{ url_for('delete_channel', channel_id=c.id) }}" style="display:inline;" onsubmit="return confirm('Remove this channel?');">
+            <input type="hidden" name="inf_id" value="{{ inf.id }}" />
+            <button type="submit" style="background: none; border: none; color: #ef4444; cursor: pointer; text-decoration: underline; font-size: 12px;">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="11" style="padding: 18px; color: var(--muted); text-align: center;">No channels attached yet. Add one below or use Auto-Create.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- ADD EXTRA CHANNELS FORM -->
+  <div style="background:#0d1322; border:1px solid #1e293b; padding:16px; border-radius:8px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+      <h3 style="margin:0; color:#38bdf8; font-size:16px; font-weight:800;">➕ Add Additional Channel (Extra Telegram / Extra WhatsApp Channel)</h3>
+      <span style="background:rgba(56,189,248,0.15); color:#38bdf8; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:700;">Unlimited Multi-Channel Support</span>
+    </div>
+    <p class="hint" style="font-size:13px; color:#94a3b8; margin-bottom:14px; line-height:1.5;">
+      ఈ ఇన్‌ఫ్లుయెన్సర్‌కు <b>రెండో టెలిగ్రామ్ ఛానల్ (Extra Telegram #2)</b> ఉన్నా, లేదా <b>2 లక్షల మంది ఫాలోవర్స్ ఉన్న పెద్ద వాట్సాప్ ఛానల్ / గ్రూప్ (WhatsApp Channel / Group)</b> ఉన్నా — ఎన్ని ఛానెల్స్ అయినా సరే ఇక్కడ 1-క్లిక్‌తో ఈజీగా లింక్ చేయవచ్చు:
+    </p>
+    <form method="post" action="{{ url_for('add_manual_channel', inf_id=inf.id) }}" class="row">
+      <select name="role">
+        <option value="approval">🛡️ APPROVAL CHANNEL</option>
+        <option value="broadcast" selected>📢 MAIN CHANNEL</option>
+        <option value="whatsapp">💬 WHATSAPP CHANNEL</option>
+      </select>
+      <select name="platform">
+        <option value="telegram" selected>Telegram</option>
+        <option value="whatsapp_group">WhatsApp Group</option>
+        <option value="whatsapp_channel">WhatsApp Channel</option>
+      </select>
+      <input name="identifier" placeholder="@channel or link / WhatsApp invite" required style="flex: 1; min-width: 180px;" />
+      <input name="bitly_api_key" placeholder="Bitly Key (optional)" style="width: 130px; font-family: monospace; font-size: 11px;" />
+      <input name="categories" placeholder="clothing,electronics (All)" style="width: 140px; font-size: 11px;" />
+      <input name="posting_schedule" placeholder="06:00-02:00 (24/7)" style="width: 130px; font-size: 11px;" />
+      <select name="price_filter">
+        <option value="" selected>Default Budget</option>
+        <option value="under_99">🔥 Under ₹99 Only</option>
+        <option value="under_199">⚡ Under ₹199 Only</option>
+        <option value="under_499">🎁 Under ₹499 Only</option>
+        <option value="under_999">🏷️ Under ₹999 Only</option>
+        <option value="all">All Deals</option>
+      </select>
+      <label style="font-size: 12px; font-weight: 600; color: #86efac; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        <input type="checkbox" name="allow_amazon" value="1" checked /> 📦 Amazon ON
+      </label>
+      <label style="font-size: 12px; font-weight: 600; color: #fde68a; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        <input type="checkbox" name="allow_earnkaro" value="1" checked /> 💰 EarnKaro ON
+      </label>
+      <label style="font-size: 12px; font-weight: 600; color: #f472b6; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        <input type="checkbox" name="allow_hypd" value="1" checked /> 🛍️ HYPD ON
+      </label>
+      <input name="hypd_store_id" value="93944" placeholder="HYPD Store ID" style="font-size: 11px; width: 85px; font-family:monospace;" title="HYPD Store ID for this channel" />
+      <input name="allowed_sources" placeholder="Source (e.g. powerloot)" style="font-size: 12px; width: 140px;" title="Restrict this channel to a specific deal source" />
+      <button type="submit" style="background: #2563eb; color: white;">Connect Channel</button>
+    </form>
+  </div>
+</section>
+
+<!-- WHATSAPP CONNECTION SECTION -->
+<section class="card" style="border: 1px solid #16a34a; background: #0c1a14;">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="color: #4ade80; margin: 0; font-size:18px;">💬 Dedicated WhatsApp Account &amp; Channel Linker</h2>
+    <span style="background:#064e3b; color:#86efac; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ISOLATED SESSION</span>
+  </div>
+  <p class="hint">Influencer phone login chesi, valla phone lo unna dedicated WhatsApp Channel / Group ki connect cheyandi:</p>
+  
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-top:14px;">
+    <!-- Step 1: Login Phone -->
+    <div style="background:#07120c; border:1px solid #14532d; padding:16px; border-radius:8px;">
+      <h3 style="margin-top:0; color:#86efac; font-size:14px;">1️⃣ Login Influencer Phone (Scan QR)</h3>
+      <p class="hint" style="font-size:12px;">Influencer mobile lo WhatsApp > Linked Devices open chesi scan cheyandi.</p>
+      <form method="post" action="{{ url_for('pair_wa', inf_id=inf.id) }}">
+        <button type="submit" style="background:#16a34a; width:100%; font-weight:bold;">📲 Generate Live QR Code</button>
+      </form>
+      <div id="qrbox" class="qrbox" data-key="{{ wa_key }}" style="margin-top:12px; text-align:center; min-height:120px; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+        <p class="hint" style="color:#86efac;">Click 'Generate Live QR Code' above to start QR session.</p>
+      </div>
+      {% if wa_status_info.connected %}
+        <div style="background:#064e3b; color:#86efac; padding:8px 12px; border-radius:6px; font-weight:bold; font-size:13px; margin-top:10px;">
+          🟢 Connected Phone: +{{ wa_status_info.phone }}
+        </div>
+      {% endif %}
+    </div>
+
+    <!-- Step 2: Auto-Connect their Channel / Group -->
+    <div style="background:#07120c; border:1px solid #14532d; padding:16px; border-radius:8px;">
+      <h3 style="margin-top:0; color:#86efac; font-size:14px;">2️⃣ Connect Channel / Group to this Account</h3>
+      <p class="hint" style="font-size:12px;">Dropdown nunchi select cheyandi, leda <b>direct ga WhatsApp Group/Channel Invite Link</b> paste cheyandi:</p>
+      
+      <form method="post" action="{{ url_for('wa_connect_chat', inf_id=inf.id) }}" style="display:flex; flex-direction:column; gap:10px;">
+        <input type="hidden" name="role" value="whatsapp" />
+
+        {% if wa_status_info.chats %}
+          <div>
+            <label style="font-size:12px; font-weight:bold; color:#cbd5e1; display:block; margin-bottom:4px;">A) Detected Groups / Channels from Phone:</label>
+            <select name="chat_jid" style="width:100%; padding:8px; font-size:13px;">
+              <option value="">-- Or Paste Link Below --</option>
+              {% for chat in wa_status_info.chats %}
+                <option value="{{ chat.jid }}">{{ chat.name }} ({{ 'Group' if chat.isGroup else 'Channel' }})</option>
+              {% endfor %}
+            </select>
+          </div>
+        {% endif %}
+
+        <div>
+          <label style="font-size:12px; font-weight:bold; color:#cbd5e1; display:block; margin-bottom:4px;">
+            {% if wa_status_info.chats %}B) Or Paste WhatsApp Group/Channel Link:{% else %}Paste WhatsApp Group/Channel Link:{% endif %}
+          </label>
+          <input name="invite_link" placeholder="e.g. https://chat.whatsapp.com/ABC123xyz" style="width:100%; font-size:13px;" />
+          <span class="hint" style="font-size:10px; color:#86efac;">Phone lo create chesina WhatsApp group/channel invite link ikkada paste chesthe auto connect avuthundi!</span>
+        </div>
+
+        <div>
+          <label style="font-size:12px; font-weight:bold; color:#38bdf8; display:block; margin-bottom:4px;">📡 Allowed Source for this WhatsApp Channel (Optional):</label>
+          <input name="allowed_sources" placeholder="e.g. powerloot, secret_loots (Empty = All Sources)" style="width:100%; font-size:12px;" />
+          <span class="hint" style="font-size:10px;">Ee WhatsApp channel ki vere specific source loots mathrame vellali ante ikkada source peru ivvandi!</span>
+        </div>
+
+        <button type="submit" style="background:#059669; color:white; font-weight:bold; padding:9px; border-radius:6px; cursor:pointer;">⚡ Link WhatsApp Channel to Account</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- LIVE PREVIEW DEMO CARD -->
+<section class="card" style="background: #111b2b; border: 1px solid #1e3a8a;">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="color: #60a5fa; margin-top: 0; font-size:16px;">✨ Live Deal Rendering Preview (Instant Inspection)</h2>
+    <span style="font-size:11px; background:#172554; color:#bfdbfe; padding:2px 8px; border-radius:4px;">SIDE-BY-SIDE</span>
+  </div>
+  
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top:12px;">
+    <div style="background: #0d1322; padding: 14px; border-radius: 8px; border: 1px solid #1e293b;">
+      <h3 style="margin-top:0; font-size: 14px; color: #34d399;">🛡️ APPROVAL CHANNEL POST</h3>
+      <pre style="white-space: pre-wrap; font-size: 12px; background: #070b14; padding: 10px; border-radius: 6px; color:#e2e8f0; border:1px solid #1e293b; margin:8px 0;">{{ demo_approval }}</pre>
+      <small style="color: var(--muted);">(Only Amazon + tag=<b>{{ inf.amazon_tag }}</b> + #ad disclosure — 100% Passes Amazon Review)</small>
+    </div>
+    <div style="background: #0d1322; padding: 14px; border-radius: 8px; border: 1px solid #1e293b;">
+      <h3 style="margin-top:0; font-size: 14px; color: #60a5fa;">📢 MAIN CHANNEL &amp; WHATSAPP POST</h3>
+      <pre style="white-space: pre-wrap; font-size: 12px; background: #070b14; padding: 10px; border-radius: 6px; color:#e2e8f0; border:1px solid #1e293b; margin:8px 0;">{{ demo_broadcast }}</pre>
+      <small style="color: var(--muted);">(Amazon with their tag + Flipkart/Myntra with our EarnKaro pubid 5478322)</small>
+    </div>
+  </div>
+</section>
+
+<!-- POST STATS -->
+<section class="card">
+  <h2>📊 Posting Stats for {{ inf.name }}</h2>
+  <div class="stats" style="margin-top: 10px;">
+    <div>posted <span>{{ stats.posted }}</span></div>
+    <div>failed <span>{{ stats.failed }}</span></div>
+    <div>skipped <span>{{ stats.skipped }}</span></div>
+  </div>
+</section>
+
+<script>
+function syncInfCategories() {
+  const checked = Array.from(document.querySelectorAll('.inf-cat-cb:checked')).map(el => el.value);
+  document.getElementById('inf-categories-input').value = checked.join(',');
+}
+
+function setInfSchedule(val) {
+  document.getElementById('inf-schedule-input').value = val;
+}
+</script>
+{% endblock %}

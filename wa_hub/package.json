@@ -1,0 +1,16 @@
+{
+  "name": "influencer-wa-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "baileys": "7.0.0-rc14",
+    "express": "^4.19.2",
+    "qrcode": "^1.5.3",
+    "pino": "^9.0.0"
+  }
+}

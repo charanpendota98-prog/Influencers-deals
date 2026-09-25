@@ -1,0 +1,18 @@
+{% extends "layout.html" %}
+{% block title %}VM Health{% endblock %}
+{% block content %}
+<h1>VM / Bot Health</h1>
+<section class="card">
+  {% if vm %}
+  <div class="stats big">
+    <div>CPU <span>{{ vm.cpu_pct }}%</span></div>
+    <div>Memory <span>{{ vm.mem_pct }}%</span></div>
+    <div>Disk <span>{{ vm.disk_pct }}%</span></div>
+    <div>Bot <span class="{% if vm.bot_running %}ok{% else %}bad{% endif %}">{% if vm.bot_running %}up{% else %}down{% endif %}</span></div>
+    <div>at <span>{{ vm.ts }}</span></div>
+  </div>
+  {% else %}
+  <p class="hint">No data yet. Run <code>python -m influencer_hub.cli vm-watch</code> on the VM.</p>
+  {% endif %}
+</section>
+{% endblock %}

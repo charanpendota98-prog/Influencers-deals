@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.sqlite3
+
+# Node
+node_modules/
+wa_hub/auth/
+wa_hub/sessions.json
+wa_hub/media/
+
+# Secrets / local env
+.env
+.env.local
+bestgaa-fresh*
+influencer_hub/bestgaa_fresh*
+
+# Misc
+*.log
+.DS_Store

@@ -1,0 +1,15 @@
+[Unit]
+Description=Influencer Hub — WhatsApp multi-session service (baileys)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/Influencers-deals/wa_hub
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+EnvironmentFile=/home/user/Influencers-deals/.env
+
+[Install]
+WantedBy=multi-user.target
