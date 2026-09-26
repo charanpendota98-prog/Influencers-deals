@@ -13,9 +13,11 @@ Binds 0.0.0.0 so it is reachable from the live preview.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import re
 import sys
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -31,8 +33,66 @@ app.secret_key = "change-me-hub-dashboard"
 WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
 
 
+_ASYNC_LOOP = None
+_ASYNC_THREAD = None
+_ASYNC_START_LOCK = threading.Lock()
+
+
+def _start_async_loop():
+    """Start one long-lived loop so Flask never reuses a Telethon client across loops."""
+    global _ASYNC_LOOP, _ASYNC_THREAD
+    with _ASYNC_START_LOCK:
+        if _ASYNC_LOOP is not None and _ASYNC_LOOP.is_running():
+            return _ASYNC_LOOP
+
+        ready = threading.Event()
+        loop = asyncio.new_event_loop()
+
+        def _serve():
+            asyncio.set_event_loop(loop)
+            ready.set()
+            loop.run_forever()
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+
+        thread = threading.Thread(target=_serve, name="dashboard-asyncio", daemon=True)
+        thread.start()
+        ready.wait(timeout=5)
+        _ASYNC_LOOP, _ASYNC_THREAD = loop, thread
+        return loop
+
+
 def _run(coro):
-    return asyncio.run(coro)
+    """Run async I/O on the dashboard's single stable event loop."""
+    loop = _start_async_loop()
+    try:
+        active_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        active_loop = None
+    if active_loop is loop:
+        raise RuntimeError("dashboard _run cannot block its own asyncio event loop")
+    return asyncio.run_coroutine_threadsafe(coro, loop).result()
+
+
+def _shutdown_async_loop():  # pragma: no cover - process shutdown
+    loop = _ASYNC_LOOP
+    thread = _ASYNC_THREAD
+    if loop is not None and loop.is_running():
+        try:
+            from influencer_hub import telegram_ops
+            asyncio.run_coroutine_threadsafe(telegram_ops.disconnect(), loop).result(timeout=3)
+        except Exception:
+            pass
+        loop.call_soon_threadsafe(loop.stop)
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=3)
+
+
+atexit.register(_shutdown_async_loop)
 
 
 def clean_identifier(raw: str) -> str:
@@ -141,6 +201,7 @@ def index():
                            vault_err=vault_err, vault_success=vault_success,
                            current_ek_key=current_ek_key, current_ek_pubid=current_ek_pubid,
                            current_hypd_store=current_hypd_store,
+                           default_amazon_tag=config.AMAZON_ASSOCIATE_TAG,
                            insights=insights)
 
 
@@ -291,7 +352,7 @@ def quick_add():
     if not name:
         name = "Influencer-" + phone[-4:] if phone else "New Partner"
     if not tag:
-        tag = "amzdeal-21"
+        tag = config.AMAZON_ASSOCIATE_TAG
 
     iid = db.add_influencer(name, tag, handle=handle, insta_id=insta,
                             phone_number=phone, price_filter=price_filt,
@@ -616,7 +677,7 @@ def test_post_demo(inf_id):
 @app.route("/onboard", methods=["GET", "POST"])
 def onboard():
     if request.method == "GET":
-        return render_template("onboard.html", result=None)
+        return render_template("onboard.html", result=None, default_amazon_tag=config.AMAZON_ASSOCIATE_TAG)
     name = request.form.get("name", "").strip()
     tag = request.form.get("tag", "").strip()
     phone = request.form.get("whatsapp", "").strip()
@@ -632,7 +693,7 @@ def onboard():
     if not name:
         name = "Influencer-" + phone[-4:] if phone else "New Partner"
     if not tag:
-        tag = "amzdeal-21"
+        tag = config.AMAZON_ASSOCIATE_TAG
 
     iid = db.add_influencer(name, tag, handle=handle, phone_number=phone,
                             use_dummy_sources=dummy, telegram_enabled=tg,
@@ -666,7 +727,8 @@ def onboard():
             msgs.append("Channel 3 (WhatsApp): Session started — scan QR below to complete.")
         except Exception as e:  # pragma: no cover
             msgs.append(f"Channel 3 (WhatsApp) error: {e}")
-    return render_template("onboard.html", result={"inf_id": iid, "name": name, "msgs": msgs})
+    return render_template("onboard.html", result={"inf_id": iid, "name": name, "msgs": msgs},
+                           default_amazon_tag=config.AMAZON_ASSOCIATE_TAG)
 
 
 @app.route("/influencer/<int:inf_id>/flags", methods=["POST"])
@@ -820,7 +882,7 @@ def api_test_render_deal():
     with instant real-time visual output in the dashboard!
     """
     sample_text = request.form.get("sample_text", "").strip()
-    amz_tag = request.form.get("amazon_tag", "demo-21").strip()
+    amz_tag = request.form.get("amazon_tag", config.AMAZON_ASSOCIATE_TAG).strip()
     hypd_store = request.form.get("hypd_store_id", "93944").strip()
     role = request.form.get("role", "broadcast").strip()
 

@@ -52,15 +52,18 @@ Prathi kotha influencer vachinappudu manam **3 separate channels** auto ga set u
 
 ```
 influencer_hub/   Python brain
-  config.py         env config (no import-time crashes)
-  db.py             SQLite: influencers, channels, wa_sessions, posts, vm_stats, sources
-  link_router.py   CORE: Amazon->their tag, others->our EarnKaro (pure, tested)
-  earnkaro.py      EarnKaro converter client (OUR publisher id)
-  telegram_ops.py  create channel under OUR bot account + add posting bot as admin
-  whatsapp_client.py  HTTP client for the wa_hub
-  pipeline.py      shared deal -> render per influencer -> dispatch to channels
-  vm_watch.py      host health (cpu/mem/disk/bot) -> DB + ops Telegram channel
-  cli.py           management CLI
+  config.py          env config and safe production defaults
+  db.py              SQLite: influencers, channels, posts, sources, durable worker cursors
+  link_router.py     Amazon canonical links, EarnKaro/HYPD routing and deal filters
+  amazon_creators.py official Amazon Creators API OAuth/catalog client
+  earnkaro.py        EarnKaro converter client (OUR publisher id)
+  telegram_ops.py    Telethon operations with isolated per-process session copies
+  puller.py          ingestion from already joined Telegram dialogs (no invite checks)
+  whatsapp_client.py HTTP client for the wa_hub
+  pipeline.py        shared deal -> render per influencer -> dispatch to channels
+  worker.py          24/7 pull/dispatch daemon with cursoring and recovery
+  vm_watch.py        host health (cpu/mem/disk/bot) -> DB + ops Telegram channel
+  cli.py             management CLI
 
 wa_hub/            Node/baileys multi-session WhatsApp service
   server.js        REST + SSE API (sessions, QR, send, group, newsletter)
@@ -76,8 +79,10 @@ tests/             pytest for link_router + db (no creds needed)
 ### Why this split?
 - **link_router + db** are pure and unit-tested with zero credentials — the
   business logic ("Amazon = theirs, rest = ours") is provably correct.
-- **Telegram** creation reuses your existing Telethon session, so new channels
-  appear under the same account that already runs your 2 channels.
+- **Telegram** uses the existing authorized account. The base Telethon session
+  is copied with SQLite's online-backup API into a private process-local session
+  file; Flask, the worker, and CLI therefore never contend for one `.session`
+  database. Dashboard requests also share one stable asyncio loop.
 - **WhatsApp** lives in Node (baileys) — the exact stack your `tg-wa-bridge`
   already uses — because it must hold a live WA-Web socket per phone number.
   The Python side only speaks JSON to it.
@@ -98,9 +103,40 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 \
 PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
 ```
 
+## Production integrations and defaults
+
+- New influencer records and omitted Amazon tags default to the official
+  Associates tag `mama086-21`. Explicit per-influencer/channel tags remain
+  supported. Product ASIN links are rendered as one clean URL
+  (`https://www.amazon.in/dp/<ASIN>?tag=<effective-tag>`); tracking parameters
+  and Bitly shortening are never applied to Amazon links.
+- Telegram API ID defaults to `33595682`. Keep `TELEGRAM_API_HASH` in the VM's
+  private `.env`/secret store; it is intentionally not embedded in Git. The
+  session at `TELEGRAM_SESSION` is used as the seed for isolated process copies.
+- The official Amazon Creators API client defaults to application
+  `SMART_BUY` (`amzn1.application-oa2-client.83229d9d14664351be9fc2059038a4f2`)
+  and India marketplace `www.amazon.in`. Set the credential secret in
+  `AMAZON_CREATORS_API_CLIENT_SECRET` and set the exact credential version
+  shown in Associates Central (the checked-in `3.2` is a configurable default). Try a
+  catalog lookup with `python -m influencer_hub.cli amazon-items B0...`.
+  Catalog API access is optional and not part of the deal-dispatch hot path.
+- `puller.py` calls `client.iter_dialogs()` and reads only joined groups/channels;
+  it never sends `CheckChatInviteRequest` or joins invite URLs. Use
+  `TELEGRAM_OUTPUT_CHANNELS` and registered Telegram destination channels to
+  keep output/ops dialogs out of source ingestion. Public source selectors match
+  by username; private invite hashes are never resolved.
+- `deploy/start_services.sh` starts supervised `deal-worker`, WhatsApp hub,
+  dashboard, and VM watcher processes. Each service writes to `logs/` and is
+  restarted by its launcher if it exits; `worker.py` additionally retries
+  transient pull/delivery failures and persists per-dialog Telegram message
+  cursors. Use `deploy/stop_services.sh` to stop that service set. For a
+  systemd-managed install, use the matching `.service` units in `deploy/`
+  instead—do not run the shell supervisor and systemd unit for the same service
+  at the same time (especially the deal worker).
+
 ## Onboarding an influencer (production)
 
-1. `add-influencer "Ravi" --tag ravi099-21` (their Amazon associate tag).
+1. `add-influencer "Ravi"` (defaults to `mama086-21`; add `--tag` only when an influencer-specific override is intended).
 2. **Telegram:** `create-tg <id> --title "Ravi Loots"` — we create the channel
    under our bot account and add the posting bot as admin.
 3. **WhatsApp:** `pair-wa <id>` starts a WA session; the dashboard shows the QR.

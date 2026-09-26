@@ -10,12 +10,19 @@ wa_hub/auth/
 wa_hub/sessions.json
 wa_hub/media/
 
-# Secrets / local env
+# Secrets / local env and Telethon authorization material
 .env
 .env.local
+*.session
+*.session-journal
+*.session-wal
+*.session-shm
+*.bootstrap.lock
 bestgaa-fresh*
 influencer_hub/bestgaa_fresh*
 
-# Misc
+# Runtime artifacts
+logs/
+*.pid
 *.log
 .DS_Store

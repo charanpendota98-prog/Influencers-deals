@@ -14,29 +14,23 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 from typing import Iterable
 
-from . import bitly_client, db, earnkaro, link_router, telegram_ops, whatsapp_client
+from . import bitly_client, config, db, earnkaro, link_router, telegram_ops, whatsapp_client
 
 WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
+ACTIVE_CHANNEL_STATUSES = {"ready", "active"}
 
 
 async def _earnkaro_map_for(text: str) -> dict[str, str]:
     urls = {u for u, k in link_router.collect_links(text).items() if k == "merchant"}
     if not urls:
         return {}
-    # Convert through EarnKaro API (which shortens them to clean ekaro.in links)
+    # Conversion is best-effort: the original clean merchant URL is retained
+    # if the affiliate API is unavailable, so a deal is not lost.
     return await earnkaro.convert_links(urls)
 
-
-import asyncio
-import random
-import time
-from typing import Iterable
-
-from . import bitly_client, db, earnkaro, link_router, telegram_ops, whatsapp_client
-
-WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
 
 # WhatsApp Session Safety Tracking (Per Session Key):
 # Maps session_key -> dict of {"last_post_ts": float, "hour_start_ts": float, "posts_this_hour": int}
@@ -141,15 +135,33 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
 
 
 def _parse_price_filter_spec(spec: str) -> tuple[float | None, float | None]:
-    """Parse filter specs like 'under_99', 'under_499', 'under_999', 'under_199', 'all'."""
+    """Parse a price cap; empty/all/unrestricted/unknown values are permissive."""
     import re
     s = (spec or "").strip().lower()
-    if not s or s == "all":
+    if not s or s in {"all", "any", "unrestricted", "no_filter", "*", "default"}:
         return None, None
-    m = re.search(r"under_?(\d+)", s)
+    m = re.search(r"(?:under|below|max)_?\s*(\d+)", s)
     if m:
         return float(m.group(1)), None
+    # Invalid or future filter values must not silently discard a deal.
     return None, None
+
+
+def _setting_enabled(value, default: bool, unrestricted: bool = True) -> bool:
+    """Normalize DB/form values (notably strings like 'all') to a safe toggle."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "default"}:
+            return default
+        if normalized in {"all", "any", "unrestricted", "*", "no_filter"}:
+            return unrestricted
+        if normalized in {"1", "true", "yes", "on", "enabled", "active"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", "none", "null"}:
+            return False
+    return bool(value)
 
 
 def _is_source_allowed(source_name: str, allowed_spec: str) -> bool:
@@ -157,7 +169,7 @@ def _is_source_allowed(source_name: str, allowed_spec: str) -> bool:
     Empty allowed_spec means ALL sources are allowed.
     """
     s = (allowed_spec or "").strip().lower()
-    if not s or s == "all":
+    if not s or s in {"all", "any", "unrestricted", "*", "no_filter"}:
         return True
     allowed_list = [x.strip() for x in s.split(",") if x.strip()]
     src = (source_name or "").strip().lower()
@@ -180,81 +192,92 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
 
     results: dict[int, dict[int, str]] = {}
     for inf in influencers:
-        amazon_tag = inf["amazon_tag"]
-        channels = [c for c in db.list_channels(inf["id"]) if c["status"] == "ready"]
+        amazon_tag = inf.get("amazon_tag") or config.AMAZON_ASSOCIATE_TAG
+        channels = [c for c in db.list_channels(inf["id"])
+                    if str(c.get("status", "")).strip().lower() in ACTIVE_CHANNEL_STATUSES]
         per_channel: dict[int, str] = {}
         for ch in channels:
-            role = ch.get("role", "broadcast")
-            strip_amz = bool(ch.get("strip_amazon", 0))
-            # If channel has custom override amazon tag, use it, else default to inf tag
-            effective_amz_tag = ch.get("amazon_override_tag") or amazon_tag
+            role = (ch.get("role") or "broadcast").strip().lower()
+            strip_amz = _setting_enabled(ch.get("strip_amazon"), default=False, unrestricted=False)
+            effective_amz_tag = (
+                ch.get("amazon_override_tag") or amazon_tag or config.AMAZON_ASSOCIATE_TAG
+            )
 
-            # 1. Source Specification Filter (Powerloot, Secret Loots, etc.)
+            # 1. Source Specification Filter (an empty/all/unrestricted value means no restriction)
             allowed_sources = ch.get("allowed_sources") or inf.get("allowed_sources") or ""
             if source_channel and not _is_source_allowed(source_channel, allowed_sources):
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 2. Timing Schedule Filter (e.g. 06:00-09:00,18:00-23:00)
+            # 2. Posting window (empty/all/unrestricted remains 24/7)
             schedule = ch.get("posting_schedule") or inf.get("posting_schedule") or ""
             if not link_router.is_time_in_schedule(schedule):
-                # Outside the influencer's requested posting window: skip!
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 3. Category Filter (Clothing, Electronics, Home Things, Daily Essentials)
+            # 3. Category and price filters are no-ops for all/unrestricted and
+            # intentionally pass deals with missing metadata/prices.
             cat_filter = ch.get("categories") or inf.get("categories") or ""
             if not link_router.matches_category_filter(deal_text, cat_filter):
                 per_channel[ch["id"]] = "skipped"
                 continue
-
-            # 4. Price Specification Filter (Under 99, Under 499, etc.)
             filter_spec = ch.get("price_filter") or inf.get("price_filter") or "all"
             max_p, min_p = _parse_price_filter_spec(filter_spec)
             if not link_router.matches_price_filter(deal_text, max_price=max_p, min_price=min_p):
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # 5. Approval channel only carries Amazon deals (native + #ad). Skip
-            # deals that have no Amazon link so we never post an empty approval.
-            if role == "approval" and not link_router.has_amazon_link(deal_text):
-                per_channel[ch["id"]] = "skipped"
-                continue
-
-            # 6. Ultra-Smart Granular Merchant Toggles (allow_amazon & allow_earnkaro & allow_hypd / only_amazon):
-            # Rule A: If allow_amazon is OFF (or strip_amazon is active), do NOT post Amazon deals
-            allow_amz = bool(ch.get("allow_amazon", 1) and inf.get("allow_amazon", 1))
-            # Rule B: If allow_earnkaro is OFF (or only_amazon is active), do NOT post non-Amazon merchant deals
-            allow_ek = bool(ch.get("allow_earnkaro", 1) and inf.get("allow_earnkaro", 1))
-            # Rule C: HYPD store deals (Meesho etc.) toggle
-            allow_hypd = bool(ch.get("allow_hypd", 1) and inf.get("allow_hypd", 1))
-            only_amz = bool(ch.get("only_amazon", 0) or inf.get("only_amazon", 0))
-
-            has_amz = link_router.has_amazon_link(deal_text)
             urls = link_router.find_urls(deal_text)
-            has_merchant = any(link_router.classify_url(u) == "merchant" for u in urls)
-            has_hypd = any(link_router.classify_url(u) == "hypd" for u in urls)
+            kinds = {link_router.classify_url(url) for url in urls}
+            has_amz = "amazon" in kinds
+            has_merchant = "merchant" in kinds
+            has_hypd = "hypd" in kinds
+            present_affiliate_kinds = kinds.intersection({"amazon", "merchant", "hypd"})
 
-            # If deal is strictly non-Amazon (Flipkart/Myntra/etc) and EarnKaro is disabled (or only_amazon is enabled):
-            if (not allow_ek or only_amz) and not has_amz and not has_hypd:
+            # 4. Settings are combined conservatively across the profile and
+            # channel. Strings such as "all" and "unrestricted" mean enabled,
+            # not truthy special states that accidentally turn on only-Amazon.
+            allow_amz = (
+                _setting_enabled(ch.get("allow_amazon"), True)
+                and _setting_enabled(inf.get("allow_amazon"), True)
+            )
+            allow_ek = (
+                _setting_enabled(ch.get("allow_earnkaro"), True)
+                and _setting_enabled(inf.get("allow_earnkaro"), True)
+            )
+            allow_hypd = (
+                _setting_enabled(ch.get("allow_hypd"), True)
+                and _setting_enabled(inf.get("allow_hypd"), True)
+            )
+            only_amz = (
+                _setting_enabled(ch.get("only_amazon"), False, unrestricted=False)
+                or _setting_enabled(inf.get("only_amazon"), False, unrestricted=False)
+            )
+            if only_amz:
+                allow_amz, allow_ek, allow_hypd = True, False, False
+            if strip_amz:
+                allow_amz = False
+            if role == "approval":
+                allow_ek = allow_hypd = False
+
+            allowed_kinds = set()
+            if allow_amz:
+                allowed_kinds.add("amazon")
+            if allow_ek:
+                allowed_kinds.add("merchant")
+            if allow_hypd:
+                allowed_kinds.add("hypd")
+
+            # Approval and only-Amazon channels need a native Amazon link. If
+            # every supported merchant in a mixed post is disabled, skip it;
+            # otherwise keep the deal and remove only the disabled URLs.
+            if (role == "approval" or only_amz) and not has_amz:
                 per_channel[ch["id"]] = "skipped"
                 continue
-
-            # If deal has HYPD links but HYPD is disabled (or only_amazon is enabled):
-            if (not allow_hypd or only_amz) and not has_amz and not has_merchant and has_hypd:
+            if present_affiliate_kinds and not present_affiliate_kinds.intersection(allowed_kinds):
                 per_channel[ch["id"]] = "skipped"
                 continue
-
-            # If deal is strictly Amazon and Amazon deals are disabled on this channel/influencer:
-            if not allow_amz and not has_merchant and not has_hypd:
-                per_channel[ch["id"]] = "skipped"
-                continue
-
-            # 7. If strip_amazon is active on this channel, and deal has ONLY Amazon links,
-            # skip it because nothing remains to post.
-            if strip_amz and not has_merchant and not has_hypd:
-                per_channel[ch["id"]] = "skipped"
-                continue
+            render_text = link_router.filter_disallowed_affiliate_links(deal_text, allowed_kinds)
 
             # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
             if db.already_posted(inf["id"], ch["id"], sig):
@@ -264,24 +287,31 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             # Check if this deal needs Bitly URL shortening:
             # ONLY used if influencer has provided their Bitly API key (or channel has its own key)
             effective_bitly_key = (ch.get("bitly_api_key") or inf.get("bitly_api_key") or "").strip()
-            # Resolve HYPD Store ID priority: Channel override -> Influencer profile -> Global Central Secret Setting -> default "93944"
-            global_hypd_store = db.get_global_setting("hypd_store_id", "93944")
-            effective_hypd_store = (ch.get("hypd_store_id") or inf.get("hypd_store_id") or global_hypd_store or "93944").strip()
+            # Resolve HYPD Store ID priority: channel -> profile -> central setting -> configured default.
+            global_hypd_store = db.get_global_setting("hypd_store_id", config.HYPD_STORE_ID)
+            effective_hypd_store = (
+                ch.get("hypd_store_id") or inf.get("hypd_store_id") or global_hypd_store or config.HYPD_STORE_ID
+            ).strip()
             shortened_map = {}
 
             if effective_bitly_key and role != "approval":
                 # Render base version to identify final URLs that will appear
                 base_rendered = link_router.render_for_influencer(
-                    deal_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz,
+                    render_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz,
                     clean_promos=True, hypd_store_id=effective_hypd_store
                 )
-                final_urls = link_router.find_urls(base_rendered)
-                should_shorten = (len(final_urls) >= 2) or any(len(u) > 65 for u in final_urls)
+                # Amazon Associate URLs must remain visible and canonical; only
+                # shorten eligible non-Amazon links.
+                final_urls = [
+                    url for url in link_router.find_urls(base_rendered)
+                    if link_router.classify_url(url) != "amazon"
+                ]
+                should_shorten = (len(final_urls) >= 2) or any(len(url) > 65 for url in final_urls)
                 if should_shorten:
                     shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
 
             rendered = link_router.render_for_influencer(
-                deal_text, effective_amz_tag, ek_map, shortened_links=shortened_map,
+                render_text, effective_amz_tag, ek_map, shortened_links=shortened_map,
                 role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store
             )
             status = await dispatch_to_channel(inf, ch, rendered)
@@ -336,7 +366,11 @@ async def run_hourly_loot_highlight(influencer_ids: Iterable[int] | None = None)
 
     results: dict[int, dict[int, str]] = {}
     for inf in influencers:
-        channels = [c for c in db.list_channels(inf["id"]) if c["status"] == "ready" and c.get("role") != "approval"]
+        channels = [
+            c for c in db.list_channels(inf["id"])
+            if str(c.get("status", "")).strip().lower() in ACTIVE_CHANNEL_STATUSES
+            and c.get("role") != "approval"
+        ]
         per_ch: dict[int, str] = {}
         for ch in channels:
             # 1. Check schedule

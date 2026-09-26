@@ -83,23 +83,46 @@ CREATE TABLE IF NOT EXISTS global_settings (
     val   TEXT NOT NULL DEFAULT ''
 );
 
+-- Durable per-dialog cursor for the continuous worker. A cursor advances only
+-- after a message has been successfully handled (or intentionally filtered).
+CREATE TABLE IF NOT EXISTS worker_offsets (
+    source_key       TEXT PRIMARY KEY,
+    last_message_id  INTEGER NOT NULL DEFAULT 0,
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_channels_influencer ON channels(influencer_id);
 CREATE INDEX IF NOT EXISTS idx_posts_sig ON posts(deal_sig, influencer_id);
 CREATE INDEX IF NOT EXISTS idx_wa_influencer ON wa_sessions(influencer_id);
 """
 
 
+def _as_bool(value: Any, default: bool = False, unrestricted: bool = False) -> bool:
+    """Normalize form/env/database boolean-like values without truthy-string bugs."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "default"}:
+            return default
+        if normalized in {"all", "any", "unrestricted", "*", "no_filter"}:
+            return unrestricted
+        if normalized in {"1", "true", "yes", "on", "enabled", "active"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", "none", "null"}:
+            return False
+    return bool(value)
+
+
 def _connect() -> sqlite3.Connection:
     Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(config.DB_PATH), timeout=30.0)
     con.row_factory = sqlite3.Row
-    try:
-        con.execute("PRAGMA foreign_keys = ON")
-        con.execute("PRAGMA journal_mode = WAL")
-        con.execute("PRAGMA busy_timeout = 30000")
-        con.execute("PRAGMA synchronous = NORMAL")
-    except Exception:
-        pass
+    # busy_timeout and synchronous are connection-local; WAL mode is enabled
+    # once by init(), avoiding a journal-mode lock on every dashboard request.
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA busy_timeout = 30000")
+    con.execute("PRAGMA synchronous = NORMAL")
     return con
 
 
@@ -107,6 +130,9 @@ def init() -> None:
     """Create the schema (idempotent). Call once at startup."""
     con = _connect()
     try:
+        # WAL permits readers in the Flask UI while the worker records posts.
+        # Apply it during initialization only, not on every short-lived connection.
+        con.execute("PRAGMA journal_mode = WAL")
         con.executescript(Schema)
         con.commit()
     finally:
@@ -139,7 +165,14 @@ def migrate() -> None:
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in inf_cols:
-                con.execute(f"ALTER TABLE influencers ADD COLUMN {col} {ddl}")
+                try:
+                    con.execute(f"ALTER TABLE influencers ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    # Two app processes may initialize the same DB at once.
+                    # Treat only the race where another process added this exact
+                    # column as success; surface every other migration failure.
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
         ch_cols = {r["name"] for r in con.execute("PRAGMA table_info(channels)")}
         for col, ddl in (
@@ -162,11 +195,19 @@ def migrate() -> None:
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
-                con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
+                try:
+                    con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
         posts_cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
         if "deal_text" not in posts_cols:
-            con.execute("ALTER TABLE posts ADD COLUMN deal_text TEXT NOT NULL DEFAULT ''")
+            try:
+                con.execute("ALTER TABLE posts ADD COLUMN deal_text TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
         con.commit()
     finally:
@@ -179,7 +220,8 @@ def _now() -> str:
 
 # ----------------------------- influencers -----------------------------
 
-def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = "",
+def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
+                   handle: str = "", notes: str = "",
                    use_dummy_sources: bool = False,
                    telegram_enabled: bool = True, whatsapp_enabled: bool = True,
                    insta_id: str = "", phone_number: str = "",
@@ -187,19 +229,23 @@ def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = ""
                    bitly_api_key: str = "", categories: str = "",
                    posting_schedule: str = "", only_amazon: bool = False,
                    allow_amazon: bool = True, allow_earnkaro: bool = True,
-                   allow_hypd: bool = True, hypd_store_id: str = "93944") -> int:
+                   allow_hypd: bool = True, hypd_store_id: str = config.HYPD_STORE_ID) -> int:
     con = _connect()
     try:
         cur = con.execute(
             "INSERT INTO influencers "
             "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (name.strip(), handle.strip(), amazon_tag.strip(), notes.strip(), 1 if use_dummy_sources else 0,
-             1 if telegram_enabled else 0, 1 if whatsapp_enabled else 0, insta_id.strip(),
+            (name.strip(), handle.strip(), (amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG,
+             notes.strip(), 1 if _as_bool(use_dummy_sources) else 0,
+             1 if _as_bool(telegram_enabled, default=True) else 0,
+             1 if _as_bool(whatsapp_enabled, default=True) else 0, insta_id.strip(),
              phone_number.strip(), price_filter.strip() or "all", allowed_sources.strip(), bitly_api_key.strip(),
-             categories.strip(), posting_schedule.strip(), 1 if only_amazon else 0,
-             1 if allow_amazon else 0, 1 if allow_earnkaro else 0,
-             1 if allow_hypd else 0, hypd_store_id.strip() or "93944"),
+             categories.strip(), posting_schedule.strip(), 1 if _as_bool(only_amazon) else 0,
+             1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0,
+             1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0,
+             1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
+             (hypd_store_id or "").strip() or config.HYPD_STORE_ID),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -228,7 +274,7 @@ def update_influencer(influencer_id: int, name: str | None = None,
             params.append(name.strip())
         if amazon_tag is not None:
             updates.append("amazon_tag=?")
-            params.append(amazon_tag.strip())
+            params.append(amazon_tag.strip() or config.AMAZON_ASSOCIATE_TAG)
         if handle is not None:
             updates.append("handle=?")
             params.append(handle.strip())
@@ -255,22 +301,22 @@ def update_influencer(influencer_id: int, name: str | None = None,
             params.append(posting_schedule.strip())
         if only_amazon is not None:
             updates.append("only_amazon=?")
-            params.append(1 if only_amazon else 0)
+            params.append(1 if _as_bool(only_amazon) else 0)
         if allow_amazon is not None:
             updates.append("allow_amazon=?")
-            params.append(1 if allow_amazon else 0)
+            params.append(1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0)
         if allow_earnkaro is not None:
             updates.append("allow_earnkaro=?")
-            params.append(1 if allow_earnkaro else 0)
+            params.append(1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0)
         if allow_hypd is not None:
             updates.append("allow_hypd=?")
-            params.append(1 if allow_hypd else 0)
+            params.append(1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0)
         if hypd_store_id is not None:
             updates.append("hypd_store_id=?")
             params.append(hypd_store_id.strip())
         if custom_button_enabled is not None:
             updates.append("custom_button_enabled=?")
-            params.append(1 if custom_button_enabled else 0)
+            params.append(1 if _as_bool(custom_button_enabled) else 0)
         if custom_button_text is not None:
             updates.append("custom_button_text=?")
             params.append(custom_button_text.strip())
@@ -282,7 +328,7 @@ def update_influencer(influencer_id: int, name: str | None = None,
             params.append(notes.strip())
         if active is not None:
             updates.append("active=?")
-            params.append(1 if active else 0)
+            params.append(1 if _as_bool(active) else 0)
         if updates:
             params.append(influencer_id)
             con.execute(f"UPDATE influencers SET {', '.join(updates)} WHERE id=?", params)
@@ -297,10 +343,10 @@ def set_channel_flags(influencer_id: int, telegram_enabled: bool | None = None,
     try:
         if telegram_enabled is not None:
             con.execute("UPDATE influencers SET telegram_enabled=? WHERE id=?",
-                        (1 if telegram_enabled else 0, influencer_id))
+                        (1 if _as_bool(telegram_enabled, default=True) else 0, influencer_id))
         if whatsapp_enabled is not None:
             con.execute("UPDATE influencers SET whatsapp_enabled=? WHERE id=?",
-                        (1 if whatsapp_enabled else 0, influencer_id))
+                        (1 if _as_bool(whatsapp_enabled, default=True) else 0, influencer_id))
         con.commit()
     finally:
         con.close()
@@ -331,7 +377,7 @@ def set_influencer_active(influencer_id: int, active: bool) -> None:
     con = _connect()
     try:
         con.execute("UPDATE influencers SET active=? WHERE id=?",
-                    (1 if active else 0, influencer_id))
+                    (1 if _as_bool(active) else 0, influencer_id))
         con.commit()
     finally:
         con.close()
@@ -341,7 +387,7 @@ def set_use_dummy_sources(influencer_id: int, use_dummy: bool) -> None:
     con = _connect()
     try:
         con.execute("UPDATE influencers SET use_dummy_sources=? WHERE id=?",
-                    (1 if use_dummy else 0, influencer_id))
+                    (1 if _as_bool(use_dummy) else 0, influencer_id))
         con.commit()
     finally:
         con.close()
@@ -364,7 +410,7 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 allow_amazon: bool = True,
                 allow_earnkaro: bool = True,
                 allow_hypd: bool = True,
-                hypd_store_id: str = "93944",
+                hypd_store_id: str = config.HYPD_STORE_ID,
                 custom_button_enabled: bool = False,
                 custom_button_text: str = "",
                 custom_button_url: str = "") -> int:
@@ -374,11 +420,14 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
             "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
-             amazon_override_tag.strip(), 1 if strip_amazon else 0, price_filter.strip(), allowed_sources.strip(),
+             amazon_override_tag.strip(), 1 if _as_bool(strip_amazon, unrestricted=False) else 0, price_filter.strip(), allowed_sources.strip(),
              wa_session_key.strip(), bitly_api_key.strip(), categories.strip(), posting_schedule.strip(),
-             1 if only_amazon else 0, 1 if allow_amazon else 0, 1 if allow_earnkaro else 0,
-             1 if allow_hypd else 0, hypd_store_id.strip() or "93944",
-             1 if custom_button_enabled else 0, custom_button_text.strip(), custom_button_url.strip()),
+             1 if _as_bool(only_amazon) else 0,
+             1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0,
+             1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0,
+             1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
+             (hypd_store_id or "").strip() or config.HYPD_STORE_ID,
+             1 if _as_bool(custom_button_enabled) else 0, custom_button_text.strip(), custom_button_url.strip()),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -426,7 +475,7 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
             params.append(amazon_override_tag.strip())
         if strip_amazon is not None:
             updates.append("strip_amazon=?")
-            params.append(1 if strip_amazon else 0)
+            params.append(1 if _as_bool(strip_amazon, unrestricted=False) else 0)
         if price_filter is not None:
             updates.append("price_filter=?")
             params.append(price_filter.strip())
@@ -447,22 +496,22 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
             params.append(posting_schedule.strip())
         if only_amazon is not None:
             updates.append("only_amazon=?")
-            params.append(1 if only_amazon else 0)
+            params.append(1 if _as_bool(only_amazon) else 0)
         if allow_amazon is not None:
             updates.append("allow_amazon=?")
-            params.append(1 if allow_amazon else 0)
+            params.append(1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0)
         if allow_earnkaro is not None:
             updates.append("allow_earnkaro=?")
-            params.append(1 if allow_earnkaro else 0)
+            params.append(1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0)
         if allow_hypd is not None:
             updates.append("allow_hypd=?")
-            params.append(1 if allow_hypd else 0)
+            params.append(1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0)
         if hypd_store_id is not None:
             updates.append("hypd_store_id=?")
             params.append(hypd_store_id.strip())
         if custom_button_enabled is not None:
             updates.append("custom_button_enabled=?")
-            params.append(1 if custom_button_enabled else 0)
+            params.append(1 if _as_bool(custom_button_enabled) else 0)
         if custom_button_text is not None:
             updates.append("custom_button_text=?")
             params.append(custom_button_text.strip())
@@ -619,8 +668,8 @@ def add_bulk_influencers(records: list[dict]) -> int:
     try:
         for r in records:
             name = (r.get("name") or "").strip()
-            tag = (r.get("amazon_tag") or r.get("tag") or "").strip()
-            if not name or not tag:
+            tag = (r.get("amazon_tag") or r.get("tag") or config.AMAZON_ASSOCIATE_TAG).strip()
+            if not name:
                 continue
 
             phone = (r.get("phone_number") or r.get("phone") or "").strip()
@@ -691,7 +740,7 @@ def add_source(name: str, spec: str, kind: str = "production", active: bool = Tr
             return int(existing["id"])
         cur = con.execute(
             "INSERT INTO sources (name, spec, kind, active) VALUES (?,?,?,?)",
-            (name.strip(), clean_spec, kind.strip(), 1 if active else 0))
+            (name.strip(), clean_spec, kind.strip(), 1 if _as_bool(active) else 0))
         con.commit()
         return int(cur.lastrowid)
     finally:
@@ -731,6 +780,39 @@ def list_sources(kind: Optional[str] = None, active_only: bool = True) -> list[d
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY id"
         return [dict(r) for r in con.execute(sql, params).fetchall()]
+    finally:
+        con.close()
+
+
+def get_worker_offset(source_key: str) -> int:
+    """Return the last fully handled Telegram message id for a joined dialog."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT last_message_id FROM worker_offsets WHERE source_key=?",
+            (str(source_key),),
+        ).fetchone()
+        return int(row["last_message_id"]) if row else 0
+    finally:
+        con.close()
+
+
+def set_worker_offset(source_key: str, last_message_id: int) -> None:
+    """Advance a worker cursor monotonically after successful/intentional handling."""
+    key = str(source_key).strip()
+    message_id = int(last_message_id)
+    if not key or message_id <= 0:
+        return
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO worker_offsets (source_key, last_message_id, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(source_key) DO UPDATE SET "
+            "last_message_id=MAX(worker_offsets.last_message_id, excluded.last_message_id), "
+            "updated_at=excluded.updated_at",
+            (key, message_id, _now()),
+        )
+        con.commit()
     finally:
         con.close()
 
@@ -805,7 +887,7 @@ def record_vm(cpu_pct: float, mem_pct: float, disk_pct: float, bot_running: bool
     try:
         con.execute(
             "INSERT INTO vm_stats (cpu_pct, mem_pct, disk_pct, bot_running) VALUES (?,?,?,?)",
-            (cpu_pct, mem_pct, disk_pct, 1 if bot_running else 0))
+            (cpu_pct, mem_pct, disk_pct, 1 if _as_bool(bot_running) else 0))
         con.commit()
     finally:
         con.close()
@@ -866,7 +948,7 @@ def purge_old_posts_and_stats(days_to_keep: int = 14) -> int:
         # Keep distinct signatures safe in dedup while trimming bulky raw text/errors
         cur = con.execute("DELETE FROM posts WHERE posted_at < ? AND status IN ('posted', 'failed', 'skipped')", (cutoff,))
         deleted = cur.rowcount
-        con.execute("DELETE FROM vm_stats WHERE recorded_at < ?", (cutoff,))
+        con.execute("DELETE FROM vm_stats WHERE ts < ?", (cutoff,))
         con.commit()
         return deleted
     finally:
@@ -883,7 +965,9 @@ def get_live_deal_insights() -> dict:
         posted_24h = con.execute("SELECT COUNT(*) FROM posts WHERE posted_at >= ? AND status='posted'", (cutoff_24h,)).fetchone()[0]
         failed_24h = con.execute("SELECT COUNT(*) FROM posts WHERE posted_at >= ? AND status='failed'", (cutoff_24h,)).fetchone()[0]
         active_influencers = con.execute("SELECT COUNT(*) FROM influencers WHERE active=1").fetchone()[0]
-        active_channels = con.execute("SELECT COUNT(*) FROM channels WHERE status='active'").fetchone()[0]
+        active_channels = con.execute(
+            "SELECT COUNT(*) FROM channels WHERE lower(trim(status)) IN ('ready', 'active')"
+        ).fetchone()[0]
         return {
             "total_24h": total_24h,
             "posted_24h": posted_24h,

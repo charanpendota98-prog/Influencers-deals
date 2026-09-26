@@ -4,12 +4,14 @@ After=network.target influencer-wa-hub.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/user/Influencers-deals/dashboard
-ExecStart=/home/user/Influencers-deals/.venv/bin/python app.py
+WorkingDirectory=/home/user/Influencers-deals
+ExecStart=/home/user/Influencers-deals/.venv/bin/python dashboard/app.py
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONPATH=/home/user/Influencers-deals
-EnvironmentFile=/home/user/Influencers-deals/.env
+Environment=HUB_TELEGRAM_SESSION_SLOT=dashboard
+UMask=0077
+EnvironmentFile=-/home/user/Influencers-deals/.env
 
 [Install]
 WantedBy=multi-user.target

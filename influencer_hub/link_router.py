@@ -17,15 +17,16 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-# Hostnames we treat as "Amazon" (taggable).
-AMAZON_DOMAINS = {"amazon.in", "www.amazon.in", "amazon.com", "www.amazon.com"}
+from . import config
 
-HYPD_DOMAINS = {"hypd.store", "www.hypd.store"}
+# Amazon product hosts supported by this India-first integration.
+AMAZON_DOMAINS = {"amazon.in", "amazon.com", "amzn.to", "amzn.in"}
+HYPD_DOMAINS = {"hypd.store"}
 
 # Merchant domains we monetise through OUR EarnKaro account (everything except
 # Amazon and direct HYPD). Add more here as the deal pool grows.
 MERCHANT_DOMAINS = {
-    "flipkart.com", "www.flipkart.com",
+    "flipkart.com", "www.flipkart.com", "fktr.in",
     "shopsy.in", "www.shopsy.in",
     "myntra.com", "www.myntra.com",
     "ajio.com", "www.ajio.com",
@@ -51,19 +52,23 @@ def find_urls(text: str) -> list[str]:
 
 def _host_of(url: str) -> str:
     try:
-        return urlparse(url).netloc.lower()
+        return (urlparse(url).hostname or "").lower().rstrip(".")
     except Exception:
         return ""
+
+
+def _is_domain(host: str, domain: str) -> bool:
+    return host == domain or host.endswith("." + domain)
 
 
 def classify_url(url: str) -> str:
     """Return 'amazon' | 'hypd' | 'merchant' | 'other'."""
     host = _host_of(url)
-    if host in AMAZON_DOMAINS:
+    if any(_is_domain(host, domain) for domain in AMAZON_DOMAINS):
         return "amazon"
-    if host in HYPD_DOMAINS:
+    if _is_domain(host, "hypd.store"):
         return "hypd"
-    if host in MERCHANT_DOMAINS:
+    if any(_is_domain(host, domain.removeprefix("www.")) for domain in MERCHANT_DOMAINS):
         return "merchant"
     return "other"
 
@@ -102,92 +107,122 @@ def compact_merchant_url(url: str) -> str:
     Prevents long clumsy URLs from breaking WhatsApp and Telegram message layouts."""
     try:
         p = urlparse(url)
-        host = p.netloc.lower()
+        host = _host_of(url)
 
         # Flipkart / Shopsy: keep clean canonical /product/p/itmXXX?pid=YYY
-        if "flipkart.com" in host or "shopsy.in" in host:
-            # Don't touch short redirects like /s/ or dl.flipkart.com
-            if "/s/" in p.path or "dl.flipkart.com" in host or "fktr.in" in host:
+        if (
+            _is_domain(host, "flipkart.com")
+            or _is_domain(host, "shopsy.in")
+            or _is_domain(host, "fktr.in")
+        ):
+            # Don't touch short redirects like /s/ or dl.flipkart.com; they
+            # cannot be expanded without making an external request.
+            if "/s/" in p.path or _is_domain(host, "dl.flipkart.com") or _is_domain(host, "fktr.in"):
                 return url
             m_itm = re.search(r"(/[^/]+/p/itm[a-zA-Z0-9]+|/p/itm[a-zA-Z0-9]+)", p.path)
             q = dict(parse_qsl(p.query, keep_blank_values=True))
             pid = q.get("pid")
-            clean_query = f"pid={pid}" if pid else ""
+            clean_query = urlencode({"pid": pid}) if pid else ""
             clean_path = m_itm.group(1) if m_itm else p.path
-            return urlunparse((p.scheme, p.netloc, clean_path, "", clean_query, ""))
+            canonical_host = "www.shopsy.in" if _is_domain(host, "shopsy.in") else "www.flipkart.com"
+            return urlunparse(("https", canonical_host, clean_path, "", clean_query, ""))
 
         # Myntra: keep clean /.../<id>/buy
-        if "myntra.com" in host:
+        if _is_domain(host, "myntra.com"):
             m_myn = re.search(r"(/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+/\d+/buy)", p.path)
             clean_path = m_myn.group(1) if m_myn else p.path
-            return urlunparse((p.scheme, p.netloc, clean_path, "", "", ""))
+            return urlunparse(("https", "www.myntra.com", clean_path, "", "", ""))
 
         # Ajio: keep clean /p/<id>
-        if "ajio.com" in host:
+        if _is_domain(host, "ajio.com"):
             m_ajio = re.search(r"(/[a-zA-Z0-9_-]+/p/[a-zA-Z0-9_-]+)", p.path)
             clean_path = m_ajio.group(1) if m_ajio else p.path
-            return urlunparse((p.scheme, p.netloc, clean_path, "", "", ""))
+            return urlunparse(("https", "www.ajio.com", clean_path, "", "", ""))
 
         return url
     except Exception:
         return url
 
 
-def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
-    """Normalise an Amazon URL to https://www.amazon.in/dp/<ASIN>?tag=<tag>.
+def _amazon_asin(parsed) -> str | None:
+    """Extract an ASIN from common Amazon product URL shapes."""
+    path_patterns = (
+        r"/(?:dp|product)/([A-Za-z0-9]{8,12})(?:/|$)",
+        r"/gp/(?:product|aw/d)/([A-Za-z0-9]{8,12})(?:/|$)",
+    )
+    for pattern in path_patterns:
+        match = re.search(pattern, parsed.path, re.I)
+        if match:
+            return match.group(1).upper()
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() == "asin" and re.fullmatch(r"[A-Za-z0-9]{8,12}", value or "", re.I):
+            return value.upper()
+    return None
 
-    Strips tracking junk (session/attribution params) and keeps only the ASIN
-    and the associate tag. If no ASIN is present the original host/path is
-    preserved with the tag attached.
+
+def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
+    """Normalize Amazon URLs to the short canonical India product URL.
+
+    Product ASINs become exactly ``https://www.amazon.in/dp/<ASIN>?tag=<tag>``.
+    Tracking, ref, campaign, affiliate and fragment parameters are discarded.
+    Non-product Amazon URLs cannot safely be turned into an ASIN URL, but are
+    still moved to the canonical Amazon India host and stripped to the tag.
     """
     parsed = urlparse(url)
-    host = parsed.netloc.lower()
-    if host not in AMAZON_DOMAINS:
+    host = _host_of(url)
+    if not any(_is_domain(host, domain) for domain in AMAZON_DOMAINS):
         return url
-    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    asin = None
-    m = re.search(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{8,12})", parsed.path, re.I)
-    if m:
-        asin = m.group(1).upper()
-    else:
-        for k, v in q.items():
-            if k.lower() in ("asin",) and re.fullmatch(r"[A-Za-z0-9]{8,12}", v or "", re.I):
-                asin = v.upper()
-                break
+
+    query_values = parse_qsl(parsed.query, keep_blank_values=True)
+    effective_tag = (tag or "").strip()
+    if not effective_tag:
+        effective_tag = next(
+            (value for key, value in query_values if key.lower() == "tag" and value),
+            config.AMAZON_ASSOCIATE_TAG,
+        )
+    asin = _amazon_asin(parsed)
+    query = urlencode({"tag": effective_tag}) if effective_tag else ""
     if asin:
-        path = f"/dp/{asin}"
-    else:
-        path = parsed.path or "/"
-    if tag:
-        q = {"tag": tag}
-    else:
-        q = {k: v for k, v in q.items() if k.lower() == "tag"}
-    query = urlencode(q)
-    return urlunparse(("https", "www.amazon.in", path, "", query, ""))
+        return urlunparse(("https", "www.amazon.in", f"/dp/{asin}", "", query, ""))
+
+    # A short Amazon redirect (amzn.to/amzn.in) has no ASIN to canonicalize
+    # without resolving it over the network. Preserve that working path rather
+    # than inventing a broken /dp URL; strip tracking and apply our tag.
+    preserve_short_host = any(_is_domain(host, domain) for domain in ("amzn.to", "amzn.in"))
+    safe_host = parsed.netloc.lower() if preserve_short_host else "www.amazon.in"
+    return urlunparse(("https", safe_host, parsed.path or "/", "", query, ""))
 
 
-def apply_amazon_tag(url: str, tag: str) -> str:
-    """Ensure an Amazon URL carries exactly `tag` (replacing any existing one)."""
-    parsed = urlparse(url)
-    if parsed.netloc.lower() not in AMAZON_DOMAINS:
+def apply_amazon_tag(url: str, tag: str | None = None) -> str:
+    """Compact a supported Amazon URL and set exactly one associate tag."""
+    if classify_url(url) != "amazon":
         return url
-    # If it is a clean product link, compact + set tag.
-    if re.search(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{8,12})", parsed.path, re.I):
-        return compact_amazon_product_link(url, tag)
-    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    q["tag"] = tag
-    # Drop duplicate tag keys (case-insensitive) that some sources double up.
-    seen = set()
-    filtered = []
-    for k, v in q.items():
-        lk = k.lower()
-        if lk == "tag":
-            if "tag" in seen:
-                continue
-            seen.add("tag")
-        filtered.append((k, v))
-    query = urlencode(filtered)
-    return urlunparse(parsed._replace(query=query))
+    return compact_amazon_product_link(url, tag or config.AMAZON_ASSOCIATE_TAG)
+
+
+def filter_disallowed_affiliate_links(text: str, allowed_kinds: set[str]) -> str:
+    """Remove links disabled by merchant settings without discarding allowed deals.
+
+    Only supported affiliate kinds (Amazon, EarnKaro merchants, HYPD) are
+    filtered. Informational/unknown URLs are left untouched. A line containing
+    only disabled links is removed, while product copy and allowed URLs survive.
+    """
+    allowed = set(allowed_kinds)
+    kept_lines: list[str] = []
+    for line in text.splitlines():
+        urls = find_urls(line)
+        blocked = [url for url in urls
+                   if classify_url(url) in {"amazon", "merchant", "hypd"}
+                   and classify_url(url) not in allowed]
+        remaining = [url for url in urls if url not in blocked]
+        if urls and not remaining:
+            continue
+        output = line
+        for url in blocked:
+            output = output.replace(url, "")
+        if output.strip():
+            kept_lines.append(output.rstrip())
+    return "\n".join(kept_lines).strip()
 
 
 def _render_base(text: str, amazon_tag: str, ek: dict[str, str], hypd_store_id: str = "93944") -> str:
@@ -375,7 +410,7 @@ def extract_price(text: str) -> float | None:
         r"(?:₹|rs\.?|inr)\s*(\d+(?:\.\d{1,2})?)",
         r"@\s*(\d+(?:\.\d{1,2})?)",
         r"(?:deal price|price|at|for|just)\s*(?:₹|rs\.?|inr|:)?\s*(\d+(?:\.\d{1,2})?)",
-        r"(\d+)\s*/-",
+        r"(?<!\d)(\d{1,7}(?:\.\d{1,2})?)\s*/-",
     ]
     prices: list[float] = []
     for pat in patterns:
@@ -577,9 +612,11 @@ def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> boo
     When set to 'all' or empty, NO restrictions are applied: ANY deal in the world is allowed!
     """
     s = (allowed_categories_spec or "").strip().lower()
-    if not s or s == "all" or s == "any" or "all" in [x.strip() for x in s.split(",")]:
+    unrestricted = {"all", "any", "unrestricted", "all categories", "all deals", "*", "no_filter", "default"}
+    tokens = {x.strip() for x in s.split(",") if x.strip()}
+    if not tokens or tokens.intersection(unrestricted):
         return True
-    allowed_set = {x.strip() for x in s.split(",") if x.strip()}
+    allowed_set = tokens
     deal_cats = set(classify_deal_category(deal_text))
     # If the deal matches any allowed category, return True
     if deal_cats.intersection(allowed_set):
@@ -600,7 +637,7 @@ def is_time_in_schedule(schedule_spec: str, current_time: str | None = None) -> 
     Empty schedule_spec means active 24/7 (always True).
     """
     spec = (schedule_spec or "").strip()
-    if not spec or spec.lower() == "all" or spec.lower() == "24/7":
+    if spec.lower() in {"", "all", "any", "unrestricted", "24/7", "*", "no_filter", "default"}:
         return True
 
     from datetime import datetime

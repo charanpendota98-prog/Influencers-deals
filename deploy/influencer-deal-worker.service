@@ -1,0 +1,21 @@
+[Unit]
+Description=Influencer Hub — continuous deal ingestion and dispatcher
+Wants=network-online.target
+After=network-online.target influencer-wa-hub.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/Influencers-deals
+ExecStart=/home/user/Influencers-deals/.venv/bin/python -m influencer_hub.worker
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+UMask=0077
+Environment=PYTHONPATH=/home/user/Influencers-deals
+Environment=HUB_TELEGRAM_SESSION_SLOT=worker
+EnvironmentFile=-/home/user/Influencers-deals/.env
+
+[Install]
+WantedBy=multi-user.target

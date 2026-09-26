@@ -53,18 +53,62 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    try:
+        return float(_env(name) or default)
+    except ValueError:
+        return default
+
+
 # ----- Database -----
 DB_PATH = Path(_env("HUB_DB_PATH", str(BASE_DIR / "influencer_hub" / "hub.sqlite3")))
 
-# ----- Telegram (our bot account that owns the created channels) -----
-TELEGRAM_API_ID = _env("TELEGRAM_API_ID")
+# ----- Amazon Associates / Creators API -----
+# The official store tag is a public identifier, not an API credential. A
+# per-influencer tag can still override it, but new/unspecified profiles use
+# this official default.
+AMAZON_ASSOCIATE_TAG = _env("AMAZON_ASSOCIATE_TAG", "mama086-21")
+DEFAULT_AMAZON_TAG = AMAZON_ASSOCIATE_TAG
+AMAZON_CREATORS_API_CLIENT_ID = _env(
+    "AMAZON_CREATORS_API_CLIENT_ID",
+    "amzn1.application-oa2-client.83229d9d14664351be9fc2059038a4f2",
+)
+AMAZON_CREATORS_API_CLIENT_SECRET = _env("AMAZON_CREATORS_API_CLIENT_SECRET")
+# Amazon assigns a version to each Creators API credential. The default is
+# configurable; set this to the exact version shown in Associates Central.
+AMAZON_CREATORS_API_VERSION = _env("AMAZON_CREATORS_API_VERSION", "3.2")
+AMAZON_CREATORS_API_MARKETPLACE = _env("AMAZON_CREATORS_API_MARKETPLACE", "www.amazon.in")
+AMAZON_CREATORS_API_ENDPOINT = _env(
+    "AMAZON_CREATORS_API_ENDPOINT", "https://creatorsapi.amazon/catalog/v1"
+)
+AMAZON_CREATORS_API_APP_NAME = _env("AMAZON_CREATORS_API_APP_NAME", "SMART_BUY")
+AMAZON_CREATORS_API_TIMEOUT = _int("AMAZON_CREATORS_API_TIMEOUT", 15)
+
+# ----- Telegram (the account that reads joined source dialogs and posts) -----
+# API_ID is an application identifier. API_HASH is kept out of source control;
+# put the value in the VM's ignored .env file or a secret manager.
+TELEGRAM_API_ID = _env("TELEGRAM_API_ID", "33595682")
 TELEGRAM_API_HASH = _env("TELEGRAM_API_HASH")
-# Telethon session file used by the existing bestgaa bot; we reuse it so the
-# channels we create live under the SAME account that already runs 2 channels.
+# The existing authorized Telethon SQLite session is used as the seed for a
+# process-local session copy so Flask, the worker, and CLI never open the same
+# SQLite file concurrently.
 TELEGRAM_SESSION = _env("TELEGRAM_SESSION", "bestgaa_fresh")
-# The posting bot we add as admin to every created channel.
+TELEGRAM_SESSION_ISOLATION = _bool("TELEGRAM_SESSION_ISOLATION", True)
+TELEGRAM_SESSION_SLOT = _env("HUB_TELEGRAM_SESSION_SLOT", "")
+TELEGRAM_SOURCE_REQUEST_SPACING = max(0.0, _float("TELEGRAM_SOURCE_REQUEST_SPACING", 0.25))
+TELEGRAM_OUTPUT_CHANNELS = [
+    s.strip() for s in _env("TELEGRAM_OUTPUT_CHANNELS", "").split(",") if s.strip()
+]
+# The posting bot we optionally add as admin to created channels.
 BOT_TOKEN = _env("BOT_TOKEN")
 BOT_USERNAME = _env("BOT_USERNAME", "your_posting_bot")  # without leading @
+
+# ----- Continuous deal worker -----
+DEAL_WORKER_POLL_INTERVAL = _int("DEAL_WORKER_POLL_INTERVAL", 30)
+DEAL_WORKER_BATCH_SIZE = _int("DEAL_WORKER_BATCH_SIZE", 100)
+DEAL_WORKER_INITIAL_BATCH_SIZE = _int("DEAL_WORKER_INITIAL_BATCH_SIZE", 10)
+DEAL_WORKER_MAX_BACKOFF = _int("DEAL_WORKER_MAX_BACKOFF", 900)
+HYPD_STORE_ID = _env("HYPD_STORE_ID", "93944")
 
 # ----- EarnKaro (OUR publisher id — used for every non-Amazon merchant link) -----
 EARNKARO_API_KEY = _env("EARNKARO_API_KEY")
