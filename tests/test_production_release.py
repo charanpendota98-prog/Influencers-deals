@@ -170,6 +170,61 @@ def test_first_party_amazon_short_links_preserve_influencer_tag_and_redirect(mon
         db.delete_influencer(influencer_id)
 
 
+def test_two_influencers_get_independent_amazon_shortlinks_and_tags(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "multi-amazon-tags.sqlite3")
+    monkeypatch.setattr(config, "AMAZON_SHORT_LINK_BASE_URL", "https://go.example.test")
+    db.init()
+    creator_one = db.add_influencer("Creator One", "creator-one-21")
+    creator_two = db.add_influencer("Creator Two", "creator-two-21")
+    channel_one = db.add_channel(
+        creator_one, "telegram", "@creator_one", status="ready"
+    )
+    channel_two = db.add_channel(
+        creator_two, "telegram", "@creator_two", status="ready"
+    )
+    sent = {}
+
+    async def fake_dispatch(influencer, _channel, text):
+        sent[influencer["id"]] = text
+        return "posted"
+
+    monkeypatch.setattr(pipeline, "_earnkaro_map_for", AsyncMock(return_value={}))
+    monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
+    results = asyncio.run(
+        pipeline.render_and_dispatch(
+            "One product https://amazon.in/dp/B0ABCDEFGH?tag=source-21&ref=tracking",
+            influencer_ids=[creator_one, creator_two],
+        )
+    )
+
+    assert results[creator_one][channel_one] == "posted"
+    assert results[creator_two][channel_two] == "posted"
+    short_links = {}
+    for creator_id, tag in (
+        (creator_one, "creator-one-21"),
+        (creator_two, "creator-two-21"),
+    ):
+        match = re.search(
+            rf"https://go\.example\.test/amazon/([A-Za-z0-9_-]{{8}})\?tag={re.escape(tag)}",
+            sent[creator_id],
+        )
+        assert match
+        record = db.get_amazon_short_link(match.group(1))
+        assert record["associate_tag"] == tag
+        assert record["target_url"] == f"https://www.amazon.in/dp/B0ABCDEFGH?tag={tag}"
+        short_links[creator_id] = (match.group(1), tag, record["target_url"])
+
+    assert short_links[creator_one][0] != short_links[creator_two][0]
+    from dashboard.app import app
+
+    client = app.test_client()
+    for code, tag, target in short_links.values():
+        response = client.get(f"/amazon/{code}?tag={tag}")
+        assert response.status_code == 302
+        assert response.headers["Location"] == target
+        assert client.get(f"/amazon/{code}?tag=wrong-21").status_code == 404
+
+
 def test_pull_recent_reads_joined_dialogs_without_invite_resolution(monkeypatch):
     class Message:
         def __init__(self, message_id, text):
