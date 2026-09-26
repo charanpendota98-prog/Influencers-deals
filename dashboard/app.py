@@ -27,7 +27,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, url
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from influencer_hub import config, db, whatsapp_client  # noqa: E402
+from influencer_hub import config, db, hypd_shortlinks, whatsapp_client  # noqa: E402
 
 app = Flask(__name__)
 app.secret_key = "change-me-hub-dashboard"
@@ -159,6 +159,25 @@ def amazon_short_link(code: str):
     ):
         # Only redirect to generated Amazon.in product links; never accept an
         # arbitrary destination from the short-link URL or query string.
+        abort(404)
+    return redirect(target, code=302)
+
+
+@app.route("/m/<code>")
+def meesho_hypd_short_link(code: str):
+    """Resolve a branded first-party code to its stored HYPD affiliate URL."""
+    if not hypd_shortlinks.is_valid_short_code(code):
+        abort(404)
+    record = db.get_hypd_short_link(code)
+    if not record:
+        abort(404)
+
+    target = str(record["target_url"])
+    if not hypd_shortlinks.is_valid_hypd_affiliate_url(target):
+        # Never use this redirect as an open redirect, even if the DB is changed.
+        abort(404)
+    target_path = re.fullmatch(r"/(\d+)/afflink/([A-Za-z0-9_-]+)", urlparse(target).path)
+    if not target_path or target_path.group(1) != str(record["store_id"]):
         abort(404)
     return redirect(target, code=302)
 

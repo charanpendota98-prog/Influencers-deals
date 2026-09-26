@@ -117,6 +117,15 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
   when no hostname is configured. Approval-role posts stay on native Amazon URLs.
   Amazon-issued `amzn.to` codes must come from Amazon Associates/SiteStripe; the
   app does not invent them.
+- Existing HYPD affiliate URLs are first rewritten to the effective HYPD store
+  ID (default `93944`). Optionally, valid HYPD `/afflink/<token>` URLs can be
+  wrapped as stable first-party redirects at `/m/<code>` when
+  `MEESHO_SHORT_LINK_BASE_URL` points to an operator-owned HTTPS origin routed
+  to Flask (for example, a subdomain under your own brand domain). Each code is
+  stored persistently and the redirect only accepts a stored `https://hypd.store`
+  affiliate target; generic Bitly does not replace these links. With the setting
+  blank, the original HYPD affiliate URL remains. This shortens an existing
+  HYPD affiliate link; it does not generate HYPD tokens from a raw Meesho URL.
 - Telegram API ID defaults to `33595682`. Keep `TELEGRAM_API_HASH` in the VM's
   private `.env`/secret store; it is intentionally not embedded in Git. The
   session at `TELEGRAM_SESSION` is used as the seed for isolated process copies.

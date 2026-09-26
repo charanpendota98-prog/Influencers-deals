@@ -362,9 +362,9 @@ def render_for_influencer(
     """Render `text` for one influencer on a given channel `role`.
 
     shortened_links:
-      Map of eligible non-Amazon URL -> Bitly short link. Amazon Associate URLs are
-      never replaced here; optional first-party Amazon redirects are handled by
-      ``amazon_shortlinks`` after canonical rendering.
+      Map of eligible merchant URL -> Bitly short link. Amazon Associate and
+      HYPD affiliate URLs are never replaced here; optional first-party redirects
+      for those links are handled after canonical rendering.
 
     clean_promos:
       If True (default), strips source channel promotional text, invite links, and @channel watermarks,
@@ -398,7 +398,7 @@ def render_for_influencer(
                 long_u
                 and short_u
                 and long_u != short_u
-                and classify_url(long_u) != "amazon"
+                and classify_url(long_u) not in {"amazon", "hypd"}
             ):
                 rendered = rendered.replace(long_u, short_u)
 
