@@ -107,9 +107,9 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
 
 - New influencer records and omitted Amazon tags default to the official
   Associates tag `mama086-21`. Explicit per-influencer/channel tags remain
-  supported. Product ASIN links are rendered as one clean URL
-  (`https://www.amazon.in/dp/<ASIN>?tag=<effective-tag>`); source tracking
-  parameters and Bitly shortening are never applied to Amazon links. An
+  supported. Product ASIN links are rendered as clean Amazon.in URLs with the
+  effective `tag`; safe numeric variant selectors (`th`, `psc`) are preserved
+  when present, while source tracking parameters and Bitly are discarded. An
   optional first-party short route (`/amazon/<code>?tag=<effective-tag>`) is
   available without an external API key when `AMAZON_SHORT_LINK_BASE_URL` points
   to an operator-owned HTTPS hostname routed to the dashboard. It keeps the tag

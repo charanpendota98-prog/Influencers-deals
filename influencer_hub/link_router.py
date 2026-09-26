@@ -163,9 +163,10 @@ def _amazon_asin(parsed) -> str | None:
 def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
     """Normalize Amazon URLs to the short canonical India product URL.
 
-    Product ASINs become exactly ``https://www.amazon.in/dp/<ASIN>?tag=<tag>``.
-    Tracking, ref, campaign, affiliate and fragment parameters are discarded.
-    Non-product Amazon URLs cannot safely be turned into an ASIN URL, but are
+    Product ASINs become a clean ``https://www.amazon.in/dp/<ASIN>`` URL with
+    the effective ``tag``. Safe numeric variant selectors ``th`` and ``psc``
+    are retained; source tracking/ref/campaign and old affiliate parameters are
+    discarded. Non-product Amazon URLs cannot safely be turned into an ASIN URL, but are
     still moved to the canonical Amazon India host and stripped to the tag.
     """
     parsed = urlparse(url)
@@ -181,9 +182,21 @@ def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
             config.AMAZON_ASSOCIATE_TAG,
         )
     asin = _amazon_asin(parsed)
-    query = urlencode({"tag": effective_tag}) if effective_tag else ""
     if asin:
+        # Keep Amazon's small set of safe product-variant selectors (e.g. the
+        # ``th=1`` in official DetailPageURLs), but discard incoming tracking,
+        # campaign, ref, and other Associate IDs before appending the effective tag.
+        safe_product_params: dict[str, str] = {}
+        for key, value in query_values:
+            normalized_key = key.lower()
+            if normalized_key in {"th", "psc"} and value.isdigit():
+                safe_product_params[normalized_key] = value
+        canonical_query = list(safe_product_params.items())
+        if effective_tag:
+            canonical_query.append(("tag", effective_tag))
+        query = urlencode(canonical_query)
         return urlunparse(("https", "www.amazon.in", f"/dp/{asin}", "", query, ""))
+    query = urlencode({"tag": effective_tag}) if effective_tag else ""
 
     # A short Amazon redirect (amzn.to/amzn.in) has no ASIN to canonicalize
     # without resolving it over the network. Preserve that working path rather

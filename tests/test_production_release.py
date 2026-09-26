@@ -25,6 +25,16 @@ def test_official_defaults_and_compact_amazon_link():
     )
 
 
+def test_amazon_long_link_retagging_keeps_product_variant_and_replaces_old_tag():
+    source = (
+        "https://www.amazon.in/dp/B0HJR9W8FP?tag=old-21&th=1&linkCode=sl1"
+        "&ref_=as_li_ss_tl&psc=1"
+    )
+    assert link_router.apply_amazon_tag(source, "lootsxpert-21") == (
+        "https://www.amazon.in/dp/B0HJR9W8FP?th=1&psc=1&tag=lootsxpert-21"
+    )
+
+
 def test_unrestricted_filters_and_merchant_rewrites_are_permissive():
     deal = "Shopsy kurti deal ₹1,299/- https://www.shopsy.in/kurti/p/itm1234567890?pid=KURTI"
     for unrestricted in ("all", "unrestricted", "any", "*", "all,clothing"):
@@ -146,7 +156,7 @@ def test_first_party_amazon_short_links_preserve_influencer_tag_and_redirect(mon
     monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
     try:
         result = asyncio.run(pipeline.render_and_dispatch(
-            "Product https://amazon.in/dp/B0ABCDEFGH?tag=source-21&ref=tracking",
+            "Product https://amazon.in/dp/B0ABCDEFGH?tag=source-21&th=1&ref=tracking",
             influencer_ids=[influencer_id],
         ))
         assert result[influencer_id][channel_id] == "posted"
@@ -157,7 +167,7 @@ def test_first_party_amazon_short_links_preserve_influencer_tag_and_redirect(mon
         assert match
         record = db.get_amazon_short_link(match.group(1))
         assert record["associate_tag"] == "creator-21"
-        assert record["target_url"] == "https://www.amazon.in/dp/B0ABCDEFGH?tag=creator-21"
+        assert record["target_url"] == "https://www.amazon.in/dp/B0ABCDEFGH?th=1&tag=creator-21"
 
         # The redirect preserves the tag and cannot be retargeted by changing it.
         from dashboard.app import app
