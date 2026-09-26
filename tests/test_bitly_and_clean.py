@@ -91,7 +91,10 @@ def test_multi_link_bitly_rendering():
     rendered_broadcast = lr.render_for_influencer(
         text, "influencer-21", earnkaro_links=ek_map, shortened_links=shortened_map, role="broadcast"
     )
-    assert "https://bit.ly/puma-short" in rendered_broadcast
+    # Amazon Associate links stay visible/canonical; only the eligible merchant
+    # URL is passed through a generic Bitly shortener.
+    assert "https://www.amazon.in/dp/B081234567?tag=influencer-21" in rendered_broadcast
+    assert "https://bit.ly/puma-short" not in rendered_broadcast
     assert "https://bit.ly/nike-short" in rendered_broadcast
     assert "Puma Shoes:" in rendered_broadcast
     assert "Nike Shoes:" in rendered_broadcast

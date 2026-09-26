@@ -362,9 +362,9 @@ def render_for_influencer(
     """Render `text` for one influencer on a given channel `role`.
 
     shortened_links:
-      Map of URL -> Bitly short link (if Bitly shortening was executed for 2+ links or long links).
-      Applied on non-approval channels to keep multi-link posts clean and uncluttered.
-      NOTE: Amazon approval channel ALWAYS bypasses shorteners to preserve compliance with Amazon's native link rules.
+      Map of eligible non-Amazon URL -> Bitly short link. Amazon Associate URLs are
+      never replaced here; optional first-party Amazon redirects are handled by
+      ``amazon_shortlinks`` after canonical rendering.
 
     clean_promos:
       If True (default), strips source channel promotional text, invite links, and @channel watermarks,
@@ -394,7 +394,12 @@ def render_for_influencer(
     # Apply Bitly shortener replacements if available (for broadcast/whatsapp channels)
     if shortened_links and role != "approval":
         for long_u, short_u in shortened_links.items():
-            if long_u and short_u and long_u != short_u:
+            if (
+                long_u
+                and short_u
+                and long_u != short_u
+                and classify_url(long_u) != "amazon"
+            ):
                 rendered = rendered.replace(long_u, short_u)
 
     return rendered

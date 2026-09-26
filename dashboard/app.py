@@ -20,8 +20,9 @@ import sys
 import threading
 import urllib.request
 from pathlib import Path
+from urllib.parse import parse_qsl, urlparse
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for, session
+from flask import Flask, abort, jsonify, redirect, render_template, request, url_for, session
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -129,6 +130,37 @@ def clean_identifier(raw: str) -> str:
     if "@" in s:
         return s if s.startswith("@") else "@" + s.split("@")[-1]
     return f"@{s}" if not s.endswith(".net") and not s.endswith(".us") else s
+
+
+@app.route("/amazon/<code>")
+def amazon_short_link(code: str):
+    """Resolve a transparent first-party short link to a tagged Amazon.in item."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8}", code):
+        abort(404)
+    record = db.get_amazon_short_link(code)
+    if not record:
+        abort(404)
+
+    requested_tags = request.args.getlist("tag")
+    if len(requested_tags) != 1 or requested_tags[0].strip() != record["associate_tag"]:
+        abort(404)
+
+    target = str(record["target_url"])
+    parsed = urlparse(target)
+    target_tags = [
+        value for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() == "tag" and value
+    ]
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").lower() not in {"amazon.in", "www.amazon.in"}
+        or not re.fullmatch(r"/dp/[A-Za-z0-9]{10}", parsed.path, re.I)
+        or target_tags != [record["associate_tag"]]
+    ):
+        # Only redirect to generated Amazon.in product links; never accept an
+        # arbitrary destination from the short-link URL or query string.
+        abort(404)
+    return redirect(target, code=302)
 
 
 @app.route("/")

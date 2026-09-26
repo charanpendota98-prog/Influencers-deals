@@ -108,8 +108,15 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
 - New influencer records and omitted Amazon tags default to the official
   Associates tag `mama086-21`. Explicit per-influencer/channel tags remain
   supported. Product ASIN links are rendered as one clean URL
-  (`https://www.amazon.in/dp/<ASIN>?tag=<effective-tag>`); tracking parameters
-  and Bitly shortening are never applied to Amazon links.
+  (`https://www.amazon.in/dp/<ASIN>?tag=<effective-tag>`); source tracking
+  parameters and Bitly shortening are never applied to Amazon links. An
+  optional first-party short route (`/amazon/<code>?tag=<effective-tag>`) is
+  available without an external API key when `AMAZON_SHORT_LINK_BASE_URL` points
+  to an operator-owned HTTPS hostname routed to the dashboard. It keeps the tag
+  visible, validates it before redirecting, and falls back to the canonical URL
+  when no hostname is configured. Approval-role posts stay on native Amazon URLs.
+  Amazon-issued `amzn.to` codes must come from Amazon Associates/SiteStripe; the
+  app does not invent them.
 - Telegram API ID defaults to `33595682`. Keep `TELEGRAM_API_HASH` in the VM's
   private `.env`/secret store; it is intentionally not embedded in Git. The
   session at `TELEGRAM_SESSION` is used as the seed for isolated process copies.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 from unittest.mock import AsyncMock
 
@@ -119,6 +120,52 @@ def test_amazon_associate_links_are_not_sent_to_bitly(monkeypatch):
         assert result[influencer_id][channel_id] == "posted"
         assert calls == []
         assert "https://www.amazon.in/dp/B0ABCDEFGH?tag=mama086-21" in sent[0]
+    finally:
+        db.delete_influencer(influencer_id)
+
+
+def test_first_party_amazon_short_links_preserve_influencer_tag_and_redirect(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "amazon-shortlinks.sqlite3")
+    db.init()
+    monkeypatch.setattr(config, "AMAZON_SHORT_LINK_BASE_URL", "https://amz.example.test")
+    influencer_id = db.add_influencer("Short-link Creator", "creator-21", bitly_api_key="unused")
+    channel_id = db.add_channel(
+        influencer_id, "telegram", "@short_link_creator", status="ready"
+    )
+    sent = []
+
+    async def fake_dispatch(influencer, channel, text):
+        sent.append(text)
+        return "posted"
+
+    async def bitly_must_not_be_used(*_args, **_kwargs):
+        raise AssertionError("Amazon links must not be sent to Bitly")
+
+    monkeypatch.setattr(pipeline, "_earnkaro_map_for", AsyncMock(return_value={}))
+    monkeypatch.setattr(pipeline.bitly_client, "shorten_urls", bitly_must_not_be_used)
+    monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
+    try:
+        result = asyncio.run(pipeline.render_and_dispatch(
+            "Product https://amazon.in/dp/B0ABCDEFGH?tag=source-21&ref=tracking",
+            influencer_ids=[influencer_id],
+        ))
+        assert result[influencer_id][channel_id] == "posted"
+        match = re.search(
+            r"https://amz\.example\.test/amazon/([A-Za-z0-9_-]{8})\?tag=creator-21",
+            sent[0],
+        )
+        assert match
+        record = db.get_amazon_short_link(match.group(1))
+        assert record["associate_tag"] == "creator-21"
+        assert record["target_url"] == "https://www.amazon.in/dp/B0ABCDEFGH?tag=creator-21"
+
+        # The redirect preserves the tag and cannot be retargeted by changing it.
+        from dashboard.app import app
+        client = app.test_client()
+        response = client.get(f"/amazon/{match.group(1)}?tag=creator-21")
+        assert response.status_code == 302
+        assert response.headers["Location"] == record["target_url"]
+        assert client.get(f"/amazon/{match.group(1)}?tag=other-21").status_code == 404
     finally:
         db.delete_influencer(influencer_id)
 

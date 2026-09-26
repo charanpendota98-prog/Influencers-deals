@@ -6,10 +6,13 @@ sense (e.g. upsert by natural key).
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import parse_qs, urlparse
 
 from . import config
 
@@ -89,6 +92,15 @@ CREATE TABLE IF NOT EXISTS worker_offsets (
     source_key       TEXT PRIMARY KEY,
     last_message_id  INTEGER NOT NULL DEFAULT 0,
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- First-party, auditable Amazon redirects. The short public URL still carries
+-- the creator's Associates tag; targets are restricted in the redirect route.
+CREATE TABLE IF NOT EXISTS amazon_short_links (
+    code          TEXT PRIMARY KEY,
+    target_url    TEXT NOT NULL UNIQUE,
+    associate_tag TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_channels_influencer ON channels(influencer_id);
@@ -813,6 +825,71 @@ def set_worker_offset(source_key: str, last_message_id: int) -> None:
             (key, message_id, _now()),
         )
         con.commit()
+    finally:
+        con.close()
+
+
+def _amazon_short_code(target_url: str, salt: int) -> str:
+    raw = hashlib.blake2s(f"{target_url}\0{salt}".encode("utf-8"), digest_size=6).digest()
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def get_or_create_amazon_short_link(target_url: str, associate_tag: str) -> str:
+    """Persist a stable first-party code for a tagged Amazon.in product URL.
+
+    The public redirect endpoint separately validates the stored destination
+    and requires this same tag as a query parameter, avoiding an open redirect
+    and keeping the Associate ID visible on the short URL.
+    """
+    tag = str(associate_tag or "").strip()
+    parsed = urlparse(str(target_url or ""))
+    query_tags = parse_qs(parsed.query).get("tag", [])
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").lower() not in {"amazon.in", "www.amazon.in"}
+        or not parsed.path.startswith("/dp/")
+        or not tag
+        or query_tags != [tag]
+    ):
+        raise ValueError("Only canonical, tagged Amazon.in product URLs can be shortened")
+
+    con = _connect()
+    try:
+        existing = con.execute(
+            "SELECT code FROM amazon_short_links WHERE target_url=?", (target_url,)
+        ).fetchone()
+        if existing:
+            return str(existing["code"])
+
+        for salt in range(32):
+            code = _amazon_short_code(target_url, salt)
+            con.execute(
+                "INSERT OR IGNORE INTO amazon_short_links (code, target_url, associate_tag) "
+                "VALUES (?,?,?)",
+                (code, target_url, tag),
+            )
+            existing = con.execute(
+                "SELECT code FROM amazon_short_links WHERE target_url=?", (target_url,)
+            ).fetchone()
+            if existing:
+                con.commit()
+                return str(existing["code"])
+            # A code collision with another target is extraordinarily unlikely;
+            # try a different salted digest rather than returning a bad mapping.
+        raise RuntimeError("Could not allocate a unique Amazon short-link code")
+    finally:
+        con.close()
+
+
+def get_amazon_short_link(code: str) -> dict | None:
+    """Return a stored Amazon short-link target for the public redirect route."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT target_url, associate_tag FROM amazon_short_links WHERE code=?",
+            (str(code or ""),),
+        ).fetchone()
+        return dict(row) if row else None
     finally:
         con.close()
 

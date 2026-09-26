@@ -83,6 +83,9 @@ AMAZON_CREATORS_API_ENDPOINT = _env(
 )
 AMAZON_CREATORS_API_APP_NAME = _env("AMAZON_CREATORS_API_APP_NAME", "SMART_BUY")
 AMAZON_CREATORS_API_TIMEOUT = _int("AMAZON_CREATORS_API_TIMEOUT", 15)
+# Optional first-party short-link base (an HTTPS domain routed to the Flask app).
+# Blank keeps Amazon's canonical /dp/<ASIN>?tag=... links.
+AMAZON_SHORT_LINK_BASE_URL = _env("AMAZON_SHORT_LINK_BASE_URL", "").rstrip("/")
 
 # ----- Telegram (the account that reads joined source dialogs and posts) -----
 # API_ID is an application identifier. API_HASH is kept out of source control;

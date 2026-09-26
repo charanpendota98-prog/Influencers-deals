@@ -17,7 +17,7 @@ import random
 import time
 from typing import Iterable
 
-from . import bitly_client, config, db, earnkaro, link_router, telegram_ops, whatsapp_client
+from . import amazon_shortlinks, bitly_client, config, db, earnkaro, link_router, telegram_ops, whatsapp_client
 
 WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
 ACTIVE_CHANNEL_STATUSES = {"ready", "active"}
@@ -300,8 +300,8 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                     render_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz,
                     clean_promos=True, hypd_store_id=effective_hypd_store
                 )
-                # Amazon Associate URLs must remain visible and canonical; only
-                # shorten eligible non-Amazon links.
+                # Amazon URLs never go through a third-party Bitly shortener.
+                # An optional first-party Amazon route is applied after rendering.
                 final_urls = [
                     url for url in link_router.find_urls(base_rendered)
                     if link_router.classify_url(url) != "amazon"
@@ -314,6 +314,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 render_text, effective_amz_tag, ek_map, shortened_links=shortened_map,
                 role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store
             )
+            # Optional first-party redirects require an operator-owned HTTPS
+            # hostname. Approval channels remain on native Amazon URLs.
+            if role != "approval":
+                rendered = amazon_shortlinks.shorten_amazon_links(rendered)
             status = await dispatch_to_channel(inf, ch, rendered)
             db.record_post(inf["id"], ch["id"], sig,
                            status="posted" if status == "posted" else "failed",
