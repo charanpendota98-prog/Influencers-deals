@@ -126,6 +126,12 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
   affiliate target; generic Bitly does not replace these links. With the setting
   blank, the original HYPD affiliate URL remains. This shortens an existing
   HYPD affiliate link; it does not generate HYPD tokens from a raw Meesho URL.
+- Meesho links carrying LehLah/AppsFlyer attribution (`pid` containing `lehlah`,
+  `af_siteid=lehlah`, or `mcn=LEHLAH`) are detected separately from raw Meesho
+  merchant links. Their complete original query string is preserved, they are
+  not sent through EarnKaro/HYPD, and they can be wrapped as `/l/<code>` using
+  the same `MEESHO_SHORT_LINK_BASE_URL`. This protects the existing LehLah
+  attribution; it does not convert the link to a different affiliate network.
 - Telegram API ID defaults to `33595682`. Keep `TELEGRAM_API_HASH` in the VM's
   private `.env`/secret store; it is intentionally not embedded in Git. The
   session at `TELEGRAM_SESSION` is used as the seed for isolated process copies.

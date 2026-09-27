@@ -13,7 +13,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlparse
 
 from . import config
 
@@ -110,6 +110,13 @@ CREATE TABLE IF NOT EXISTS hypd_short_links (
     code          TEXT PRIMARY KEY,
     target_url    TEXT NOT NULL UNIQUE,
     store_id      TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Preserve existing LehLah/AppsFlyer attribution on Meesho product URLs.
+CREATE TABLE IF NOT EXISTS lehlah_short_links (
+    code          TEXT PRIMARY KEY,
+    target_url    TEXT NOT NULL UNIQUE,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -971,6 +978,89 @@ def get_hypd_short_link(code: str) -> dict | None:
     try:
         row = con.execute(
             "SELECT target_url, store_id FROM hypd_short_links WHERE code=?",
+            (str(code or ""),),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+
+def _lehlah_affiliate_meesho_url_is_valid(target_url: str) -> bool:
+    """Validate a Meesho product link with explicit LehLah/AppsFlyer markers."""
+    try:
+        parsed = urlparse(str(target_url or ""))
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or host not in {"meesho.com", "www.meesho.com"}
+        or parsed.username
+        or parsed.password
+        or port is not None
+        or not re.fullmatch(r"/s/p/[A-Za-z0-9_-]+", parsed.path)
+    ):
+        return False
+    params = {
+        key.lower(): value
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+    }
+    return (
+        params.get("af_siteid", "").lower() == "lehlah"
+        or params.get("mcn", "").lower() == "lehlah"
+        or "lehlah" in params.get("pid", "").lower()
+    )
+
+
+def _lehlah_short_code(target_url: str, salt: int) -> str:
+    raw = hashlib.blake2s(
+        f"lehlah\0{target_url}\0{salt}".encode("utf-8"), digest_size=6
+    ).digest()
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def get_or_create_lehlah_short_link(target_url: str) -> str:
+    """Persist a stable first-party code for a LehLah-attributed Meesho URL.
+
+    The original destination, including every AppsFlyer attribution parameter,
+    is stored and redirected to verbatim; this never rewrites the publisher ID.
+    """
+    target = str(target_url or "").strip()
+    if not _lehlah_affiliate_meesho_url_is_valid(target):
+        raise ValueError("Only LehLah-attributed HTTPS Meesho product URLs can be shortened")
+
+    con = _connect()
+    try:
+        existing = con.execute(
+            "SELECT code FROM lehlah_short_links WHERE target_url=?", (target,)
+        ).fetchone()
+        if existing:
+            return str(existing["code"])
+
+        for salt in range(32):
+            code = _lehlah_short_code(target, salt)
+            con.execute(
+                "INSERT OR IGNORE INTO lehlah_short_links (code, target_url) VALUES (?,?)",
+                (code, target),
+            )
+            existing = con.execute(
+                "SELECT code FROM lehlah_short_links WHERE target_url=?", (target,)
+            ).fetchone()
+            if existing:
+                con.commit()
+                return str(existing["code"])
+        raise RuntimeError("Could not allocate a unique LehLah short-link code")
+    finally:
+        con.close()
+
+
+def get_lehlah_short_link(code: str) -> dict | None:
+    """Return a stored LehLah/Meesho destination for the redirect route."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT target_url FROM lehlah_short_links WHERE code=?",
             (str(code or ""),),
         ).fetchone()
         return dict(row) if row else None

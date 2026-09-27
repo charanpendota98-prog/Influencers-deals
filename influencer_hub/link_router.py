@@ -61,13 +61,32 @@ def _is_domain(host: str, domain: str) -> bool:
     return host == domain or host.endswith("." + domain)
 
 
+def _is_lehlah_meesho_affiliate(url: str) -> bool:
+    """Detect LehLah/AppsFlyer tracking so its existing affiliate attribution is kept."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    if not _is_domain(host, "meesho.com"):
+        return False
+    params = {key.lower(): value for key, value in parse_qsl(parsed.query, keep_blank_values=True)}
+    return (
+        params.get("af_siteid", "").lower() == "lehlah"
+        or params.get("mcn", "").lower() == "lehlah"
+        or "lehlah" in params.get("pid", "").lower()
+    )
+
+
 def classify_url(url: str) -> str:
-    """Return 'amazon' | 'hypd' | 'merchant' | 'other'."""
+    """Return 'amazon' | 'hypd' | 'lehlah' | 'merchant' | 'other'."""
     host = _host_of(url)
     if any(_is_domain(host, domain) for domain in AMAZON_DOMAINS):
         return "amazon"
     if _is_domain(host, "hypd.store"):
         return "hypd"
+    if _is_lehlah_meesho_affiliate(url):
+        return "lehlah"
     if any(_is_domain(host, domain.removeprefix("www.")) for domain in MERCHANT_DOMAINS):
         return "merchant"
     return "other"
@@ -216,7 +235,7 @@ def apply_amazon_tag(url: str, tag: str | None = None) -> str:
 def filter_disallowed_affiliate_links(text: str, allowed_kinds: set[str]) -> str:
     """Remove links disabled by merchant settings without discarding allowed deals.
 
-    Only supported affiliate kinds (Amazon, EarnKaro merchants, HYPD) are
+    Only supported affiliate kinds (Amazon, EarnKaro merchants, HYPD, LehLah) are
     filtered. Informational/unknown URLs are left untouched. A line containing
     only disabled links is removed, while product copy and allowed URLs survive.
     """
@@ -225,7 +244,7 @@ def filter_disallowed_affiliate_links(text: str, allowed_kinds: set[str]) -> str
     for line in text.splitlines():
         urls = find_urls(line)
         blocked = [url for url in urls
-                   if classify_url(url) in {"amazon", "merchant", "hypd"}
+                   if classify_url(url) in {"amazon", "merchant", "hypd", "lehlah"}
                    and classify_url(url) not in allowed]
         remaining = [url for url in urls if url not in blocked]
         if urls and not remaining:
@@ -256,6 +275,9 @@ def _render_base(text: str, amazon_tag: str, ek: dict[str, str], hypd_store_id: 
             replacement = convert_hypd_store_link(raw_url, hypd_store_id)
         elif kind == "merchant":
             replacement = ek.get(raw_url) or compact_merchant_url(raw_url)
+        elif kind == "lehlah":
+            # Preserve AppsFlyer/LehLah attribution parameters exactly.
+            replacement = raw_url
         else:
             replacement = raw_url
         out_parts.append(text[last:start])
@@ -287,7 +309,7 @@ def _approval_render(text: str, amazon_tag: str) -> str:
 
         # Line contains URLs: check if any is Amazon vs merchant/hypd
         line_has_amazon = any(classify_url(u) == "amazon" for u in urls)
-        line_has_non_amazon = any(classify_url(u) in ("merchant", "hypd") for u in urls)
+        line_has_non_amazon = any(classify_url(u) in ("merchant", "hypd", "lehlah") for u in urls)
 
         if line_has_amazon:
             # Retag all amazon URLs on this line
@@ -295,7 +317,7 @@ def _approval_render(text: str, amazon_tag: str) -> str:
             for u in urls:
                 if classify_url(u) == "amazon":
                     out_line = out_line.replace(u, apply_amazon_tag(u, amazon_tag))
-                elif classify_url(u) in ("merchant", "hypd"):
+                elif classify_url(u) in ("merchant", "hypd", "lehlah"):
                     # Drop merchant or hypd url from line
                     out_line = out_line.replace(u, "").strip()
             if out_line.strip():
@@ -331,7 +353,7 @@ def _strip_amazon_render(text: str, ek: dict[str, str], hypd_store_id: str = "93
             continue
 
         line_has_amazon = any(classify_url(u) == "amazon" for u in urls)
-        line_has_other = any(classify_url(u) in ("merchant", "hypd") for u in urls)
+        line_has_other = any(classify_url(u) in ("merchant", "hypd", "lehlah") for u in urls)
 
         if line_has_amazon and not line_has_other:
             # Pure Amazon line -> remove completely
@@ -411,7 +433,7 @@ def render_for_influencer(
                 long_u
                 and short_u
                 and long_u != short_u
-                and classify_url(long_u) not in {"amazon", "hypd"}
+                and classify_url(long_u) not in {"amazon", "hypd", "lehlah"}
             ):
                 rendered = rendered.replace(long_u, short_u)
 
@@ -490,7 +512,7 @@ def clean_source_post(text: str) -> str:
             continue
 
         urls = find_urls(stripped)
-        has_store_url = any(classify_url(u) in ("amazon", "merchant") for u in urls)
+        has_store_url = any(classify_url(u) in ("amazon", "merchant", "hypd", "lehlah") for u in urls)
 
         if not has_store_url:
             # 1. Pure Telegram or WhatsApp invite links

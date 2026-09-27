@@ -112,8 +112,8 @@ DEAL_WORKER_BATCH_SIZE = _int("DEAL_WORKER_BATCH_SIZE", 100)
 DEAL_WORKER_INITIAL_BATCH_SIZE = _int("DEAL_WORKER_INITIAL_BATCH_SIZE", 10)
 DEAL_WORKER_MAX_BACKOFF = _int("DEAL_WORKER_MAX_BACKOFF", 900)
 HYPD_STORE_ID = _env("HYPD_STORE_ID", "93944")
-# Optional branded first-party domain for shortening already-generated HYPD
-# affiliate URLs (e.g. https://go.yourbrand.in). Blank keeps hypd.store links.
+# Optional branded first-party domain for shortening existing HYPD and LehLah
+# Meesho affiliate links (e.g. https://go.yourbrand.in). No API key is needed.
 MEESHO_SHORT_LINK_BASE_URL = _env("MEESHO_SHORT_LINK_BASE_URL", "").rstrip("/")
 
 # ----- EarnKaro (OUR publisher id — used for every non-Amazon merchant link) -----

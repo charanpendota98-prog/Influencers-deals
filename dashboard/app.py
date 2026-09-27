@@ -27,7 +27,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, url
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from influencer_hub import config, db, hypd_shortlinks, whatsapp_client  # noqa: E402
+from influencer_hub import config, db, hypd_shortlinks, lehlah_shortlinks, whatsapp_client  # noqa: E402
 
 app = Flask(__name__)
 app.secret_key = "change-me-hub-dashboard"
@@ -178,6 +178,21 @@ def meesho_hypd_short_link(code: str):
         abort(404)
     target_path = re.fullmatch(r"/(\d+)/afflink/([A-Za-z0-9_-]+)", urlparse(target).path)
     if not target_path or target_path.group(1) != str(record["store_id"]):
+        abort(404)
+    return redirect(target, code=302)
+
+
+@app.route("/l/<code>")
+def lehlah_meesho_short_link(code: str):
+    """Resolve a branded code to the untouched LehLah-attributed Meesho URL."""
+    if not lehlah_shortlinks.is_valid_short_code(code):
+        abort(404)
+    record = db.get_lehlah_short_link(code)
+    if not record:
+        abort(404)
+    target = str(record["target_url"])
+    if not lehlah_shortlinks.is_valid_lehlah_meesho_url(target):
+        # Redirects stay on a validated Meesho product host/path with LehLah markers.
         abort(404)
     return redirect(target, code=302)
 

@@ -24,6 +24,7 @@ from . import (
     db,
     earnkaro,
     hypd_shortlinks,
+    lehlah_shortlinks,
     link_router,
     telegram_ops,
     whatsapp_client,
@@ -242,7 +243,7 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             has_amz = "amazon" in kinds
             has_merchant = "merchant" in kinds
             has_hypd = "hypd" in kinds
-            present_affiliate_kinds = kinds.intersection({"amazon", "merchant", "hypd"})
+            present_affiliate_kinds = kinds.intersection({"amazon", "merchant", "hypd", "lehlah"})
 
             # 4. Settings are combined conservatively across the profile and
             # channel. Strings such as "all" and "unrestricted" mean enabled,
@@ -277,6 +278,11 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 allowed_kinds.add("merchant")
             if allow_hypd:
                 allowed_kinds.add("hypd")
+            # LehLah-tagged Meesho links carry an existing publisher attribution.
+            # Keep them (unless the channel is explicitly Amazon-only/approval)
+            # and never route them through EarnKaro or strip their query params.
+            if not only_amz and role != "approval":
+                allowed_kinds.add("lehlah")
 
             # Approval and only-Amazon channels need a native Amazon link. If
             # every supported merchant in a mixed post is disabled, skip it;
@@ -310,11 +316,11 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                     render_text, effective_amz_tag, ek_map, role=role, strip_amazon=strip_amz,
                     clean_promos=True, hypd_store_id=effective_hypd_store
                 )
-                # Amazon and HYPD affiliate URLs never go through generic Bitly.
-                # Optional first-party routes for both are applied after rendering.
+                # Amazon, HYPD, and existing LehLah affiliate URLs never go
+                # through generic Bitly. Their first-party routes are applied later.
                 final_urls = [
                     url for url in link_router.find_urls(base_rendered)
-                    if link_router.classify_url(url) not in {"amazon", "hypd"}
+                    if link_router.classify_url(url) not in {"amazon", "hypd", "lehlah"}
                 ]
                 should_shorten = (len(final_urls) >= 2) or any(len(url) > 65 for url in final_urls)
                 if should_shorten:
@@ -327,9 +333,12 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             # Optional first-party redirects require an operator-owned HTTPS
             # hostname. Approval channels remain on native Amazon URLs. HYPD
             # links are shortened only after conversion to the chosen store ID.
+            # Existing LehLah Meesho attribution is preserved and can be wrapped
+            # without altering any AppsFlyer query parameters.
             if role != "approval":
                 rendered = amazon_shortlinks.shorten_amazon_links(rendered)
                 rendered = hypd_shortlinks.shorten_hypd_links(rendered)
+                rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
             status = await dispatch_to_channel(inf, ch, rendered)
             db.record_post(inf["id"], ch["id"], sig,
                            status="posted" if status == "posted" else "failed",
