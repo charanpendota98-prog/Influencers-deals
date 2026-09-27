@@ -135,7 +135,8 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
 - Generic Bitly shortening requires a valid Bitly API token, with priority
   channel token -> influencer token -> global `BITLY_API_KEY`. Amazon, HYPD, and
   LehLah-attributed links are excluded so their affiliate destinations remain
-  controlled and auditable. Without a Bitly token, use the owned-domain redirects.
+  controlled and auditable. Without a Bitly token, generic links stay unchanged;
+  configured owned-domain redirects cover only the supported affiliate routes.
 - Telegram API ID defaults to `33595682`. Keep `TELEGRAM_API_HASH` in the VM's
   private `.env`/secret store; it is intentionally not embedded in Git. The
   session at `TELEGRAM_SESSION` is used as the seed for isolated process copies.
