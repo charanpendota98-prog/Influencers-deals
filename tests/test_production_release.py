@@ -134,11 +134,13 @@ def test_amazon_associate_links_are_not_sent_to_bitly(monkeypatch):
         db.delete_influencer(influencer_id)
 
 
-def test_global_bitly_key_shortens_eligible_links_without_creator_key(monkeypatch, tmp_path):
+def test_allowlisted_global_bitly_key_shortens_eligible_links_without_creator_key(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "global-bitly.sqlite3")
     monkeypatch.setattr(config, "BITLY_API_KEY", "global-bitly-test-token")
+    monkeypatch.setattr(config, "BITLY_GLOBAL_INFLUENCER_IDS", set())
     db.init()
     influencer_id = db.add_influencer("Global Bitly")
+    monkeypatch.setattr(config, "BITLY_GLOBAL_INFLUENCER_IDS", {str(influencer_id)})
     channel_id = db.add_channel(
         influencer_id, "telegram", "@global_bitly", status="ready"
     )
@@ -165,6 +167,40 @@ def test_global_bitly_key_shortens_eligible_links_without_creator_key(monkeypatc
     assert result[influencer_id][channel_id] == "posted"
     assert shortened_calls == [({long_url}, "global-bitly-test-token")]
     assert "https://bit.ly/global-test" in posted[0]
+
+
+def test_global_bitly_key_is_not_used_for_unlisted_influencers(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "unlisted-global-bitly.sqlite3")
+    monkeypatch.setattr(config, "BITLY_API_KEY", "global-bitly-test-token")
+    monkeypatch.setattr(config, "BITLY_GLOBAL_INFLUENCER_IDS", set())
+    db.init()
+    influencer_id = db.add_influencer("No Global Bitly")
+    channel_id = db.add_channel(
+        influencer_id, "telegram", "@no_global_bitly", status="ready"
+    )
+    long_url = "https://example.com/a/very/long/product/path/" + "segment/" * 12 + "?source=deal"
+    shortened_calls = []
+    posted = []
+
+    async def fake_shorten(urls, token=None):
+        shortened_calls.append((set(urls), token))
+        return {url: "https://bit.ly/should-not-use" for url in urls}
+
+    async def fake_dispatch(_influencer, _channel, text):
+        posted.append(text)
+        return "posted"
+
+    monkeypatch.setattr(pipeline, "_earnkaro_map_for", AsyncMock(return_value={}))
+    monkeypatch.setattr(pipeline.bitly_client, "shorten_urls", fake_shorten)
+    monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
+    result = asyncio.run(
+        pipeline.render_and_dispatch(
+            f"Offer {long_url}", influencer_ids=[influencer_id]
+        )
+    )
+    assert result[influencer_id][channel_id] == "posted"
+    assert shortened_calls == []
+    assert long_url in posted[0]
 
 
 def test_first_party_amazon_short_links_preserve_influencer_tag_and_redirect(monkeypatch, tmp_path):

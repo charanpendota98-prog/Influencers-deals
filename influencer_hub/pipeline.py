@@ -300,14 +300,17 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # Bitly token priority: channel -> influencer -> optional global config.
-            # Amazon/HYPD/LehLah links are excluded below to preserve attribution.
-            effective_bitly_key = (
-                ch.get("bitly_api_key")
-                or inf.get("bitly_api_key")
-                or config.BITLY_API_KEY
-                or ""
-            ).strip()
+            # Bitly token priority: channel -> influencer -> global key explicitly
+            # allowlisted for this owned influencer profile. No other influencer
+            # can consume the operator's global token by default.
+            influencer_key = str(inf.get("bitly_api_key") or "").strip()
+            channel_key = str(ch.get("bitly_api_key") or "").strip()
+            global_key = (
+                config.BITLY_API_KEY
+                if str(inf.get("id") or "") in config.BITLY_GLOBAL_INFLUENCER_IDS
+                else ""
+            )
+            effective_bitly_key = channel_key or influencer_key or global_key
             # Resolve HYPD Store ID priority: channel -> profile -> central setting -> configured default.
             global_hypd_store = db.get_global_setting("hypd_store_id", config.HYPD_STORE_ID)
             effective_hypd_store = (
@@ -338,12 +341,13 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             # Optional first-party redirects require an operator-owned HTTPS
             # hostname. Approval channels remain on native Amazon URLs. HYPD
             # links are shortened only after conversion to the chosen store ID.
-            # Existing LehLah Meesho attribution is preserved and can be wrapped
-            # without altering any AppsFlyer query parameters.
+            # LehLah links remain untouched unless the operator explicitly
+            # enables short links after account approval.
             if role != "approval":
                 rendered = amazon_shortlinks.shorten_amazon_links(rendered)
                 rendered = hypd_shortlinks.shorten_hypd_links(rendered)
-                rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
+                if config.LEHLAH_SHORTLINKS_ENABLED:
+                    rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
             status = await dispatch_to_channel(inf, ch, rendered)
             db.record_post(inf["id"], ch["id"], sig,
                            status="posted" if status == "posted" else "failed",

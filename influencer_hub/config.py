@@ -115,6 +115,9 @@ HYPD_STORE_ID = _env("HYPD_STORE_ID", "93944")
 # Optional branded first-party domain for shortening existing HYPD and LehLah
 # Meesho affiliate links (e.g. https://go.yourbrand.in). No API key is needed.
 MEESHO_SHORT_LINK_BASE_URL = _env("MEESHO_SHORT_LINK_BASE_URL", "").rstrip("/")
+# LehLah short redirects stay disabled until your account is approved and an
+# operator explicitly enables this setting.
+LEHLAH_SHORTLINKS_ENABLED = _bool("LEHLAH_SHORTLINKS_ENABLED", False)
 
 # ----- EarnKaro (OUR publisher id — used for every non-Amazon merchant link) -----
 EARNKARO_API_KEY = _env("EARNKARO_API_KEY")
@@ -137,8 +140,16 @@ WA_HUB_TOKEN = _env("WA_HUB_TOKEN", "")  # optional shared secret
 OPS_TELEGRAM_CHANNEL = _env("OPS_TELEGRAM_CHANNEL", "")
 VM_WATCH_INTERVAL = _int("VM_WATCH_INTERVAL", 300)  # seconds
 
-# ----- Bitly shortener (for multi-link clean formatting) -----
+# ----- Bitly shortener (for eligible links only) -----
 BITLY_API_KEY = _env("BITLY_API_KEY", "")
+# Global API credentials are opt-in per owned influencer database ID. A blank
+# allowlist means the global key is not used for anyone; per-profile/channel
+# keys continue to work normally.
+BITLY_GLOBAL_INFLUENCER_IDS = {
+    value.strip()
+    for value in _env("BITLY_GLOBAL_INFLUENCER_IDS").split(",")
+    if value.strip()
+}
 
 # ----- Security & Admin protection -----
 ADMIN_DELETE_PASSWORD = _env("ADMIN_DELETE_PASSWORD", "admin123")

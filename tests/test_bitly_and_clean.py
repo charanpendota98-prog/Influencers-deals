@@ -73,6 +73,14 @@ def test_bitly_shortener_caching_and_api():
         assert mock_post.call_count == 1
 
 
+def test_bitly_client_does_not_resolve_a_global_token_on_its_own():
+    long_url = "https://www.flipkart.com/very/long/product/url/path/with/tracking?id=12345"
+    with patch("aiohttp.ClientSession.post") as mock_post:
+        result = asyncio.run(bitly_client.shorten_urls([long_url]))
+    assert result == {long_url: long_url}
+    mock_post.assert_not_called()
+
+
 def test_multi_link_bitly_rendering():
     text = (
         "🔥 Mega Shoe Sale!\n"
