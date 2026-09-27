@@ -300,9 +300,14 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            # Check if this deal needs Bitly URL shortening:
-            # ONLY used if influencer has provided their Bitly API key (or channel has its own key)
-            effective_bitly_key = (ch.get("bitly_api_key") or inf.get("bitly_api_key") or "").strip()
+            # Bitly token priority: channel -> influencer -> optional global config.
+            # Amazon/HYPD/LehLah links are excluded below to preserve attribution.
+            effective_bitly_key = (
+                ch.get("bitly_api_key")
+                or inf.get("bitly_api_key")
+                or config.BITLY_API_KEY
+                or ""
+            ).strip()
             # Resolve HYPD Store ID priority: channel -> profile -> central setting -> configured default.
             global_hypd_store = db.get_global_setting("hypd_store_id", config.HYPD_STORE_ID)
             effective_hypd_store = (

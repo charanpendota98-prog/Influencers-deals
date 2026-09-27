@@ -92,6 +92,7 @@ def test_pipeline_skips_earnkaro_and_uses_meesho_branded_link(monkeypatch, tmp_p
     monkeypatch.setattr(
         config, "MEESHO_SHORT_LINK_BASE_URL", "https://go.example.test"
     )
+    monkeypatch.setattr(config, "BITLY_API_KEY", "global-bitly-test-token")
     db.init()
     influencer_id = db.add_influencer("LehLah Meesho Creator", "creator-21")
     channel_id = db.add_channel(
@@ -104,7 +105,9 @@ def test_pipeline_skips_earnkaro_and_uses_meesho_branded_link(monkeypatch, tmp_p
         return "posted"
 
     converter = AsyncMock(return_value={})
+    bitly_shortener = AsyncMock(return_value={})
     monkeypatch.setattr(earnkaro, "convert_links", converter)
+    monkeypatch.setattr(pipeline.bitly_client, "shorten_urls", bitly_shortener)
     monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
 
     result = asyncio.run(
@@ -115,6 +118,7 @@ def test_pipeline_skips_earnkaro_and_uses_meesho_branded_link(monkeypatch, tmp_p
     )
     assert result[influencer_id][channel_id] == "posted"
     converter.assert_not_awaited()
+    bitly_shortener.assert_not_awaited()
     match = re.search(r"https://go\.example\.test/l/([A-Za-z0-9_-]{8})", sent[0])
     assert match
     record = db.get_lehlah_short_link(match.group(1))

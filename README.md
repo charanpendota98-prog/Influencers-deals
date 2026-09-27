@@ -132,6 +132,10 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
   not sent through EarnKaro/HYPD, and they can be wrapped as `/l/<code>` using
   the same `MEESHO_SHORT_LINK_BASE_URL`. This protects the existing LehLah
   attribution; it does not convert the link to a different affiliate network.
+- Generic Bitly shortening requires a valid Bitly API token, with priority
+  channel token -> influencer token -> global `BITLY_API_KEY`. Amazon, HYPD, and
+  LehLah-attributed links are excluded so their affiliate destinations remain
+  controlled and auditable. Without a Bitly token, use the owned-domain redirects.
 - Telegram API ID defaults to `33595682`. Keep `TELEGRAM_API_HASH` in the VM's
   private `.env`/secret store; it is intentionally not embedded in Git. The
   session at `TELEGRAM_SESSION` is used as the seed for isolated process copies.
