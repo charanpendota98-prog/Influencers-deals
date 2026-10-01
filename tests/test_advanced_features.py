@@ -33,9 +33,11 @@ def test_only_amazon_filter_channel_and_influencer():
     db.delete_influencer(iid)
 
 
-def test_delete_influencer_security_password():
+def test_delete_influencer_security_password(monkeypatch):
     """Verify that delete influencer route enforces admin password."""
     from dashboard.app import app
+    monkeypatch.setitem(app.config, "TESTING", True)
+    monkeypatch.setattr(config, "ADMIN_DELETE_PASSWORD", "unit-test-admin-password")
     client = app.test_client()
 
     db.init()

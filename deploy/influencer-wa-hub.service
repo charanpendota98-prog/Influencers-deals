@@ -4,12 +4,15 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/user/Influencers-deals/wa_hub
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@REPO_ROOT@/wa_hub
 ExecStart=/usr/bin/node server.js
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
-EnvironmentFile=/home/user/Influencers-deals/.env
+EnvironmentFile=-@REPO_ROOT@/.env
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

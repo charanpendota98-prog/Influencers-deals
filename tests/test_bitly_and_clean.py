@@ -73,6 +73,14 @@ def test_bitly_shortener_caching_and_api():
         assert mock_post.call_count == 1
 
 
+def test_bitly_client_does_not_resolve_a_global_token_on_its_own():
+    long_url = "https://www.flipkart.com/very/long/product/url/path/with/tracking?id=12345"
+    with patch("aiohttp.ClientSession.post") as mock_post:
+        result = asyncio.run(bitly_client.shorten_urls([long_url]))
+    assert result == {long_url: long_url}
+    mock_post.assert_not_called()
+
+
 def test_multi_link_bitly_rendering():
     text = (
         "🔥 Mega Shoe Sale!\n"
@@ -91,7 +99,10 @@ def test_multi_link_bitly_rendering():
     rendered_broadcast = lr.render_for_influencer(
         text, "influencer-21", earnkaro_links=ek_map, shortened_links=shortened_map, role="broadcast"
     )
-    assert "https://bit.ly/puma-short" in rendered_broadcast
+    # Amazon Associate links stay visible/canonical; only the eligible merchant
+    # URL is passed through a generic Bitly shortener.
+    assert "https://www.amazon.in/dp/B081234567?tag=influencer-21" in rendered_broadcast
+    assert "https://bit.ly/puma-short" not in rendered_broadcast
     assert "https://bit.ly/nike-short" in rendered_broadcast
     assert "Puma Shoes:" in rendered_broadcast
     assert "Nike Shoes:" in rendered_broadcast

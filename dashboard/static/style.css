@@ -388,3 +388,172 @@ button:active, .btn:active {
     margin-bottom: 2px;
   }
 }
+
+/* Accessible navigation, secure sign-in, and deployment-ready control styling */
+.skip-link {
+  position: fixed;
+  left: 12px;
+  top: 8px;
+  z-index: 20000;
+  transform: translateY(-160%);
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #e0f2fe;
+  color: #082f49;
+  font-weight: 800;
+  text-decoration: none;
+}
+.skip-link:focus { transform: translateY(0); }
+
+:focus-visible {
+  outline: 3px solid #7dd3fc;
+  outline-offset: 3px;
+}
+
+.app-header { gap: 18px; }
+.app-header .brand { flex: 0 0 auto; text-decoration: none; }
+.app-nav {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.app-nav > a {
+  margin: 0;
+  padding: 8px 11px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+.app-nav > a:hover,
+.app-nav > a:focus-visible {
+  color: #e0f2fe;
+  border-color: #334155;
+  background: rgba(30, 41, 59, 0.75);
+}
+.nav-security-label {
+  padding: 7px 11px;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 700;
+}
+.nav-logout-form { margin: 0; }
+.nav-logout {
+  padding: 8px 12px;
+  border: 1px solid #475569;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 12px;
+}
+.nav-logout:hover { background: #334155; }
+
+/* Keep native form controls usable on desktop and touch devices. */
+input[type="checkbox"],
+input[type="radio"] {
+  width: 18px !important;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  margin: 0 4px 0 0;
+  flex: 0 0 auto;
+  accent-color: #38bdf8;
+  box-shadow: none;
+  vertical-align: middle;
+}
+input[type="file"] { max-width: 100%; }
+button:disabled,
+button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+  transform: none;
+  filter: none;
+}
+
+.auth-shell {
+  display: grid;
+  min-height: min(72vh, 760px);
+  place-items: center;
+  padding: 28px 12px;
+}
+.auth-card {
+  width: min(100%, 480px);
+  padding: clamp(22px, 5vw, 38px);
+  border: 1px solid #293a5a;
+  border-radius: 20px;
+  background: linear-gradient(155deg, rgba(21, 32, 54, 0.98), rgba(10, 15, 27, 0.98));
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42), 0 0 0 1px rgba(56, 189, 248, 0.04) inset;
+}
+.auth-mark {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  place-items: center;
+  margin-bottom: 18px;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 16px;
+  background: rgba(14, 116, 144, 0.16);
+  font-size: 26px;
+}
+.eyebrow {
+  margin: 0 0 8px;
+  color: #7dd3fc;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+.auth-card h1 {
+  margin: 0 0 10px;
+  font-size: clamp(23px, 5vw, 30px);
+  line-height: 1.2;
+}
+.auth-copy { color: #a8b5ca; font-size: 14px; }
+.auth-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 22px;
+}
+.auth-form label { color: #e2e8f0; font-size: 13px; font-weight: 700; }
+.auth-form input[type="password"] { width: 100%; min-height: 48px; }
+.auth-form .button-primary { width: 100%; min-height: 48px; margin-top: 6px; }
+.auth-footnote {
+  margin: 20px 0 0;
+  color: #8290a6;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.alert {
+  margin: 16px 0;
+  padding: 11px 13px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 650;
+}
+.alert-error { border: 1px solid #7f1d1d; background: #3b1018; color: #fecaca; }
+
+@media (max-width: 768px) {
+  .app-header {
+    flex-direction: row;
+    text-align: left;
+    align-items: center;
+    padding: 11px 12px;
+  }
+  .app-header .brand { font-size: 17px; }
+  .app-nav { flex-wrap: nowrap; gap: 2px; }
+  .app-nav > a { padding: 6px 7px; font-size: 11px; }
+  .nav-logout { min-height: 36px; padding: 5px 8px; font-size: 11px; }
+  .nav-security-label { padding: 5px 8px; font-size: 10px; }
+  .auth-shell { min-height: calc(80vh - 60px); padding: 10px 2px; }
+  .auth-card { border-radius: 15px; }
+  input[type="checkbox"],
+  input[type="radio"] { width: 18px !important; min-height: 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

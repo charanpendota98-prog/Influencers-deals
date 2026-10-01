@@ -2,42 +2,53 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#090d16" />
+  <meta name="csrf-token" content="{{ csrf_token() }}" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>{% block title %}Influencer Hub{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
 <body>
-  <header>
-    <span class="brand">🤝 Influencer Hub</span>
-    <nav style="display:flex; align-items:center; gap:16px;">
-      <a href="{{ url_for('index') }}">👥 Influencers</a>
-      <a href="{{ url_for('secret_vault_tab') }}" style="color:#f472b6; font-weight:700; background:rgba(236,72,153,0.15); padding:4px 12px; border-radius:6px; border:1px solid rgba(236,72,153,0.4);">🔒 Secret Vault &amp; Sources</a>
-      <a href="{{ url_for('vm') }}">💻 VM Health</a>
-    </nav>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="app-header">
+    <a class="brand" href="{{ url_for('index') if dashboard_authenticated else url_for('login') }}">🤝 Influencer Hub</a>
+    {% if dashboard_authenticated %}
+      <nav class="app-nav" aria-label="Main navigation">
+        <a href="{{ url_for('index') }}">👥 Influencers</a>
+        <a href="{{ url_for('secret_vault_tab') }}">🔒 Vault &amp; Sources</a>
+        <a href="{{ url_for('vm') }}">💻 VM Health</a>
+        <form method="post" action="{{ url_for('logout') }}" class="nav-logout-form">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+          <button type="submit" class="nav-logout">Sign out</button>
+        </form>
+      </nav>
+    {% else %}
+      <span class="nav-security-label">Admin access · Secure session</span>
+    {% endif %}
   </header>
-  <main>{% block content %}{% endblock %}</main>
-  <!-- MOBILE BOTTOM APP DOCK (NATIVE APP FEEL) -->
-  <div class="mobile-bottom-dock">
-    <a href="{{ url_for('index') }}" class="dock-item">
-      <span class="dock-icon">👥</span>
-      <span class="dock-label">Partners</span>
-    </a>
-    <a href="javascript:void(0)" onclick="const q = document.getElementById('quick-add-form'); if(q){q.scrollIntoView({behavior:'smooth'}); document.getElementById('name-input').focus();} else {window.location.href='/#quick-add-form';}" class="dock-item dock-add-btn">
-      <span class="dock-add-icon">➕</span>
-      <span class="dock-label">Add Fast</span>
-    </a>
-    <a href="{{ url_for('secret_vault_tab') }}" class="dock-item">
-      <span class="dock-icon">🔒</span>
-      <span class="dock-label">Vault</span>
-    </a>
-    <a href="{{ url_for('vm') }}" class="dock-item">
-      <span class="dock-icon">💻</span>
-      <span class="dock-label">Server</span>
-    </a>
-  </div>
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <main id="main-content">{% block content %}{% endblock %}</main>
+  {% if dashboard_authenticated %}
+    <nav class="mobile-bottom-dock" aria-label="Quick navigation">
+      <a href="{{ url_for('index') }}" class="dock-item">
+        <span class="dock-icon" aria-hidden="true">👥</span>
+        <span class="dock-label">Partners</span>
+      </a>
+      <a href="{{ url_for('index') }}#quick-add-form" class="dock-item dock-add-btn">
+        <span class="dock-add-icon" aria-hidden="true">➕</span>
+        <span class="dock-label">Add fast</span>
+      </a>
+      <a href="{{ url_for('secret_vault_tab') }}" class="dock-item">
+        <span class="dock-icon" aria-hidden="true">🔒</span>
+        <span class="dock-label">Vault</span>
+      </a>
+      <a href="{{ url_for('vm') }}" class="dock-item">
+        <span class="dock-icon" aria-hidden="true">💻</span>
+        <span class="dock-label">Health</span>
+      </a>
+    </nav>
+  {% endif %}
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </body>
 </html>

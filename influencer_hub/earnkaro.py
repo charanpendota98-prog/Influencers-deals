@@ -1,19 +1,15 @@
 """EarnKaro converter client.
 
-This is the EXACT contract your existing bestgaa bot uses (verified against
-main_bot_new.py), which is what makes your 2 running channels earn:
+The configured integration posts a cleaned merchant URL to the EarnKaro
+converter endpoint with a Bearer credential and parses a returned affiliate
+link. When a publisher ID is configured, direct results must include a matching
+ID; known shorteners receive a best-effort redirect check. If credentials are
+absent, conversion fails, or the result cannot be validated, the original
+merchant URL is returned so the deal is not dropped. This code cannot guarantee
+external merchant support or commission attribution.
 
-  POST https://ekaro-api.affiliaters.in/api/converter/public
-  Authorization: Bearer <EARNKARO_API_KEY>     # the key IS a JWT
-  Content-Type: application/json
-  {"deal": "<clean merchant url>"}
-
-  -> {"success": 1, "data": "<ekaro.in short link>"}
-     (data may also be a list — take the first http string)
-
-EARNKARO_API_KEY is OUR publisher key, so every non-Amazon merchant link is
-monetised under OUR account. Amazon links are handled separately by the link
-router (they carry the influencer's own Amazon tag, never EarnKaro).
+Amazon URLs are routed separately by ``link_router`` with the selected
+influencer/channel Associate tag.
 """
 from __future__ import annotations
 
@@ -24,7 +20,7 @@ import time
 
 import aiohttp
 
-from . import config, db
+from . import config, db, link_router
 
 # Affiliate shorteners whose resolved URL carries affExtParam2. We accept the
 # short link but verify (best-effort) that it redirects to OUR publisher id.
@@ -34,13 +30,23 @@ SHORTENER_HOSTS = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "m
 def _is_shortener(link: str) -> bool:
     from urllib.parse import urlparse
     host = (urlparse(link).hostname or "").lower()
-    return host in SHORTENER_HOSTS
+    return host in SHORTENER_HOSTS or (
+        host.startswith("www.") and host[4:] in SHORTENER_HOSTS
+    )
+
+
+def _affextparam2_values(link: str) -> list[str]:
+    """Extract EarnKaro publisher IDs without assuming query-key casing."""
+    from urllib.parse import parse_qsl, urlparse
+    return [
+        value for key, value in parse_qsl(urlparse(link).query, keep_blank_values=True)
+        if key.casefold() == "affextparam2"
+    ]
 
 
 async def _resolve_affextparam2(session: aiohttp.ClientSession, link: str,
                                  timeout: float = 8.0) -> str | None:
     """Follow redirects and return the affExtParam2 of the final URL (best-effort)."""
-    from urllib.parse import urlparse, parse_qs
     try:
         async with session.get(
             link, allow_redirects=True,
@@ -50,21 +56,59 @@ async def _resolve_affextparam2(session: aiohttp.ClientSession, link: str,
             final = str(resp.url)
     except Exception:
         return None
-    return parse_qs(urlparse(final).query).get("affExtParam2", [None])[0]
+    return next(iter(_affextparam2_values(final)), None)
 
 CACHE: dict[str, tuple[float, str]] = {}
-CACHE_TTL = 60 * 60 * 12  # 12h — EarnKaro links are stable
+CACHE_TTL = 60 * 60 * 12  # 12h — successful EarnKaro links are stable
+NEGATIVE_CACHE_TTL = 5 * 60  # retry unsupported/transient fallbacks soon
+MAX_CACHE_ENTRIES = 10_000
 HTTP_TOTAL_TIMEOUT = 30.0
 
 
-def _cache_key(url: str) -> str:
-    return hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+def _cache_key(url: str, publisher_id: str = "", api_key: str = "") -> str:
+    """Scope cached conversions to both the source URL and affiliate account.
+
+    Only a digest is retained; the API key itself is never stored in the cache
+    key or logs. Including credentials prevents a URL converted for an old
+    publisher from being reused after the vault's account settings change.
+    """
+    key_fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+    material = f"{publisher_id.strip()}\0{key_fingerprint}\0{url}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _cache_get(key: str, source_url: str, now: float) -> str | None:
+    entry = CACHE.get(key)
+    if entry is None:
+        return None
+    created_at, value = entry
+    ttl = CACHE_TTL if value != source_url else NEGATIVE_CACHE_TTL
+    if now - created_at >= ttl:
+        CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key: str, value: str, now: float | None = None) -> None:
+    timestamp = time.time() if now is None else now
+    if key not in CACHE and len(CACHE) >= MAX_CACHE_ENTRIES:
+        # Opportunistically sweep expired items, then evict the oldest entries
+        # if a high-volume worker still reaches the hard cache bound.
+        for cached_key, (created_at, cached_value) in list(CACHE.items()):
+            ttl = CACHE_TTL
+            if timestamp - created_at >= ttl:
+                CACHE.pop(cached_key, None)
+        while len(CACHE) >= MAX_CACHE_ENTRIES:
+            oldest_key = min(CACHE, key=lambda cached_key: CACHE[cached_key][0])
+            CACHE.pop(oldest_key, None)
+    CACHE[key] = (timestamp, value)
 
 
 def clean_merchant_url_for_api(url: str) -> str:
-    """Strip third-party referral affiliate tracking params before sending to EarnKaro converter.
-    This guarantees that competitor affiliate tags (like hypd, affid, clickid, appsflyer)
-    are cleaned off, leaving the pure product link so EarnKaro converts cleanly 100%.
+    """Remove known third-party referral parameters before sending a URL to EarnKaro.
+
+    This produces a cleaner product URL; it cannot guarantee that the remote API
+    supports the merchant or will return a successful affiliate conversion.
     """
     from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
     p = urlparse(url)
@@ -93,10 +137,9 @@ def parse_ek_response(body: str, expected_pubid: str | None = None) -> str | Non
     Returns the short/affiliate link string, or None if the response is not a
     successful conversion. Pure + unit-tested (no network needed).
 
-    If `expected_pubid` is set, the returned link MUST carry that publisher id in
-    its `affExtParam2` query param (EarnKaro embeds it on Flipkart/Myntra etc.).
-    A mismatch means the link earns for SOMEONE ELSE's account — reject it. This
-    is the provenance lock that guarantees "our" setup stays ours.
+    If `expected_pubid` is set, direct merchant URLs must carry the matching
+    `affExtParam2`. Known shortener links are accepted here and checked against
+    their resolved destination in `convert_one`; mismatches are rejected.
     """
     try:
         data = json.loads(body)
@@ -110,36 +153,50 @@ def parse_ek_response(body: str, expected_pubid: str | None = None) -> str | Non
     elif isinstance(result, dict):
         # Some variants nest the link under "link"/"url".
         result = result.get("link") or result.get("url")
-    if not isinstance(result, str) or not result.startswith("http"):
+    if not isinstance(result, str):
+        return None
+    from urllib.parse import urlparse
+    parsed = urlparse(result)
+    if parsed.scheme != "https" or not parsed.hostname:
         return None
     result = _clean(result)
     if expected_pubid:
-        from urllib.parse import parse_qs, urlparse
-        ext2 = parse_qs(urlparse(result).query).get("affExtParam2", [None])[0]
-        if ext2 and ext2 != expected_pubid:
-            # Link earns for a different publisher — do NOT use it.
+        publisher_ids = _affextparam2_values(result)
+        if publisher_ids:
+            if any(publisher_id != expected_pubid for publisher_id in publisher_ids):
+                # Link explicitly carries a different publisher ID — reject it.
+                return None
+        elif not _is_shortener(result):
+            # A direct merchant URL without the provenance parameter cannot be
+            # verified. Shorteners are checked after following their redirect.
             return None
     return result
 
 
 async def convert_one(session: aiohttp.ClientSession, url: str) -> str:
-    key = _cache_key(url)
-    now = time.time()
-    if key in CACHE and now - CACHE[key][0] < CACHE_TTL:
-        return CACHE[key][1]
+    # Amazon has its own Associates tag; raw Meesho links belong to HYPD. Keep
+    # direct callers from accidentally sending either category to EarnKaro.
+    if link_router.classify_url(url) != "merchant":
+        return url
 
     # Dynamically check global settings from DB first (supports secret admin dashboard update)
-    # falling back to config.py / .env
+    # falling back to config.py / .env. Read these before looking in the cache so
+    # changing credentials cannot reuse a conversion from the previous account.
     db_ek_key = db.get_global_setting("earnkaro_api_key")
     db_ek_pubid = db.get_global_setting("earnkaro_publisher_id")
     effective_ek_key = db_ek_key if db_ek_key else config.EARNKARO_API_KEY
     effective_ek_pubid = db_ek_pubid if db_ek_pubid else config.EARNKARO_PUBLISHER_ID
 
     if not effective_ek_key:
-        # No key configured (e.g. unit/test env): keep the original so the deal
-        # still works, but signal it was not monetised.
-        CACHE[key] = (now, url)
+        # Keep the source link, but don't cache this fallback: the operator may
+        # configure credentials in the dashboard before the next dispatch.
         return url
+
+    key = _cache_key(url, effective_ek_pubid, effective_ek_key)
+    now = time.time()
+    cached = _cache_get(key, url, now)
+    if cached is not None:
+        return cached
 
     last: Exception | None = None
     # Pre-clean dirty third-party affiliate tracking params (hypd, clickid, appsflyer, etc.)
@@ -161,8 +218,8 @@ async def convert_one(session: aiohttp.ClientSession, url: str) -> str:
                 converted = parse_ek_response(body, effective_ek_pubid)
                 if not converted:
                     # Not a successful conversion — fall back to the original link
-                    # so the deal still posts (just without our commission).
-                    CACHE[key] = (now, url)
+                    # so the deal still posts without an affiliate conversion.
+                    _cache_set(key, url)
                     return url
                 # Short-link provenance: fktr.in/ekaro.in etc. don't carry
                 # affExtParam2 directly, so follow the redirect (best-effort) and
@@ -170,25 +227,28 @@ async def convert_one(session: aiohttp.ClientSession, url: str) -> str:
                 if effective_ek_pubid and _is_shortener(converted):
                     resolved_pubid = await _resolve_affextparam2(session, converted)
                     if resolved_pubid and resolved_pubid != effective_ek_pubid:
-                        CACHE[key] = (now, url)
+                        _cache_set(key, url)
                         return url
                 if _clean(converted) == _clean(url):
                     # Provenance guard: never accept an echoed source URL.
-                    CACHE[key] = (now, url)
+                    _cache_set(key, url)
                     return url
-                CACHE[key] = (now, converted)
+                _cache_set(key, converted)
                 return converted
         except Exception as exc:  # retry with jitter
             last = exc
             await asyncio.sleep(min(2.5, 0.4 * (2 ** attempt) + (time.time() % 1) * 0.3))
     # Give up gracefully — keep the original link rather than drop the deal.
-    CACHE[key] = (now, url)
+    _cache_set(key, url)
     return url
 
 
 async def convert_links(urls: set[str]) -> dict[str, str]:
-    """Convert a set of merchant URLs to EarnKaro links (OUR publisher id)."""
-    urls = {u for u in urls if u}
+    """Convert supported EarnKaro merchants only; Amazon and Meesho stay separate."""
+    urls = {
+        url for url in urls
+        if url and link_router.classify_url(url) == "merchant"
+    }
     if not urls:
         return {}
     async with aiohttp.ClientSession() as session:
@@ -201,20 +261,33 @@ def convert_links_sync(urls: set[str]) -> dict[str, str]:
 
 
 async def verify_earnkaro(test_url: str = "https://www.flipkart.com/p/itmEXAMPLE12345") -> dict:
-    """Live test conversion against the real EarnKaro API (needs network + key).
+    """Live-test an eligible EarnKaro merchant using dashboard settings first.
 
-    Returns a detailed dict so you can confirm, on the VM, that links convert to
-    short EarnKaro links. Run: `python -m influencer_hub.cli verify-earnkaro`.
+    A conversion is reported as verified only when the returned link is
+    parseable and its configured publisher provenance can be checked. Short-link
+    provenance requires a successful redirect resolution. This tests a link
+    response, not a sale or commission attribution.
     """
-    if not config.EARNKARO_API_KEY:
-        return {"ok": False, "error": "EARNKARO_API_KEY not set in .env"}
+    if link_router.classify_url(test_url) != "merchant":
+        return {
+            "ok": False,
+            "error": "URL is not an eligible EarnKaro merchant; Amazon and Meesho use separate routes",
+        }
+
+    db_ek_key = db.get_global_setting("earnkaro_api_key")
+    db_ek_pubid = db.get_global_setting("earnkaro_publisher_id")
+    effective_ek_key = db_ek_key if db_ek_key else config.EARNKARO_API_KEY
+    effective_ek_pubid = db_ek_pubid if db_ek_pubid else config.EARNKARO_PUBLISHER_ID
+    if not effective_ek_key:
+        return {"ok": False, "error": "EarnKaro API credential is not configured"}
+
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(
                 config.EARNKARO_API_URL,
                 json={"deal": test_url},
                 headers={
-                    "Authorization": f"Bearer {config.EARNKARO_API_KEY}",
+                    "Authorization": f"Bearer {effective_ek_key}",
                     "Content-Type": "application/json",
                 },
                 timeout=aiohttp.ClientTimeout(total=30),
@@ -223,11 +296,48 @@ async def verify_earnkaro(test_url: str = "https://www.flipkart.com/p/itmEXAMPLE
                 body = await resp.text()
         except Exception as exc:  # network/DNS/TLS failure
             return {"ok": False, "error": f"request failed: {exc}"}
-    link = parse_ek_response(body)
+
+        if not 200 <= status < 300:
+            return {
+                "ok": False,
+                "error": f"EarnKaro returned HTTP {status}",
+                "http_status": status,
+                "input": test_url,
+                "raw_response": body[:500],
+            }
+
+        expected_pubid = str(effective_ek_pubid or "").strip()
+        link = parse_ek_response(body, expected_pubid or None)
+        provenance_verified: bool | None = None
+        if link and expected_pubid:
+            if _is_shortener(link):
+                resolved_pubid = await _resolve_affextparam2(session, link)
+                if resolved_pubid is not None:
+                    provenance_verified = resolved_pubid == expected_pubid
+            else:
+                publisher_ids = _affextparam2_values(link)
+                provenance_verified = bool(publisher_ids) and all(
+                    publisher_id == expected_pubid for publisher_id in publisher_ids
+                )
+
+    verified = bool(link) and (
+        not expected_pubid or provenance_verified is True
+    )
+    if not link:
+        error = "response did not contain a valid link for the configured publisher"
+    elif expected_pubid and provenance_verified is None:
+        error = "publisher provenance could not be verified from the short link"
+    elif expected_pubid and provenance_verified is False:
+        error = "returned link does not match the configured publisher ID"
+    else:
+        error = None
     return {
-        "ok": bool(link),
+        "ok": verified,
+        "error": error,
         "http_status": status,
         "input": test_url,
         "converted_link": link,
+        "publisher_id": expected_pubid or None,
+        "publisher_provenance_verified": provenance_verified,
         "raw_response": body[:500],
     }

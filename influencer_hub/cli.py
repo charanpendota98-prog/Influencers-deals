@@ -58,8 +58,16 @@ def _cmd_create_tg(args):  # pragma: no cover - network
     if not inf:
         print("No such influencer", file=sys.stderr); return 1
     from . import telegram_ops
-    out = asyncio.run(telegram_ops.create_channel_for_influencer(
-        args.id, args.title or f"{inf['name']} Loots", args.about or ""))
+
+    async def _create():
+        try:
+            return await telegram_ops.create_channel_for_influencer(
+                args.id, args.title or f"{inf['name']} Loots", args.about or ""
+            )
+        finally:
+            await telegram_ops.disconnect()
+
+    out = asyncio.run(_create())
     print("Telegram channel:", out)
 
 
@@ -135,10 +143,23 @@ def _cmd_vm_watch(args):  # pragma: no cover - side effect
 def _cmd_run_pipeline(args):  # pragma: no cover - network
     db.init()
     from . import pipeline, puller
-    use_dummy = db.get_influencer(args.id).get("use_dummy_sources") if args.id else False
-    deals = asyncio.run(puller.pull_recent_deals(limit=args.limit, use_dummy=bool(use_dummy)))
+    selected_influencer = db.get_influencer(args.id) if args.id else None
+    if args.id and not selected_influencer:
+        print("No such influencer", file=sys.stderr)
+        return 1
+    use_dummy = selected_influencer.get("use_dummy_sources", False) if selected_influencer else False
+
+    async def _pull_and_dispatch():
+        try:
+            deals = await puller.pull_recent_deals(
+                limit=args.limit, use_dummy=bool(use_dummy), include_source=True
+            )
+            return deals, await pipeline.run_once(deals, influencer_ids=[args.id] if args.id else None)
+        finally:
+            await pipeline.close()
+
+    deals, results = asyncio.run(_pull_and_dispatch())
     print(f"Pulled {len(deals)} deals from the shared pool.")
-    results = asyncio.run(pipeline.run_once(deals))
     for iid, chmap in results.items():
         posted = sum(1 for s in chmap.values() if s == "posted")
         print(f"  influencer #{iid}: {posted} posts dispatched")
@@ -154,14 +175,22 @@ def _cmd_onboard_tg(args):  # pragma: no cover - network
         print("Telegram disabled for this influencer (use --no-tg to enable)."); return 1
     from . import telegram_ops
     name = inf["name"]
-    # 1) Amazon approval channel — native links, for the associate review.
-    approval = asyncio.run(telegram_ops.create_channel_for_influencer(
-        args.id, args.title or f"{name} Amazon", args.about or "Amazon deals (approval)",
-        role="approval"))
+
+    async def _create_channels():
+        try:
+            approval = await telegram_ops.create_channel_for_influencer(
+                args.id, args.title or f"{name} Amazon", args.about or "Amazon deals (approval)",
+                role="approval",
+            )
+            broadcast = await telegram_ops.create_channel_for_influencer(
+                args.id, args.title2 or f"{name} Loots", args.about or "", role="broadcast",
+            )
+            return approval, broadcast
+        finally:
+            await telegram_ops.disconnect()
+
+    approval, broadcast = asyncio.run(_create_channels())
     print("Amazon approval channel:", approval)
-    # 2) Real / broadcast channel — full deals (Amazon native + others EarnKaro).
-    broadcast = asyncio.run(telegram_ops.create_channel_for_influencer(
-        args.id, args.title2 or f"{name} Loots", args.about or "", role="broadcast"))
     print("Real / broadcast channel:", broadcast)
 
 
@@ -207,8 +236,8 @@ def _cmd_add_bulk(args):  # pragma: no cover - side effect
     with open(args.csv, newline="") as f:
         for row in csv.DictReader(f):
             name = (row.get("name") or "").strip()
-            tag = (row.get("tag") or row.get("amazon_tag") or "").strip()
-            if not name or not tag:
+            tag = (row.get("tag") or row.get("amazon_tag") or config.AMAZON_ASSOCIATE_TAG).strip()
+            if not name:
                 continue
             db.add_influencer(name, tag, handle=(row.get("handle") or "").strip(),
                               use_dummy_sources=(row.get("dummy", "").lower() in ("1", "true", "yes")),
@@ -232,7 +261,11 @@ def _cmd_verify_earnkaro(args):  # pragma: no cover - network
 
 
 def _cmd_doctor(args):  # pragma: no cover - side effect
-    """One-shot health check: proves the whole setup is correctly wired."""
+    """Check selected local configuration and service health signals.
+
+    Passing these checks is not an end-to-end delivery or affiliate-commission
+    verification.
+    """
     db.init()
     import base64
     import json
@@ -240,19 +273,27 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
 
     checks = []
 
-    # 1) EarnKaro API key present
-    checks.append(("EarnKaro API key set", bool(config.EARNKARO_API_KEY)))
+    # Dashboard vault settings take precedence, matching the dispatch path.
+    ek_key = db.get_global_setting("earnkaro_api_key") or config.EARNKARO_API_KEY
+    ek_pubid = db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID
+    checks.append(("EarnKaro API credential configured", bool(ek_key)))
+    checks.append(("EarnKaro publisher ID configured", bool(ek_pubid)))
 
-    # 2) Publisher id consistency: JWT claim == .env == our known account 5478322
+    # If the credential is a JWT with an EarnKaro claim, compare it to the
+    # selected publisher ID without exposing the credential itself.
+    jwt_pub = None
     try:
-        parts = (config.EARNKARO_API_KEY or "").split(".")
-        pad = parts[1] + "=" * (-len(parts[1]) % 4)
-        claim = json.loads(base64.urlsafe_b64decode(pad))
-        jwt_pub = str(claim.get("earnkaro"))
+        parts = (ek_key or "").split(".")
+        if len(parts) >= 2:
+            pad = parts[1] + "=" * (-len(parts[1]) % 4)
+            claim = json.loads(base64.urlsafe_b64decode(pad))
+            if claim.get("earnkaro") is not None:
+                jwt_pub = str(claim["earnkaro"])
     except Exception:
-        jwt_pub = "?"
-    pub_ok = (jwt_pub == config.EARNKARO_PUBLISHER_ID == "5478322")
-    checks.append((f"Publisher id 5478322 (jwt={jwt_pub}, .env={config.EARNKARO_PUBLISHER_ID})", pub_ok))
+        pass
+    if jwt_pub is not None:
+        pub_ok = jwt_pub == str(ek_pubid)
+        checks.append((f"Publisher ID matches credential claim ({ek_pubid})", pub_ok))
 
     # 3) WhatsApp hub reachable
     try:
@@ -266,7 +307,7 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
     tg_ok = bool(config.TELEGRAM_API_ID and config.TELEGRAM_API_HASH and config.TELEGRAM_SESSION)
     checks.append(("Telegram creds set", tg_ok))
 
-    # 5) Database readable/writable
+    # 5) Database readable
     try:
         db.list_influencers()
         db_ok = True
@@ -274,12 +315,30 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
         db_ok = False
     checks.append(("Database OK", db_ok))
 
-    print("=== Influencer Hub doctor ===")
+    print("=== Influencer Hub configuration checks ===")
     for name, ok in checks:
         print(f"  [{'OK' if ok else 'XX'}] {name}")
     all_ok = all(o for _, o in checks)
-    print("\nVerdict:", "ALL GOOD ✅" if all_ok else "check the XX items above")
+    verdict = (
+        "selected checks passed (this is not an end-to-end delivery test)"
+        if all_ok else "check the XX items above"
+    )
+    print("\nVerdict:", verdict)
     return 0 if all_ok else 1
+
+
+def _cmd_amazon_items(args):  # pragma: no cover - requires configured Amazon credentials
+    """Fetch product details from the official Amazon Creators API."""
+    import json
+    from .amazon_creators import AmazonCreatorsAPI
+
+    async def _fetch():
+        client = AmazonCreatorsAPI()
+        return await client.get_items(args.asins)
+
+    result = asyncio.run(_fetch())
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -290,7 +349,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("add-influencer", help="register an influencer")
     a.add_argument("name")
-    a.add_argument("--tag", required=True, help="their Amazon associate tag, e.g. ravi099-21")
+    a.add_argument("--tag", default=config.AMAZON_ASSOCIATE_TAG,
+                   help=f"Amazon associate tag (default: {config.AMAZON_ASSOCIATE_TAG})")
     a.add_argument("--handle", default="")
     a.add_argument("--notes", default="")
     a.add_argument("--dummy", action="store_true", help="stage using dummy sources first")
@@ -341,7 +401,11 @@ def build_parser() -> argparse.ArgumentParser:
     ve.add_argument("--url", default="https://www.flipkart.com/p/itmEXAMPLE12345")
     ve.set_defaults(func=_cmd_verify_earnkaro)
 
-    d = sub.add_parser("doctor", help="one-shot health check of the whole setup")
+    amz = sub.add_parser("amazon-items", help="look up ASINs with Amazon Creators API")
+    amz.add_argument("asins", nargs="+", help="one to ten Amazon ASINs")
+    amz.set_defaults(func=_cmd_amazon_items)
+
+    d = sub.add_parser("doctor", help="check selected local configuration and service health")
     d.set_defaults(func=_cmd_doctor)
 
     sub.add_parser("status", help="overview of everything").set_defaults(func=_cmd_status)

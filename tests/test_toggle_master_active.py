@@ -3,6 +3,7 @@ from dashboard.app import app
 from influencer_hub import db
 
 def test_toggle_influencer_active_and_channel_status():
+    app.config.update(TESTING=True)
     db.init()
     db.migrate()
     client = app.test_client()

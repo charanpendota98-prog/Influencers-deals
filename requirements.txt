@@ -3,4 +3,5 @@ aiohttp>=3.9,<4
 telethon>=1.36,<2
 psutil>=5.9
 flask>=3.0
+gunicorn>=22,<24
 pytest>=8.0
