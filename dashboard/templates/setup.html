@@ -1,0 +1,477 @@
+{% extends "layout.html" %}
+{% block title %}Setup Center · Influencer Hub{% endblock %}
+{% block content %}
+<section class="setup-hero">
+  <div>
+    <p class="eyebrow">ADMINISTRATION · CONFIGURATION</p>
+    <h1>⚙️ Setup Center</h1>
+    <p class="hint">Profiles, affiliate routes, sources, credentials, and channel setup live here—separate from the operational dashboard.</p>
+  </div>
+  <a class="btn btn-secondary" href="{{ url_for('index') }}">← Back to dashboard</a>
+</section>
+
+{% if sources_added is not none %}
+  <div class="alert alert-success" role="status">Source catalog updated: {{ sources_added }} source{{ '' if sources_added == 1 else 's' }} added. Invite links were not checked or joined.</div>
+{% endif %}
+{% if imported is not none %}
+  <div class="alert alert-success" role="status">{{ imported }} creator profile{{ '' if imported == 1 else 's' }} imported.</div>
+{% endif %}
+{% if import_error %}
+  <div class="dashboard-alert" role="alert">No CSV data was provided. Select a CSV file and try again.</div>
+{% endif %}
+
+<section class="setup-shortcuts" aria-label="Setup shortcuts">
+  <a class="setup-shortcut" href="#quick-add-form"><span>👤 Creator onboarding</span><strong>Add or configure a creator</strong><span>Save their own Amazon tag, network switches, and destinations.</span></a>
+  <a class="setup-shortcut" href="{{ url_for('secret_vault_tab') }}"><span>🔐 Credentials &amp; sources</span><strong>Open the protected vault</strong><span>Manage EarnKaro/HYPD credentials and joined-source selectors.</span></a>
+  <a class="setup-shortcut" href="{{ url_for('onboard') }}"><span>✨ Guided flow</span><strong>Use guided onboarding</strong><span>Set up a profile and continue platform pairing as needed.</span></a>
+  <a class="setup-shortcut" href="#deal-simulator"><span>🧪 Safe preview</span><strong>Test routing without posting</strong><span>Preview Amazon, EarnKaro, and Meesho/HYPD decisions.</span></a>
+</section>
+
+<section class="card" style="margin-top:16px;">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div><h2>📡 Suggested source catalog</h2><p class="hint">Registering suggestions does not check invite links, join channels, or guarantee access. Only already-joined dialogs can be read.</p></div>
+    <form method="post" action="{{ url_for('seed_default_sources') }}" data-require-reauth>
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+      <button type="submit" class="btn btn-primary">Add missing suggestions</button>
+    </form>
+  </div>
+  <div class="setup-shortcuts">
+    <div class="dashboard-status"><strong>{{ sources|length }} configured sources</strong><p>{{ sources|selectattr('active', 'equalto', 1)|list|length }} active · manage sources in the protected vault</p></div>
+    <div class="dashboard-status"><strong>{{ influencers|length }} creator profiles</strong><p>Profile and channel changes require password confirmation.</p></div>
+  </div>
+</section>
+
+<!-- GLOBAL POST NAVIGATION BUTTON (UNIVERSAL SETTINGS BAR) -->
+<section class="card" style="border: 2px solid #6366f1; background: #0f172a; padding: 16px 20px; border-radius: 12px; margin-bottom: 20px; box-shadow:0 4px 20px rgba(99,102,241,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #1e293b; padding-bottom:12px; margin-bottom:14px;">
+    <div>
+      <h3 style="margin:0; font-size:17px; color:#c7d2fe; display:flex; align-items:center; gap:8px;">
+        🔘 Universal Post Navigation Button (Global Main Channel Linker)
+        <span style="font-size:11px; background:#4338ca; color:#e0e7ff; padding:2px 8px; border-radius:12px;">EVERY INFLUENCER / ALL POSTS</span>
+      </h3>
+      <p class="hint" style="margin:4px 0 0; font-size:12px; color:#94a3b8;">
+        Telegram లో ప్రతి post కింద inline button (ex: <b>Join Shpsy Loots ❤️ ↗️</b>) &amp; WhatsApp లో footer link automatically attach avthundi!
+      </p>
+    </div>
+    <div>
+      <span style="font-size:12px; font-weight:700; color: {{ '#4ade80' if settings.get('nav_button_enabled') == '1' else '#94a3b8' }};">
+        ● Global Status: {{ 'ACTIVE (Attached to All Posts)' if settings.get('nav_button_enabled') == '1' else 'OFF (Using Per-Influencer Settings)' }}
+      </span>
+    </div>
+  </div>
+
+  <form method="post" action="{{ url_for('update_global_settings') }}" style="display:grid; grid-template-columns: auto 1fr 1.5fr auto; gap:14px; align-items:center;" data-require-reauth>
+<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+    <label style="font-size: 13px; font-weight: 700; color: #a5b4fc; cursor: pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; background:#1e1b4b; padding:10px 14px; border-radius:8px; border:1px solid #4338ca;">
+      <input type="checkbox" name="nav_button_enabled" value="1" {{ 'checked' if settings.get('nav_button_enabled') == '1' else '' }} /> 🔘 <b>UNIVERSAL BUTTON ON</b>
+    </label>
+    <div>
+      <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px; font-weight:600;">Button Text / Label</label>
+      <input name="nav_button_text" value="{{ settings.get('nav_button_text', 'Join Shpsy Loots ❤️') }}" placeholder="Join Shpsy Loots ❤️" style="width:100%; font-size:13px; font-weight:bold; color:#f8fafc;" />
+    </div>
+    <div>
+      <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px; font-weight:600;">Main Channel Link or Username</label>
+      <input name="nav_button_url" value="{{ settings.get('nav_button_url', '') }}" placeholder="https://t.me/your_main_channel or https://t.me/+invite_link" style="width:100%; font-size:13px; font-family:monospace;" />
+    </div>
+    <div style="padding-top:16px;">
+      <button type="submit" style="background:#4f46e5; color:white; padding:10px 20px; font-weight:700; border-radius:8px; border:none; cursor:pointer; font-size:13px; box-shadow:0 2px 10px rgba(79,70,229,0.4); white-space:nowrap;">
+        💾 Save Universal Button
+      </button>
+    </div>
+  </form>
+</section>
+
+<!-- SEARCH & BULK TOOLBAR -->
+<section class="card" style="border: 1px solid #1e3a8a; background: #0f172a; padding: 14px 20px; border-radius: 10px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+    <form method="get" action="{{ url_for('setup') }}" style="display: flex; gap: 10px; align-items: center; flex:1; min-width:300px;">
+      <span style="font-size: 18px;">🔍</span>
+      <input name="q" value="{{ search_query or '' }}" placeholder="Search by Phone Number, Name, Insta ID, Amazon Tag, or ID..." style="flex: 1; padding: 10px 14px;" />
+      <button type="submit" style="background: #2563eb; color: white;">Search</button>
+      {% if search_query %}
+        <a class="btn" style="background: #475569; color: white;" href="{{ url_for('setup') }}">Clear</a>
+      {% endif %}
+    </form>
+    <div>
+      <details style="display:inline-block; position:relative;">
+        <summary style="cursor:pointer; background:#4f46e5; color:white; padding:9px 16px; border-radius:8px; font-weight:700; font-size:13px; list-style:none;">
+          📂 Bulk Import 1000+ CSV
+        </summary>
+        <div style="position:absolute; right:0; margin-top:8px; z-index:100; background:#1e1b4b; border:1px solid #4338ca; padding:16px; border-radius:8px; width:340px; box-shadow:0 10px 25px rgba(0,0,0,0.5);">
+          <h4 style="margin:0 0 8px; color:#c7d2fe;">Upload CSV (1000+ Scale)</h4>
+          <p class="hint" style="font-size:11px; margin-bottom:10px;">Columns: <code>name,tag,phone,insta,approval_tg,broadcast_tg,whatsapp_id,allow_amazon,allow_earnkaro,allow_hypd,only_amazon,hypd_store_id</code></p>
+          <p class="hint" style="font-size:10px; margin-bottom:10px;">Network columns accept 1/0 and are independent. Amazon uses its tag; EarnKaro handles supported non-Amazon merchants except Meesho; HYPD is reserved for Meesho. `only_amazon=1` temporarily suppresses other routes without clearing switches.</p>
+          <form method="post" action="{{ url_for('bulk_import') }}" enctype="multipart/form-data" data-require-reauth>
+<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+            <input type="file" name="csv_file" accept=".csv" style="width:100%; font-size:12px; margin-bottom:10px;" />
+            <button type="submit" style="width:100%; background:#10b981; font-weight:700;">🚀 Import Now</button>
+          </form>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ➕ ADD NEW INFLUENCER FORM (INSTANT 1-CLICK) -->
+<section id="quick-add-form" class="card" style="border: 2px solid #3b82f6; background: #131b2e; border-radius: 12px; box-shadow:0 8px 30px rgba(0,0,0,0.4);">
+  <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #283759; padding-bottom:12px; margin-bottom:14px;">
+    <div>
+      <h2 style="color: #60a5fa; margin: 0; font-size: 19px; display:flex; align-items:center; gap:8px;">
+        ➕ Quick Add Influencer &amp; Channels
+        <span style="background:#065f46; color:#a7f3d0; font-size:11px; padding:2px 8px; border-radius:4px;">NO EXCEL NEEDED</span>
+      </h2>
+      <p class="hint" style="margin:4px 0 0;">Save the influencer profile, affiliate-network choices, and any destination details provided. Account setup and QR pairing may still be required.</p>
+    </div>
+    <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:4px 10px; border-radius:6px; font-weight:700;">PROFILE + ROUTING SETUP</span>
+  </div>
+
+  <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;" data-require-reauth>
+<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Influencer Name *</label>
+      <input id="name-input" name="name" placeholder="e.g. Ramesh Deals" required style="width: 100%; font-size:14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📞 Mobile / WhatsApp Number (optional)</label>
+      <input name="phone_number" placeholder="e.g. 919876543210" style="width: 100%; font-family: monospace; font-size:14px;" />
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Creator's Amazon Associate Tag *</label>
+      <input name="tag" value="{{ default_amazon_tag }}" placeholder="e.g. creatorname-21" required maxlength="64" autocomplete="off" style="width: 100%; font-family: monospace; font-size:14px;" />
+      <span class="hint" style="font-size:10px;">Enter the creator's own tag. The configured default is used only when no tag is supplied; the tag is added to Amazon URLs as `?tag=...`.</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">📸 Instagram ID</label>
+      <input name="insta_id" placeholder="@instagram_handle" style="width: 100%;" />
+    </div>
+
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#6ee7b7;">🛡️ 1) APPROVAL CHANNEL (Telegram)</label>
+      <input name="approval_tg" placeholder="@approval_channel or link" style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:10px;">Amazon-only native-link preview with #ad; approval is not guaranteed.</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#93c5fd;">📢 2) MAIN CHANNEL (Telegram Broadcast)</label>
+      <input name="broadcast_tg" placeholder="@main_channel or link" style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:10px;">Deals routed using this profile's selected networks and tags</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde68a;">💬 3) WHATSAPP CHANNEL (Invite / JID)</label>
+      <input name="whatsapp_id" placeholder="https://chat.whatsapp.com/... or 120363xxx" style="width: 100%;" />
+      <span class="hint" style="font-size:10px;">Paste invite link or phone chat JID</span>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Deal Budget Filter</label>
+      <select name="price_filter" style="width: 100%;">
+        <option value="all" selected>All Deals (No Price Limit)</option>
+        <option value="under_99">🔥 Under ₹99 Only</option>
+        <option value="under_199">⚡ Under ₹199 Only</option>
+        <option value="under_499">🎁 Under ₹499 Only</option>
+        <option value="under_999">🏷️ Under ₹999 Only</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Tokens (Optional)</label>
+      <input name="bitly_api_key" placeholder="Key1, Key2..." style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:11px;">If provided, multi-links will shorten cleanly</span>
+    </div>
+
+    <!-- 16 COMPREHENSIVE CATEGORIES MULTI-CHECKBOX GRID -->
+    <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <label style="font-size: 13px; font-weight: 700; color:#a78bfa; margin:0;">🛍️ Allowed Deal Categories (Select All or Required)</label>
+        <div style="font-size:11px;">
+          <a href="javascript:void(0)" onclick="document.querySelectorAll('input[name=categories]').forEach(el => el.checked=true);" style="color:#34d399; font-weight:bold; text-decoration:underline; margin-right:8px;">⚡ SELECT ALL (No Restrictions)</a>
+          <a href="javascript:void(0)" onclick="document.querySelectorAll('input[name=categories]').forEach(el => el.checked=false);" style="color:#94a3b8; text-decoration:underline;">Clear All</a>
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px;">
+        <label style="color:#fde047; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px; font-weight:bold;">
+          <input type="checkbox" name="categories" value="all" checked onchange="if(this.checked){document.querySelectorAll('input[name=categories]:not([value=all])').forEach(el=>el.checked=true);}" /> 🌟 ALL CATEGORIES (Any Loot)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="clothing" checked /> 👗 Fashion &amp; Clothing
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="electronics" checked /> 📱 Electronics &amp; Gadgets
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="footwear" checked /> 👟 Footwear &amp; Shoes
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="home" checked /> 🏠 Home &amp; Kitchen
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="daily" checked /> 🧴 Daily Essentials &amp; Grocery
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="beauty" checked /> 💄 Beauty &amp; Personal Care
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="appliances" checked /> ❄️ Appliances &amp; AC/Fridge
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="baby" checked /> 👶 Baby Products &amp; Toys
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="sports" checked /> 🏋️ Sports &amp; Fitness
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="travel_luggage" checked /> 🧳 Luggage &amp; Bags
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="jewellery_accessories" checked /> 💍 Jewellery &amp; Watches
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="gaming" checked /> 🎮 Gaming &amp; Accessories
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="recharge_freebies" checked /> 🎁 Freebies, Cashback &amp; Coupons
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="books_stationery" checked /> 📚 Books &amp; Stationery
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="automotive" checked /> 🚗 Automotive &amp; Bike
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="categories" value="pet_supplies" checked /> 🐶 Pet Food &amp; Supplies
+        </label>
+      </div>
+    </div>
+
+    <!-- INDIAN TIMINGS SESSIONS & BREAKS -->
+    <div style="grid-column: 1 / -1; background:#0b1120; border:1px solid #1e293b; padding:14px; border-radius:8px;">
+      <label style="font-size: 13px; font-weight: 700; color:#34d399; display: block; margin-bottom: 8px;">⏰ Indian Timings (IST Active Posting Sessions &amp; Night Sleep Breaks)</label>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px;">
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="06:00-02:00" /> 🌙 <b>Next-Day Late Session</b> (6:00 AM – 2:00 AM Next Day)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="06:00-09:00" /> 🌅 <b>Morning Prime</b> (6:00 AM – 9:00 AM)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="11:00-14:00" /> ☀️ <b>Mid-Day Loot</b> (11:00 AM – 2:00 PM)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="18:00-23:00" /> 🌆 <b>Evening Rush</b> (6:00 PM – 11:00 PM)
+        </label>
+        <label style="color:#e2e8f0; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="posting_schedule" value="20:00-00:00" /> 🌙 <b>Night Loot</b> (8:00 PM – 12:00 Midnight)
+        </label>
+      </div>
+      <div style="margin-top:8px;">
+        <input name="custom_schedule" placeholder="Or custom windows: e.g. 06:00-02:00 (Hold/Sleep from 2AM to 6AM)" style="width:100%; font-size:12px;" />
+        <span class="hint" style="font-size:10px;">Outside active hours, deals are skipped cleanly so queue never clusters! Empty = 24/7.</span>
+      </div>
+    </div>
+
+    <!-- CUSTOM NAVIGATION BUTTON OPTION IN QUICK ADD -->
+    <div style="grid-column: 1 / -1; background:#1e1b4b; border:1px solid #4338ca; padding:14px; border-radius:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <label style="font-size: 13px; font-weight: 700; color:#c7d2fe; margin:0; display:flex; align-items:center; gap:8px;">
+          🔘 <b>Telegram / WhatsApp Post Navigation Button</b> (e.g. Join Shpsy Loots ❤️)
+        </label>
+        <label style="font-size:12px; color:#a5b4fc; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="custom_button_enabled" value="1" /> Enable Custom Button on Posts
+        </label>
+      </div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button Title / Label</label>
+          <input name="custom_button_text" value="Join Shpsy Loots ❤️" placeholder="Join Shpsy Loots ❤️" style="width:100%; font-size:12px;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Target Channel Invite Link / Username</label>
+          <input name="custom_button_url" placeholder="https://t.me/your_main_channel or @channel" style="width:100%; font-size:12px; font-family:monospace;" />
+        </div>
+      </div>
+    </div>
+
+    <!-- TOGGLE SWITCHES & SAVE -->
+    <div style="grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; background: #0d1322; padding: 12px 16px; border-radius: 8px; border: 1px solid #283759; margin-top: 4px; flex-wrap:wrap; gap:10px;">
+      <div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
+        <label style="font-size: 13px; font-weight: 600; color: #86efac; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="allow_amazon" value="1" checked /> 📦 <b>AMAZON ON</b> (tag Amazon links)
+        </label>
+        <label style="font-size: 13px; font-weight: 600; color: #fde68a; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="allow_earnkaro" value="1" checked /> 💰 <b>EARNKARO ON</b> (supported non-Amazon merchants)
+        </label>
+        <label style="font-size: 13px; font-weight: 600; color: #f472b6; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="allow_hypd" value="1" checked /> 🛍️ <b>HYPD ON</b> (Meesho route)
+        </label>
+        <label style="font-size:12px; color:#fbcfe8; display:flex; align-items:center; gap:6px;">
+          HYPD Store ID
+          <input name="hypd_store_id" value="{{ current_hypd_store }}" placeholder="{{ current_hypd_store }}" style="width:90px; font-family:monospace;" />
+        </label>
+        <small style="color:#c084fc; width:100%;">HYPD is reserved for Meesho. Existing HYPD affiliate links are retagged; raw Meesho URLs stay unchanged until HYPD's official generator is configured.</small>
+        <small style="color:#93c5fd; width:100%;">Amazon uses its own Associates tag; EarnKaro handles supported non-Amazon merchants except Meesho; HYPD is for Meesho. Switches work independently. Force Amazon-only temporarily suppresses other routes.</small>
+        <label style="font-size: 13px; font-weight: 600; color: #93c5fd; cursor: pointer; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="only_amazon" value="1" /> 🛡️ <b>FORCE AMAZON-ONLY</b> (overrides other switches)
+        </label>
+      </div>
+      <button type="submit" style="background: #2563eb; color: white; padding: 12px 32px; font-weight: 800; border-radius: 8px; cursor: pointer; border: none; font-size:15px; box-shadow:0 4px 14px rgba(37,99,235,0.4);">⚡ Save &amp; Start Live</button>
+    </div>
+  </form>
+</section>
+
+
+<section id="creator-directory" class="card">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div><h2>👥 Configured creators &amp; channels</h2><p class="hint">Saved profiles are listed here rather than on the dashboard home. Open a profile to manage its channels and network settings.</p></div>
+    <form method="get" action="{{ url_for('setup') }}" class="search-form">
+      <label class="sr-only" for="setup-search">Search creators</label>
+      <input id="setup-search" name="q" value="{{ search_query or '' }}" placeholder="Name, phone, handle, or tag" />
+      <button type="submit" class="btn btn-secondary">Search</button>
+    </form>
+  </div>
+  {% if influencers %}
+  <div class="creator-directory">
+    {% for creator in influencers %}
+      <a class="creator-directory-card" href="{{ url_for('influencer_detail', inf_id=creator.id) }}">
+        <span class="creator-avatar" aria-hidden="true">{{ (creator.name or 'C')[0]|upper }}</span>
+        <span class="creator-directory-info"><strong>{{ creator.name }}</strong><small>{{ creator.amazon_tag or 'Amazon tag not set' }}</small></span>
+        <span class="creator-state {{ 'is-active' if creator.active else 'is-paused' }}">{{ 'Active' if creator.active else 'Paused' }}</span>
+        <span aria-hidden="true">›</span>
+      </a>
+    {% endfor %}
+  </div>
+  {% else %}
+    <p class="empty-state">No profiles yet. Add the first creator above or use guided onboarding.</p>
+  {% endif %}
+</section>
+
+<!-- 🧪 REAL-TIME INTERACTIVE DEAL CONVERSION SIMULATOR & TESTER -->
+<section class="card" style="border: 2px solid #8b5cf6; background: #0f1123; padding: 20px; border-radius: 12px; margin-top: 24px; box-shadow:0 8px 30px rgba(139,92,246,0.25);">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #2e1065; padding-bottom:12px; margin-bottom:16px;">
+    <div>
+      <h3 style="margin:0; font-size:18px; color:#c4b5fd; display:flex; align-items:center; gap:8px;">
+        🧪 Live Deal Conversion Simulator &amp; Tester
+        <span style="font-size:11px; background:#4c1d95; color:#ede9fe; padding:2px 10px; border-radius:12px; font-weight:700;">INSTANT PREVIEW</span>
+      </h3>
+      <p class="hint" style="margin:4px 0 0; font-size:12px; color:#a78bfa;">
+        Deal text paste చేసి networks select చేయండి. Amazon gets its creator tag; EarnKaro converts supported merchants except Meesho; HYPD is reserved for Meesho. Raw Meesho stays unchanged until HYPD's official generator is configured. No channel post is sent.
+      </p>
+    </div>
+    <span style="font-size:12px; color:#34d399; font-weight:bold;">● Dry run only · No channel posts are sent</span>
+  </div>
+
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+    <div>
+      <label style="font-size:12px; font-weight:700; color:#cbd5e1; display:block; margin-bottom:6px;">
+        📥 Raw Deal Text (From Any Source Channel):
+      </label>
+      <label style="font-size:11px; color:#94a3b8; display:block; margin:8px 0 4px;">Preview using an influencer profile (profile defaults; channel overrides may differ):</label>
+      <select id="sim-profile" onchange="loadSimulatorProfile()" style="width:100%; margin-bottom:8px;">
+        <option value="" data-tag="{{ default_amazon_tag }}" data-hypd="{{ current_hypd_store }}" data-amazon="1" data-earnkaro="1" data-hypd-on="1" data-only-amazon="0">Hub defaults</option>
+        {% for preview_inf in influencers %}
+          <option value="{{ preview_inf.id }}"
+                  data-tag="{{ preview_inf.amazon_tag }}"
+                  data-hypd="{{ preview_inf.hypd_store_id or current_hypd_store }}"
+                  data-amazon="{{ 1 if preview_inf.allow_amazon else 0 }}"
+                  data-earnkaro="{{ 1 if preview_inf.allow_earnkaro else 0 }}"
+                  data-hypd-on="{{ 1 if preview_inf.allow_hypd else 0 }}"
+                  data-only-amazon="{{ 1 if preview_inf.only_amazon else 0 }}">#{{ preview_inf.id }} · {{ preview_inf.name }} · {{ preview_inf.amazon_tag }}</option>
+        {% endfor %}
+      </select>
+      <textarea id="sim-input" rows="7" style="width:100%; font-family:monospace; font-size:12px; padding:10px; background:#181829; border:1px solid #3b4261; color:#f8fafc; border-radius:8px;">🔥 Super Loot Deals Today!
+1. Meesho Saree at ₹199: https://hypd.store/88888/afflink/daol5bac45l0tc0oo5rg
+2. Amazon Soundbar at ₹1,499: https://www.amazon.in/dp/B08XYZ1234?tag=competitor-21
+3. Flipkart Shoes at ₹499: https://www.flipkart.com/shoes/p/itm123456?affid=lehlah&affextparam1=test</textarea>
+
+      <div style="display:flex; gap:12px; margin-top:10px; align-items:center;">
+        <div>
+          <label style="font-size:11px; color:#94a3b8; display:block;">Amazon Tag:</label>
+          <input id="sim-tag" value="{{ default_amazon_tag }}" style="font-size:12px; padding:4px 8px; width:120px; font-family:monospace;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#94a3b8; display:block;">HYPD Store ID:</label>
+          <input id="sim-hypd" value="{{ current_hypd_store }}" style="font-size:12px; padding:4px 8px; width:90px; font-family:monospace;" />
+        </div>
+        <div style="flex:1; text-align:right; padding-top:14px;">
+          <button type="button" onclick="runLiveSimulator()" style="background:#8b5cf6; color:white; padding:9px 24px; font-weight:800; border-radius:8px; border:none; cursor:pointer; font-size:13px; box-shadow:0 4px 14px rgba(139,92,246,0.4);">
+            ⚡ Test Convert Now
+          </button>
+        </div>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:14px; margin-top:12px; padding:10px; background:#0b1120; border:1px solid #283759; border-radius:8px;">
+        <label style="font-size:12px; color:#86efac; display:flex; gap:6px; align-items:center;"><input id="sim-allow-amazon" type="checkbox" checked /> Amazon ON (creator tag)</label>
+        <label style="font-size:12px; color:#fde68a; display:flex; gap:6px; align-items:center;"><input id="sim-allow-earnkaro" type="checkbox" checked /> EarnKaro ON (non-Amazon, non-Meesho)</label>
+        <label style="font-size:12px; color:#fbcfe8; display:flex; gap:6px; align-items:center;"><input id="sim-allow-hypd" type="checkbox" checked /> HYPD ON (Meesho)</label>
+        <label style="font-size:12px; color:#93c5fd; display:flex; gap:6px; align-items:center;"><input id="sim-only-amazon" type="checkbox" /> Only Amazon override</label>
+      </div>
+    </div>
+
+    <div>
+      <label style="font-size:12px; font-weight:700; color:#34d399; display:block; margin-bottom:6px;">
+        📤 Converted Output (What Followers Receive):
+      </label>
+      <div id="sim-output" style="height:175px; overflow-y:auto; font-family:monospace; font-size:12px; padding:12px; background:#0a0d18; border:1px solid #10b981; color:#a7f3d0; border-radius:8px; white-space:pre-wrap;">Click '⚡ Test Convert Now' to see instant transformation...</div>
+      <div id="sim-links-detected" style="margin-top:8px; font-size:11px; color:#93c5fd;"></div>
+    </div>
+  </div>
+</section>
+
+<script>
+function loadSimulatorProfile() {
+  const selected = document.getElementById('sim-profile').selectedOptions[0];
+  if (!selected) return;
+  document.getElementById('sim-tag').value = selected.dataset.tag || '';
+  document.getElementById('sim-hypd').value = selected.dataset.hypd || '';
+  document.getElementById('sim-allow-amazon').checked = selected.dataset.amazon === '1';
+  document.getElementById('sim-allow-earnkaro').checked = selected.dataset.earnkaro === '1';
+  document.getElementById('sim-allow-hypd').checked = selected.dataset.hypdOn === '1';
+  document.getElementById('sim-only-amazon').checked = selected.dataset.onlyAmazon === '1';
+}
+
+function runLiveSimulator() {
+  const text = document.getElementById('sim-input').value;
+  const tag = document.getElementById('sim-tag').value;
+  const hypd = document.getElementById('sim-hypd').value;
+  const outDiv = document.getElementById('sim-output');
+  const linksDiv = document.getElementById('sim-links-detected');
+  outDiv.textContent = 'Running affiliate-routing preview… no channel post will be sent.';
+  linksDiv.replaceChildren();
+
+  const formData = new FormData();
+  formData.append('sample_text', text);
+  formData.append('amazon_tag', tag);
+  formData.append('hypd_store_id', hypd);
+  formData.append('allow_amazon', document.getElementById('sim-allow-amazon').checked ? '1' : '0');
+  formData.append('allow_earnkaro', document.getElementById('sim-allow-earnkaro').checked ? '1' : '0');
+  formData.append('allow_hypd', document.getElementById('sim-allow-hypd').checked ? '1' : '0');
+  formData.append('only_amazon', document.getElementById('sim-only-amazon').checked ? '1' : '0');
+  formData.append('_csrf_token', document.querySelector('meta[name="csrf-token"]').content);
+
+  fetch('/api/test-render-deal', { method: 'POST', body: formData })
+    .then(response => {
+      if (!response.ok) throw new Error(`Preview request failed (${response.status})`);
+      return response.json();
+    })
+    .then(data => {
+      if (!data.ok) throw new Error(data.error || 'Preview failed');
+      outDiv.textContent = data.rendered || '(No eligible content remains with these settings.)';
+
+      const title = document.createElement('b');
+      title.textContent = 'Detected links: ';
+      linksDiv.appendChild(title);
+      for (const [url, kind] of Object.entries(data.detected_links || {})) {
+        const badge = document.createElement('span');
+        badge.textContent = `${String(kind).toUpperCase()}: ${url.substring(0, 70)}${url.length > 70 ? '…' : ''}`;
+        badge.style.cssText = 'display:inline-block;background:#1e293b;padding:3px 6px;border-radius:4px;margin:2px 5px 2px 0;';
+        linksDiv.appendChild(badge);
+      }
+      for (const warning of data.warnings || []) {
+        const note = document.createElement('div');
+        note.textContent = `⚠ ${warning}`;
+        note.style.cssText = 'margin-top:6px;color:#fbbf24;';
+        linksDiv.appendChild(note);
+      }
+    })
+    .catch(error => {
+      outDiv.textContent = `Preview error: ${error.message || error}`;
+    });
+}
+</script>
+
+{% endblock %}

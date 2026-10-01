@@ -1,10 +1,10 @@
 {% extends "layout.html" %}
-{% block title %}Onboard Influencer (3-Channel Setup){% endblock %}
+{% block title %}Onboard Influencer{% endblock %}
 {% block content %}
 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
   <div>
-    <h1 style="margin:0; font-size:24px;">🤝 Easy 1-Click 3-Channel Influencer Onboarding</h1>
-    <p class="hint" style="margin-top:4px;">Multi-Influencer Automated Setup · Amazon Approval + Main Broadcast + Dedicated WhatsApp</p>
+    <h1 style="margin:0; font-size:24px;">🤝 Influencer Onboarding</h1>
+    <p class="hint" style="margin-top:4px;">Save profile and routing settings; create Telegram destinations and start WhatsApp QR pairing for the platforms you select.</p>
   </div>
   <a class="btn" href="{{ url_for('index') }}" style="background:#334155; color:white; padding:8px 14px; border-radius:6px; text-decoration:none;">← Back to Dashboard</a>
 </div>
@@ -15,30 +15,32 @@
 
 {% if result and result.inf_id %}
   <div class="card" style="border: 2px solid #22c55e; background:#0c1a14;">
-    <h2 style="color:#4ade80; margin-top:0;">✅ {{ result.name }} Onboarded Successfully (ID #{{ result.inf_id }})</h2>
+    <h2 style="color:#4ade80; margin-top:0;">✅ {{ result.name }} Profile Saved (ID #{{ result.inf_id }})</h2>
     <ul style="color:#cbd5e1; line-height:1.7;">{% for m in result.msgs %}<li><b>{{ m }}</b></li>{% endfor %}</ul>
     <div style="margin-top:20px; display:flex; gap:12px; flex-wrap:wrap;">
-      <a class="btn" href="{{ url_for('influencer_detail', inf_id=result.inf_id) }}" style="padding: 10px 22px; background: #2563eb; color: white; border-radius: 8px; font-weight:bold; text-decoration: none;">🚀 Open Influencer Hub &amp; Connect WhatsApp QR →</a>
+      <a class="btn" href="{{ url_for('influencer_detail', inf_id=result.inf_id) }}" style="padding: 10px 22px; background: #2563eb; color: white; border-radius: 8px; font-weight:bold; text-decoration: none;">🚀 Open Profile &amp; Continue Setup →</a>
       <a class="btn" href="{{ url_for('onboard') }}" style="padding: 10px 18px; background: #334155; color: white; border-radius: 8px; text-decoration: none;">➕ Onboard Another Influencer</a>
     </div>
   </div>
 {% else %}
   <section class="card" style="border: 2px solid #3b82f6; background: #131b2e; border-radius: 12px;">
     <h2 style="color: #60a5fa; margin-top:0; font-size:18px;">✨ Influencer Details &amp; Channel Preferences</h2>
-    <p class="hint">Fill details below and click 'Auto-Setup'. All channels, switches and pacing rules will be generated instantly:</p>
+    <p class="hint">Save the profile and selected network switches. Telegram channels are created when Telegram is enabled; WhatsApp starts a QR session when enabled. Connect or create WhatsApp destinations after pairing. External platform access is required.</p>
     
-    <form method="post" action="{{ url_for('onboard') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 14px;">
+    <form method="post" action="{{ url_for('onboard') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 14px;" data-require-reauth>
+<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
       <div>
         <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Influencer Name *</label>
         <input name="name" placeholder="e.g. Ramesh Deals" required style="width: 100%; font-size:14px;" />
       </div>
       <div>
-        <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📞 Mobile / WhatsApp Number *</label>
-        <input name="whatsapp" placeholder="e.g. 919876543210" required style="width: 100%; font-family: monospace; font-size:14px;" />
+        <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📞 Mobile / WhatsApp Contact (optional)</label>
+        <input name="whatsapp" placeholder="e.g. 919876543210" style="width: 100%; font-family: monospace; font-size:14px;" />
       </div>
       <div>
-        <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Amazon Associate Tag *</label>
-        <input name="tag" placeholder="e.g. ramesh-21" required style="width: 100%; font-family: monospace; font-size:14px;" />
+        <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Amazon Associate Tracking Tag *</label>
+        <input name="tag" value="{{ default_amazon_tag }}" placeholder="e.g. creatorname-21" required maxlength="64" autocomplete="off" style="width: 100%; font-family: monospace; font-size:14px;" />
+        <span class="hint" style="font-size:10px;">Enter this creator's own tag. The configured default is only a fallback; the saved tag is added to Amazon URLs as `?tag=...`.</span>
       </div>
       <div>
         <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">📸 Instagram Handle</label>
@@ -48,15 +50,23 @@
       <!-- SWITCHES -->
       <div style="grid-column: 1 / -1; display:flex; gap:16px; flex-wrap:wrap; background:#0d1322; padding:12px 16px; border-radius:8px; border:1px solid #1e293b; align-items:center;">
         <label style="color:#86efac; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" name="allow_amazon" value="1" checked /> 📦 <b>Amazon ON</b> (Amazon Deals)
+          <input type="checkbox" name="allow_amazon" value="1" checked /> 📦 <b>Amazon ON</b> (creator tag)
         </label>
         <label style="color:#fde68a; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" name="allow_earnkaro" value="1" checked /> 💰 <b>EarnKaro ON</b> (Flipkart/Myntra Commission)
+          <input type="checkbox" name="allow_earnkaro" value="1" checked /> 💰 <b>EarnKaro ON</b> (supported non-Amazon merchants)
         </label>
         <label style="color:#f472b6; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" name="allow_hypd" value="1" checked /> 🛍️ <b>HYPD ON</b> (Meesho Deals)
+          <input type="checkbox" name="allow_hypd" value="1" checked /> 🛍️ <b>HYPD ON</b> (Meesho route)
         </label>
-        <input type="hidden" name="hypd_store_id" value="93944" />
+        <label style="color:#fbcfe8; font-size:12px; display:flex; align-items:center; gap:6px;">
+          HYPD Store ID
+          <input name="hypd_store_id" value="{{ default_hypd_store }}" placeholder="{{ default_hypd_store }}" style="width:95px; font-family:monospace;" />
+        </label>
+        <small style="color:#c084fc; width:100%;">HYPD is reserved for Meesho. Existing HYPD affiliate links are retagged; raw Meesho URLs stay unchanged until HYPD's official generator is configured.</small>
+        <small style="color:#93c5fd; width:100%;">Amazon uses its Associates tag; EarnKaro handles supported non-Amazon merchants except Meesho; HYPD is reserved for Meesho. Switches are independent. Only Amazon temporarily suppresses other routes.</small>
+        <label style="color:#93c5fd; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" name="only_amazon" value="1" /> 🛡️ <b>Only Amazon</b>
+        </label>
         <label style="color:#93c5fd; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px;">
           <input type="checkbox" name="tg" checked /> 📢 <b>Telegram Auto-Setup</b>
         </label>
@@ -66,7 +76,7 @@
       </div>
 
       <div style="grid-column: 1 / -1; display:flex; justify-content:flex-end;">
-        <button type="submit" style="background: #16a34a; color: white; padding: 12px 32px; font-weight: 800; border-radius: 8px; cursor: pointer; border: none; font-size:15px; box-shadow:0 4px 14px rgba(22,163,74,0.4);">⚡ 1-Click Auto Setup (3 Channels)</button>
+        <button type="submit" style="background: #16a34a; color: white; padding: 12px 32px; font-weight: 800; border-radius: 8px; cursor: pointer; border: none; font-size:15px; box-shadow:0 4px 14px rgba(22,163,74,0.4);">⚡ Save &amp; Create Selected Destinations</button>
       </div>
     </form>
   </section>

@@ -6,10 +6,14 @@ sense (e.g. upsert by natural key).
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import parse_qs, parse_qsl, urlparse
 
 from . import config
 
@@ -83,23 +87,71 @@ CREATE TABLE IF NOT EXISTS global_settings (
     val   TEXT NOT NULL DEFAULT ''
 );
 
+-- Durable per-dialog cursor for the continuous worker. A cursor advances only
+-- after a message has been successfully handled (or intentionally filtered).
+CREATE TABLE IF NOT EXISTS worker_offsets (
+    source_key       TEXT PRIMARY KEY,
+    last_message_id  INTEGER NOT NULL DEFAULT 0,
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- First-party, auditable Amazon redirects. The short public URL still carries
+-- the creator's Associates tag; targets are restricted in the redirect route.
+CREATE TABLE IF NOT EXISTS amazon_short_links (
+    code          TEXT PRIMARY KEY,
+    target_url    TEXT NOT NULL UNIQUE,
+    associate_tag TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- First-party vanity redirects for valid HYPD affiliate URLs. The stored
+-- destination is restricted to hypd.store and revalidated before redirect.
+CREATE TABLE IF NOT EXISTS hypd_short_links (
+    code          TEXT PRIMARY KEY,
+    target_url    TEXT NOT NULL UNIQUE,
+    store_id      TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Preserve existing LehLah/AppsFlyer attribution on Meesho product URLs.
+CREATE TABLE IF NOT EXISTS lehlah_short_links (
+    code          TEXT PRIMARY KEY,
+    target_url    TEXT NOT NULL UNIQUE,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_channels_influencer ON channels(influencer_id);
 CREATE INDEX IF NOT EXISTS idx_posts_sig ON posts(deal_sig, influencer_id);
 CREATE INDEX IF NOT EXISTS idx_wa_influencer ON wa_sessions(influencer_id);
 """
 
 
+def _as_bool(value: Any, default: bool = False, unrestricted: bool = False) -> bool:
+    """Normalize form/env/database boolean-like values without truthy-string bugs."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "default"}:
+            return default
+        if normalized in {"all", "any", "unrestricted", "*", "no_filter"}:
+            return unrestricted
+        if normalized in {"1", "true", "yes", "on", "enabled", "active"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", "none", "null"}:
+            return False
+    return bool(value)
+
+
 def _connect() -> sqlite3.Connection:
     Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(config.DB_PATH), timeout=30.0)
     con.row_factory = sqlite3.Row
-    try:
-        con.execute("PRAGMA foreign_keys = ON")
-        con.execute("PRAGMA journal_mode = WAL")
-        con.execute("PRAGMA busy_timeout = 30000")
-        con.execute("PRAGMA synchronous = NORMAL")
-    except Exception:
-        pass
+    # busy_timeout and synchronous are connection-local; WAL mode is enabled
+    # once by init(), avoiding a journal-mode lock on every dashboard request.
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA busy_timeout = 30000")
+    con.execute("PRAGMA synchronous = NORMAL")
     return con
 
 
@@ -107,6 +159,9 @@ def init() -> None:
     """Create the schema (idempotent). Call once at startup."""
     con = _connect()
     try:
+        # WAL permits readers in the Flask UI while the worker records posts.
+        # Apply it during initialization only, not on every short-lived connection.
+        con.execute("PRAGMA journal_mode = WAL")
         con.executescript(Schema)
         con.commit()
     finally:
@@ -139,7 +194,14 @@ def migrate() -> None:
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in inf_cols:
-                con.execute(f"ALTER TABLE influencers ADD COLUMN {col} {ddl}")
+                try:
+                    con.execute(f"ALTER TABLE influencers ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    # Two app processes may initialize the same DB at once.
+                    # Treat only the race where another process added this exact
+                    # column as success; surface every other migration failure.
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
         ch_cols = {r["name"] for r in con.execute("PRAGMA table_info(channels)")}
         for col, ddl in (
@@ -162,11 +224,19 @@ def migrate() -> None:
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
-                con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
+                try:
+                    con.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
         posts_cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
         if "deal_text" not in posts_cols:
-            con.execute("ALTER TABLE posts ADD COLUMN deal_text TEXT NOT NULL DEFAULT ''")
+            try:
+                con.execute("ALTER TABLE posts ADD COLUMN deal_text TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
         con.commit()
     finally:
@@ -179,7 +249,8 @@ def _now() -> str:
 
 # ----------------------------- influencers -----------------------------
 
-def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = "",
+def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
+                   handle: str = "", notes: str = "",
                    use_dummy_sources: bool = False,
                    telegram_enabled: bool = True, whatsapp_enabled: bool = True,
                    insta_id: str = "", phone_number: str = "",
@@ -187,19 +258,31 @@ def add_influencer(name: str, amazon_tag: str, handle: str = "", notes: str = ""
                    bitly_api_key: str = "", categories: str = "",
                    posting_schedule: str = "", only_amazon: bool = False,
                    allow_amazon: bool = True, allow_earnkaro: bool = True,
-                   allow_hypd: bool = True, hypd_store_id: str = "93944") -> int:
+                   allow_hypd: bool = True, hypd_store_id: str | None = None) -> int:
     con = _connect()
     try:
+        global_hypd = con.execute(
+            "SELECT val FROM global_settings WHERE key='hypd_store_id'"
+        ).fetchone()
+        effective_hypd_store_id = (
+            str(hypd_store_id or "").strip()
+            or (str(global_hypd["val"] or "").strip() if global_hypd else "")
+            or config.HYPD_STORE_ID
+        )
         cur = con.execute(
             "INSERT INTO influencers "
             "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (name.strip(), handle.strip(), amazon_tag.strip(), notes.strip(), 1 if use_dummy_sources else 0,
-             1 if telegram_enabled else 0, 1 if whatsapp_enabled else 0, insta_id.strip(),
+            (name.strip(), handle.strip(), (amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG,
+             notes.strip(), 1 if _as_bool(use_dummy_sources) else 0,
+             1 if _as_bool(telegram_enabled, default=True) else 0,
+             1 if _as_bool(whatsapp_enabled, default=True) else 0, insta_id.strip(),
              phone_number.strip(), price_filter.strip() or "all", allowed_sources.strip(), bitly_api_key.strip(),
-             categories.strip(), posting_schedule.strip(), 1 if only_amazon else 0,
-             1 if allow_amazon else 0, 1 if allow_earnkaro else 0,
-             1 if allow_hypd else 0, hypd_store_id.strip() or "93944"),
+             categories.strip(), posting_schedule.strip(), 1 if _as_bool(only_amazon) else 0,
+             1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0,
+             1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0,
+             1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
+             effective_hypd_store_id),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -228,7 +311,7 @@ def update_influencer(influencer_id: int, name: str | None = None,
             params.append(name.strip())
         if amazon_tag is not None:
             updates.append("amazon_tag=?")
-            params.append(amazon_tag.strip())
+            params.append(amazon_tag.strip() or config.AMAZON_ASSOCIATE_TAG)
         if handle is not None:
             updates.append("handle=?")
             params.append(handle.strip())
@@ -255,22 +338,22 @@ def update_influencer(influencer_id: int, name: str | None = None,
             params.append(posting_schedule.strip())
         if only_amazon is not None:
             updates.append("only_amazon=?")
-            params.append(1 if only_amazon else 0)
+            params.append(1 if _as_bool(only_amazon) else 0)
         if allow_amazon is not None:
             updates.append("allow_amazon=?")
-            params.append(1 if allow_amazon else 0)
+            params.append(1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0)
         if allow_earnkaro is not None:
             updates.append("allow_earnkaro=?")
-            params.append(1 if allow_earnkaro else 0)
+            params.append(1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0)
         if allow_hypd is not None:
             updates.append("allow_hypd=?")
-            params.append(1 if allow_hypd else 0)
+            params.append(1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0)
         if hypd_store_id is not None:
             updates.append("hypd_store_id=?")
             params.append(hypd_store_id.strip())
         if custom_button_enabled is not None:
             updates.append("custom_button_enabled=?")
-            params.append(1 if custom_button_enabled else 0)
+            params.append(1 if _as_bool(custom_button_enabled) else 0)
         if custom_button_text is not None:
             updates.append("custom_button_text=?")
             params.append(custom_button_text.strip())
@@ -282,11 +365,35 @@ def update_influencer(influencer_id: int, name: str | None = None,
             params.append(notes.strip())
         if active is not None:
             updates.append("active=?")
-            params.append(1 if active else 0)
+            params.append(1 if _as_bool(active) else 0)
         if updates:
             params.append(influencer_id)
             con.execute(f"UPDATE influencers SET {', '.join(updates)} WHERE id=?", params)
             con.commit()
+    finally:
+        con.close()
+
+
+def update_inherited_channel_hypd_store_ids(
+    influencer_id: int, previous_store_id: str, new_store_id: str
+) -> None:
+    """Propagate a profile Store ID change to channels using the old profile value.
+
+    Distinct channel-specific Store IDs are left intact. A channel whose ID
+    matched the previous profile default is treated as inheriting that value.
+    """
+    previous = (previous_store_id or "").strip()
+    new = (new_store_id or "").strip()
+    if previous == new:
+        return
+    con = _connect()
+    try:
+        con.execute(
+            "UPDATE channels SET hypd_store_id=? WHERE influencer_id=? "
+            "AND (TRIM(COALESCE(hypd_store_id, ''))='' OR TRIM(hypd_store_id)=?)",
+            (new, influencer_id, previous),
+        )
+        con.commit()
     finally:
         con.close()
 
@@ -297,10 +404,10 @@ def set_channel_flags(influencer_id: int, telegram_enabled: bool | None = None,
     try:
         if telegram_enabled is not None:
             con.execute("UPDATE influencers SET telegram_enabled=? WHERE id=?",
-                        (1 if telegram_enabled else 0, influencer_id))
+                        (1 if _as_bool(telegram_enabled, default=True) else 0, influencer_id))
         if whatsapp_enabled is not None:
             con.execute("UPDATE influencers SET whatsapp_enabled=? WHERE id=?",
-                        (1 if whatsapp_enabled else 0, influencer_id))
+                        (1 if _as_bool(whatsapp_enabled, default=True) else 0, influencer_id))
         con.commit()
     finally:
         con.close()
@@ -331,7 +438,7 @@ def set_influencer_active(influencer_id: int, active: bool) -> None:
     con = _connect()
     try:
         con.execute("UPDATE influencers SET active=? WHERE id=?",
-                    (1 if active else 0, influencer_id))
+                    (1 if _as_bool(active) else 0, influencer_id))
         con.commit()
     finally:
         con.close()
@@ -341,7 +448,7 @@ def set_use_dummy_sources(influencer_id: int, use_dummy: bool) -> None:
     con = _connect()
     try:
         con.execute("UPDATE influencers SET use_dummy_sources=? WHERE id=?",
-                    (1 if use_dummy else 0, influencer_id))
+                    (1 if _as_bool(use_dummy) else 0, influencer_id))
         con.commit()
     finally:
         con.close()
@@ -364,21 +471,35 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 allow_amazon: bool = True,
                 allow_earnkaro: bool = True,
                 allow_hypd: bool = True,
-                hypd_store_id: str = "93944",
+                hypd_store_id: str | None = None,
                 custom_button_enabled: bool = False,
                 custom_button_text: str = "",
                 custom_button_url: str = "") -> int:
     con = _connect()
     try:
+        profile = con.execute(
+            "SELECT hypd_store_id FROM influencers WHERE id=?", (influencer_id,)
+        ).fetchone()
+        profile_store_id = (
+            str(profile["hypd_store_id"] or "").strip() if profile else ""
+        )
+        effective_hypd_store_id = (
+            str(hypd_store_id or "").strip()
+            or profile_store_id
+            or config.HYPD_STORE_ID
+        )
         cur = con.execute(
             "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
-             amazon_override_tag.strip(), 1 if strip_amazon else 0, price_filter.strip(), allowed_sources.strip(),
+             amazon_override_tag.strip(), 1 if _as_bool(strip_amazon, unrestricted=False) else 0, price_filter.strip(), allowed_sources.strip(),
              wa_session_key.strip(), bitly_api_key.strip(), categories.strip(), posting_schedule.strip(),
-             1 if only_amazon else 0, 1 if allow_amazon else 0, 1 if allow_earnkaro else 0,
-             1 if allow_hypd else 0, hypd_store_id.strip() or "93944",
-             1 if custom_button_enabled else 0, custom_button_text.strip(), custom_button_url.strip()),
+             1 if _as_bool(only_amazon) else 0,
+             1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0,
+             1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0,
+             1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
+             effective_hypd_store_id,
+             1 if _as_bool(custom_button_enabled) else 0, custom_button_text.strip(), custom_button_url.strip()),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -426,7 +547,7 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
             params.append(amazon_override_tag.strip())
         if strip_amazon is not None:
             updates.append("strip_amazon=?")
-            params.append(1 if strip_amazon else 0)
+            params.append(1 if _as_bool(strip_amazon, unrestricted=False) else 0)
         if price_filter is not None:
             updates.append("price_filter=?")
             params.append(price_filter.strip())
@@ -447,22 +568,22 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
             params.append(posting_schedule.strip())
         if only_amazon is not None:
             updates.append("only_amazon=?")
-            params.append(1 if only_amazon else 0)
+            params.append(1 if _as_bool(only_amazon) else 0)
         if allow_amazon is not None:
             updates.append("allow_amazon=?")
-            params.append(1 if allow_amazon else 0)
+            params.append(1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0)
         if allow_earnkaro is not None:
             updates.append("allow_earnkaro=?")
-            params.append(1 if allow_earnkaro else 0)
+            params.append(1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0)
         if allow_hypd is not None:
             updates.append("allow_hypd=?")
-            params.append(1 if allow_hypd else 0)
+            params.append(1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0)
         if hypd_store_id is not None:
             updates.append("hypd_store_id=?")
             params.append(hypd_store_id.strip())
         if custom_button_enabled is not None:
             updates.append("custom_button_enabled=?")
-            params.append(1 if custom_button_enabled else 0)
+            params.append(1 if _as_bool(custom_button_enabled) else 0)
         if custom_button_text is not None:
             updates.append("custom_button_text=?")
             params.append(custom_button_text.strip())
@@ -608,71 +729,96 @@ def list_wa_sessions(influencer_id: Optional[int] = None) -> list[dict]:
 # ------------------------------- sources -------------------------------
 
 def add_bulk_influencers(records: list[dict]) -> int:
-    """Batch insert influencers + their initial 3 channels.
-    Designed for scaling to 1000+ influencers in a single SQLite transaction!
-    Each record can have:
-      name, amazon_tag, phone_number, insta_id, handle, price_filter, allowed_sources,
-      approval_tg, broadcast_tg, whatsapp_id, strip_amazon
+    """Batch insert profiles and any supplied channels in one transaction.
+
+    Optional affiliate columns are ``allow_amazon``, ``allow_earnkaro``,
+    ``allow_hypd``, ``only_amazon``, and ``hypd_store_id``. The three network
+    toggles are independent; ``only_amazon`` is the explicit exclusive-mode
+    override. An omitted Store ID inherits the current global default.
     """
     con = _connect()
     count = 0
     try:
-        for r in records:
-            name = (r.get("name") or "").strip()
-            tag = (r.get("amazon_tag") or r.get("tag") or "").strip()
-            if not name or not tag:
-                continue
+        global_hypd = con.execute(
+            "SELECT val FROM global_settings WHERE key='hypd_store_id'"
+        ).fetchone()
+        default_hypd_store = (
+            str(global_hypd["val"] or "").strip() if global_hypd else ""
+        ) or config.HYPD_STORE_ID
 
-            phone = (r.get("phone_number") or r.get("phone") or "").strip()
-            insta = (r.get("insta_id") or r.get("insta") or "").strip()
-            handle = (r.get("handle") or "").strip()
-            price_filt = (r.get("price_filter") or "all").strip()
-            sources = (r.get("allowed_sources") or "").strip()
-            strip_amz = bool(r.get("strip_amazon", False))
-            allow_amz = 0 if strip_amz else 1
-            allow_ek = 1
-            allow_hypd = 1
-            hypd_store = (r.get("hypd_store_id") or "93944").strip()
+        for r in records:
+            name = str(r.get("name") or "").strip()
+            if not name:
+                continue
+            tag = str(
+                r.get("amazon_tag") or r.get("tag") or config.AMAZON_ASSOCIATE_TAG
+            ).strip() or config.AMAZON_ASSOCIATE_TAG
+            phone = str(r.get("phone_number") or r.get("phone") or "").strip()
+            insta = str(r.get("insta_id") or r.get("insta") or "").strip()
+            handle = str(r.get("handle") or "").strip()
+            price_filt = str(r.get("price_filter") or "all").strip()
+            sources = str(r.get("allowed_sources") or "").strip()
+            strip_amz = _as_bool(r.get("strip_amazon"), default=False, unrestricted=False)
+            only_amz = _as_bool(r.get("only_amazon"), default=False, unrestricted=False)
+            allow_amz = _as_bool(
+                r.get("allow_amazon"), default=not strip_amz, unrestricted=True
+            )
+            allow_ek = _as_bool(r.get("allow_earnkaro"), default=True, unrestricted=True)
+            allow_hypd = _as_bool(r.get("allow_hypd"), default=True, unrestricted=True)
+            hypd_store = (
+                str(r.get("hypd_store_id") or "").strip() or default_hypd_store
+            )
+            bitly_key = str(r.get("bitly_api_key") or "").strip()
+            categories = str(r.get("categories") or "").strip()
+            schedule = str(r.get("posting_schedule") or "").strip()
 
             cur = con.execute(
                 "INSERT INTO influencers "
-                "(name, handle, amazon_tag, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (name, handle, tag, 0, 1, 1, insta, phone, price_filt, sources, (r.get("bitly_api_key") or "").strip(),
-                 (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip(),
-                 allow_amz, allow_ek, allow_hypd, hypd_store),
+                "(name, handle, amazon_tag, use_dummy_sources, telegram_enabled, whatsapp_enabled, "
+                "insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, "
+                "posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (name, handle, tag, 0, 1, 1, insta, phone, price_filt, sources, bitly_key,
+                 categories, schedule, int(only_amz), int(allow_amz), int(allow_ek),
+                 int(allow_hypd), hypd_store),
             )
             iid = int(cur.lastrowid)
 
-            # Auto-link channels if provided in the batch
+            # Approval channels remain explicitly Amazon-only.
             if r.get("approval_tg"):
-                ident = r["approval_tg"].strip()
+                ident = str(r["approval_tg"]).strip()
                 con.execute(
-                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, allowed_sources, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, "
+                    "allowed_sources, categories, posting_schedule, only_amazon, allow_amazon, "
+                    "allow_earnkaro, allow_hypd, hypd_store_id) "
                     "VALUES (?,?,?,?,?,?,?,?,1,1,0,0,?)",
-                    (iid, "telegram", ident, "approval", "ready", sources,
-                     (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip(), hypd_store),
+                    (iid, "telegram", ident, "approval", "ready", sources, categories,
+                     schedule, hypd_store),
                 )
             if r.get("broadcast_tg"):
-                ident = r["broadcast_tg"].strip()
+                ident = str(r["broadcast_tg"]).strip()
                 con.execute(
-                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (iid, "telegram", ident, "broadcast", "ready", 1 if strip_amz else 0,
-                     price_filt if price_filt != "all" else "", sources, (r.get("bitly_api_key") or "").strip(),
-                     (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip(),
-                     allow_amz, allow_ek, allow_hypd, hypd_store),
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, "
+                    "strip_amazon, price_filter, allowed_sources, bitly_api_key, categories, "
+                    "posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, "
+                    "hypd_store_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (iid, "telegram", ident, "broadcast", "ready", int(strip_amz),
+                     price_filt if price_filt != "all" else "", sources, bitly_key,
+                     categories, schedule, int(only_amz), int(allow_amz), int(allow_ek),
+                     int(allow_hypd), hypd_store),
                 )
             if r.get("whatsapp_id"):
-                ident = r["whatsapp_id"].strip()
+                ident = str(r["whatsapp_id"]).strip()
                 con.execute(
-                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (iid, "whatsapp_group", ident, "whatsapp", "ready", 1 if strip_amz else 0,
+                    "INSERT INTO channels (influencer_id, platform, identifier, role, status, "
+                    "strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, "
+                    "categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, "
+                    "allow_hypd, hypd_store_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (iid, "whatsapp_group", ident, "whatsapp", "ready", int(strip_amz),
                      price_filt if price_filt != "all" else "", sources,
-                     (r.get("wa_session_key") or "").strip(), (r.get("bitly_api_key") or "").strip(),
-                     (r.get("categories") or "").strip(), (r.get("posting_schedule") or "").strip(),
-                     allow_amz, allow_ek, allow_hypd, hypd_store),
+                     str(r.get("wa_session_key") or "").strip(), bitly_key, categories,
+                     schedule, int(only_amz), int(allow_amz), int(allow_ek),
+                     int(allow_hypd), hypd_store),
                 )
             count += 1
         con.commit()
@@ -691,7 +837,7 @@ def add_source(name: str, spec: str, kind: str = "production", active: bool = Tr
             return int(existing["id"])
         cur = con.execute(
             "INSERT INTO sources (name, spec, kind, active) VALUES (?,?,?,?)",
-            (name.strip(), clean_spec, kind.strip(), 1 if active else 0))
+            (name.strip(), clean_spec, kind.strip(), 1 if _as_bool(active) else 0))
         con.commit()
         return int(cur.lastrowid)
     finally:
@@ -731,6 +877,261 @@ def list_sources(kind: Optional[str] = None, active_only: bool = True) -> list[d
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY id"
         return [dict(r) for r in con.execute(sql, params).fetchall()]
+    finally:
+        con.close()
+
+
+def get_worker_offset(source_key: str) -> int:
+    """Return the last fully handled Telegram message id for a joined dialog."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT last_message_id FROM worker_offsets WHERE source_key=?",
+            (str(source_key),),
+        ).fetchone()
+        return int(row["last_message_id"]) if row else 0
+    finally:
+        con.close()
+
+
+def set_worker_offset(source_key: str, last_message_id: int) -> None:
+    """Advance a worker cursor monotonically after successful/intentional handling."""
+    key = str(source_key).strip()
+    message_id = int(last_message_id)
+    if not key or message_id <= 0:
+        return
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO worker_offsets (source_key, last_message_id, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(source_key) DO UPDATE SET "
+            "last_message_id=MAX(worker_offsets.last_message_id, excluded.last_message_id), "
+            "updated_at=excluded.updated_at",
+            (key, message_id, _now()),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _amazon_short_code(target_url: str, salt: int) -> str:
+    raw = hashlib.blake2s(f"{target_url}\0{salt}".encode("utf-8"), digest_size=6).digest()
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def get_or_create_amazon_short_link(target_url: str, associate_tag: str) -> str:
+    """Persist a stable first-party code for a tagged Amazon.in product URL.
+
+    The public redirect endpoint separately validates the stored destination
+    and requires this same tag as a query parameter, avoiding an open redirect
+    and keeping the Associate ID visible on the short URL.
+    """
+    tag = str(associate_tag or "").strip()
+    parsed = urlparse(str(target_url or ""))
+    query_tags = parse_qs(parsed.query).get("tag", [])
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").lower() not in {"amazon.in", "www.amazon.in"}
+        or not parsed.path.startswith("/dp/")
+        or not tag
+        or query_tags != [tag]
+    ):
+        raise ValueError("Only canonical, tagged Amazon.in product URLs can be shortened")
+
+    con = _connect()
+    try:
+        existing = con.execute(
+            "SELECT code FROM amazon_short_links WHERE target_url=?", (target_url,)
+        ).fetchone()
+        if existing:
+            return str(existing["code"])
+
+        for salt in range(32):
+            code = _amazon_short_code(target_url, salt)
+            con.execute(
+                "INSERT OR IGNORE INTO amazon_short_links (code, target_url, associate_tag) "
+                "VALUES (?,?,?)",
+                (code, target_url, tag),
+            )
+            existing = con.execute(
+                "SELECT code FROM amazon_short_links WHERE target_url=?", (target_url,)
+            ).fetchone()
+            if existing:
+                con.commit()
+                return str(existing["code"])
+            # A code collision with another target is extraordinarily unlikely;
+            # try a different salted digest rather than returning a bad mapping.
+        raise RuntimeError("Could not allocate a unique Amazon short-link code")
+    finally:
+        con.close()
+
+
+def get_amazon_short_link(code: str) -> dict | None:
+    """Return a stored Amazon short-link target for the public redirect route."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT target_url, associate_tag FROM amazon_short_links WHERE code=?",
+            (str(code or ""),),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+
+def _hypd_short_code(target_url: str, salt: int) -> str:
+    raw = hashlib.blake2s(
+        f"hypd\0{target_url}\0{salt}".encode("utf-8"), digest_size=6
+    ).digest()
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def get_or_create_hypd_short_link(target_url: str) -> str:
+    """Return a stable code for a valid HYPD store/afflink URL.
+
+    Only HTTPS URLs of the form ``hypd.store/<store-id>/afflink/<token>`` are
+    accepted. This cannot mint a HYPD affiliate token from a raw Meesho URL; it
+    only wraps an affiliate URL already generated by HYPD.
+    """
+    target = str(target_url or "").strip()
+    parsed = urlparse(target)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = -1
+    match = re.fullmatch(r"/(\d+)/afflink/([A-Za-z0-9_-]+)", parsed.path)
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or host not in {"hypd.store", "www.hypd.store"}
+        or parsed.username
+        or parsed.password
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+        or not match
+    ):
+        raise ValueError("Only clean HTTPS HYPD store afflink URLs can be shortened")
+    store_id = match.group(1)
+
+    con = _connect()
+    try:
+        existing = con.execute(
+            "SELECT code FROM hypd_short_links WHERE target_url=?", (target,)
+        ).fetchone()
+        if existing:
+            return str(existing["code"])
+
+        for salt in range(32):
+            code = _hypd_short_code(target, salt)
+            con.execute(
+                "INSERT OR IGNORE INTO hypd_short_links (code, target_url, store_id) "
+                "VALUES (?,?,?)",
+                (code, target, store_id),
+            )
+            existing = con.execute(
+                "SELECT code FROM hypd_short_links WHERE target_url=?", (target,)
+            ).fetchone()
+            if existing:
+                con.commit()
+                return str(existing["code"])
+        raise RuntimeError("Could not allocate a unique HYPD short-link code")
+    finally:
+        con.close()
+
+
+def get_hypd_short_link(code: str) -> dict | None:
+    """Return a stored HYPD affiliate target for the public redirect route."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT target_url, store_id FROM hypd_short_links WHERE code=?",
+            (str(code or ""),),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+
+def _lehlah_affiliate_meesho_url_is_valid(target_url: str) -> bool:
+    """Validate a Meesho product link with explicit LehLah/AppsFlyer markers."""
+    try:
+        parsed = urlparse(str(target_url or ""))
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or host not in {"meesho.com", "www.meesho.com"}
+        or parsed.username
+        or parsed.password
+        or port is not None
+        or not re.fullmatch(r"/s/p/[A-Za-z0-9_-]+", parsed.path)
+    ):
+        return False
+    params = {
+        key.lower(): value
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+    }
+    return (
+        params.get("af_siteid", "").lower() == "lehlah"
+        or params.get("mcn", "").lower() == "lehlah"
+        or "lehlah" in params.get("pid", "").lower()
+    )
+
+
+def _lehlah_short_code(target_url: str, salt: int) -> str:
+    raw = hashlib.blake2s(
+        f"lehlah\0{target_url}\0{salt}".encode("utf-8"), digest_size=6
+    ).digest()
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def get_or_create_lehlah_short_link(target_url: str) -> str:
+    """Persist a stable first-party code for a LehLah-attributed Meesho URL.
+
+    The original destination, including every AppsFlyer attribution parameter,
+    is stored and redirected to verbatim; this never rewrites the publisher ID.
+    """
+    target = str(target_url or "").strip()
+    if not _lehlah_affiliate_meesho_url_is_valid(target):
+        raise ValueError("Only LehLah-attributed HTTPS Meesho product URLs can be shortened")
+
+    con = _connect()
+    try:
+        existing = con.execute(
+            "SELECT code FROM lehlah_short_links WHERE target_url=?", (target,)
+        ).fetchone()
+        if existing:
+            return str(existing["code"])
+
+        for salt in range(32):
+            code = _lehlah_short_code(target, salt)
+            con.execute(
+                "INSERT OR IGNORE INTO lehlah_short_links (code, target_url) VALUES (?,?)",
+                (code, target),
+            )
+            existing = con.execute(
+                "SELECT code FROM lehlah_short_links WHERE target_url=?", (target,)
+            ).fetchone()
+            if existing:
+                con.commit()
+                return str(existing["code"])
+        raise RuntimeError("Could not allocate a unique LehLah short-link code")
+    finally:
+        con.close()
+
+
+def get_lehlah_short_link(code: str) -> dict | None:
+    """Return a stored LehLah/Meesho destination for the redirect route."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT target_url FROM lehlah_short_links WHERE code=?",
+            (str(code or ""),),
+        ).fetchone()
+        return dict(row) if row else None
     finally:
         con.close()
 
@@ -805,7 +1206,7 @@ def record_vm(cpu_pct: float, mem_pct: float, disk_pct: float, bot_running: bool
     try:
         con.execute(
             "INSERT INTO vm_stats (cpu_pct, mem_pct, disk_pct, bot_running) VALUES (?,?,?,?)",
-            (cpu_pct, mem_pct, disk_pct, 1 if bot_running else 0))
+            (cpu_pct, mem_pct, disk_pct, 1 if _as_bool(bot_running) else 0))
         con.commit()
     finally:
         con.close()
@@ -866,7 +1267,7 @@ def purge_old_posts_and_stats(days_to_keep: int = 14) -> int:
         # Keep distinct signatures safe in dedup while trimming bulky raw text/errors
         cur = con.execute("DELETE FROM posts WHERE posted_at < ? AND status IN ('posted', 'failed', 'skipped')", (cutoff,))
         deleted = cur.rowcount
-        con.execute("DELETE FROM vm_stats WHERE recorded_at < ?", (cutoff,))
+        con.execute("DELETE FROM vm_stats WHERE ts < ?", (cutoff,))
         con.commit()
         return deleted
     finally:
@@ -883,14 +1284,16 @@ def get_live_deal_insights() -> dict:
         posted_24h = con.execute("SELECT COUNT(*) FROM posts WHERE posted_at >= ? AND status='posted'", (cutoff_24h,)).fetchone()[0]
         failed_24h = con.execute("SELECT COUNT(*) FROM posts WHERE posted_at >= ? AND status='failed'", (cutoff_24h,)).fetchone()[0]
         active_influencers = con.execute("SELECT COUNT(*) FROM influencers WHERE active=1").fetchone()[0]
-        active_channels = con.execute("SELECT COUNT(*) FROM channels WHERE status='active'").fetchone()[0]
+        active_channels = con.execute(
+            "SELECT COUNT(*) FROM channels WHERE lower(trim(status)) IN ('ready', 'active')"
+        ).fetchone()[0]
         return {
             "total_24h": total_24h,
             "posted_24h": posted_24h,
             "failed_24h": failed_24h,
             "active_influencers": active_influencers,
             "active_channels": active_channels,
-            "delivery_rate_pct": round((posted_24h / total_24h * 100), 1) if total_24h > 0 else 100.0
+            "delivery_rate_pct": round((posted_24h / total_24h * 100), 1) if total_24h > 0 else None
         }
     finally:
         con.close()

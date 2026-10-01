@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =========================================================================
-# 1-CLICK PRODUCTION SETUP SCRIPT FOR ORACLE CLOUD FREE TIER (1GB RAM)
-# Configures 2GB Swap Memory, Firewall Ports, Node.js, Python, & Auto-Start Services
+# Base host bootstrap for Oracle Cloud Free Tier (1GB RAM).
+# Installs dependencies; it does not configure a public TLS reverse proxy.
 # =========================================================================
 set -euo pipefail
 
@@ -27,9 +27,9 @@ if ! command -v node &> /dev/null; then
     sudo apt-get install -y nodejs
 fi
 
-echo "== [3/6] Opening Firewall Ports (Port 5000 for Dashboard) =="
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 5000 -j ACCEPT || true
-sudo netfilter-persistent save || true
+echo "== [3/6] Keeping the dashboard port private =="
+echo "Port 5000 is intentionally not opened. Configure DNS, TLS, and a reverse proxy first."
+echo "Allow public access only to the TLS proxy; restrict 5000 to localhost/private traffic."
 
 echo "== [4/6] Installing Python Virtual Environment & Requirements =="
 python3 -m venv .venv

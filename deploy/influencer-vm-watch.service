@@ -4,12 +4,15 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/user/Influencers-deals
-ExecStart=/home/user/Influencers-deals/.venv/bin/python -m influencer_hub.cli vm-watch --loop
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@REPO_ROOT@
+ExecStart=@REPO_ROOT@/.venv/bin/python -m influencer_hub.cli vm-watch --loop
 Restart=on-failure
 RestartSec=10
-Environment=PYTHONPATH=/home/user/Influencers-deals
-EnvironmentFile=/home/user/Influencers-deals/.env
+Environment=PYTHONPATH=@REPO_ROOT@
+EnvironmentFile=-@REPO_ROOT@/.env
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

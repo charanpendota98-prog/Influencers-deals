@@ -1,8 +1,10 @@
 import pytest
 from dashboard.app import app
-from influencer_hub import db
+from influencer_hub import config, db
 
-def test_toggle_influencer_active_and_channel_status():
+def test_toggle_influencer_active_and_channel_status(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "toggle-dashboard.sqlite3")
+    app.config.update(TESTING=True)
     db.init()
     db.migrate()
     client = app.test_client()
@@ -20,7 +22,8 @@ def test_toggle_influencer_active_and_channel_status():
     assert res.status_code == 200
     inf = db.get_influencer(inf_id)
     assert inf["active"] == 0
-    assert b"TOTAL OFF (PAUSED)" in res.data or b"Master Switch: TOTAL OFF" in res.data
+    assert b"1 configured profile" in res.data
+    assert b"Open Setup Center" in res.data
 
     # 3. Toggle back -> becomes 1 (Active ON)
     res2 = client.post(f"/influencer/{inf_id}/toggle-active", follow_redirects=True)

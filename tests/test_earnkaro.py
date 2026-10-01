@@ -1,6 +1,18 @@
+import asyncio
+
 import pytest
 
 from influencer_hub import earnkaro as ek
+
+
+def test_earnkaro_rejects_amazon_and_meesho_routes():
+    amazon = "https://www.amazon.in/dp/B0ABCDEFGH"
+    meesho = "https://www.meesho.com/s/p/7amuq5"
+    assert asyncio.run(ek.convert_links({amazon, meesho})) == {}
+    assert asyncio.run(ek.verify_earnkaro(amazon))["ok"] is False
+    result = asyncio.run(ek.verify_earnkaro(meesho))
+    assert result["ok"] is False
+    assert "Amazon and Meesho" in result["error"]
 
 
 def test_parse_string_link():
@@ -39,12 +51,29 @@ def test_parse_accepts_our_publisher():
             '"https://www.flipkart.com/p/itm?pid=X&affid=rohanpouri&affExtParam1=Y&affExtParam2=5478322"}')
     assert ek.parse_ek_response(body, expected_pubid="5478322") == (
         "https://www.flipkart.com/p/itm?pid=X&affid=rohanpouri&affExtParam1=Y&affExtParam2=5478322")
+    lower_case_body = (
+        '{"success":1,"data":"https://www.flipkart.com/p/itm?affextparam2=5478322"}'
+    )
+    assert ek.parse_ek_response(lower_case_body, expected_pubid="5478322") == (
+        "https://www.flipkart.com/p/itm?affextparam2=5478322"
+    )
 
 
 def test_parse_accepts_short_link_without_pubid_param():
-    # ekaro.in short links don't carry affExtParam2; accept them.
+    # ekaro.in short links don't carry affExtParam2; accept them for a later
+    # redirect-provenance check.
     body = '{"success": 1, "data": "https://ekaro.in/AbC123"}'
     assert ek.parse_ek_response(body, expected_pubid="5478322") == "https://ekaro.in/AbC123"
+
+
+def test_parse_rejects_unverified_direct_link_and_insecure_link():
+    direct_missing_owner = (
+        '{"success": 1, "data": '
+        '"https://www.flipkart.com/p/itm?pid=X"}'
+    )
+    insecure = '{"success": 1, "data": "http://ekaro.in/AbC123"}'
+    assert ek.parse_ek_response(direct_missing_owner, expected_pubid="5478322") is None
+    assert ek.parse_ek_response(insecure, expected_pubid="5478322") is None
 
 
 def test_clean_normalises():

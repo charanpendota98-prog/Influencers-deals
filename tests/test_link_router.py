@@ -9,6 +9,20 @@ def test_classify_url():
     assert lr.classify_url("https://example.com/foo") == "other"
 
 
+def test_raw_meesho_is_reserved_for_hypd_not_earnkaro_or_generic_shortening():
+    raw_meesho = "https://www.meesho.com/s/p/7amuq5"
+    assert lr.classify_url(raw_meesho) == "meesho"
+    rendered = lr.render_for_influencer(
+        f"Meesho product {raw_meesho}",
+        amazon_tag="creator-21",
+        earnkaro_links={raw_meesho: "https://ekaro.in/not-used"},
+        shortened_links={raw_meesho: "https://bit.ly/not-used"},
+    )
+    assert raw_meesho in rendered
+    assert "ekaro.in" not in rendered
+    assert "bit.ly" not in rendered
+
+
 def test_apply_amazon_tag_replaces_existing():
     url = "https://www.amazon.in/dp/B0ABC123?tag=mama086-21"
     out = lr.apply_amazon_tag(url, "ravi099-21")
@@ -113,6 +127,40 @@ def test_compact_amazon_strips_junk():
     url = "https://www.amazon.in/Adidas-Shoes/dp/B0ABCDE1234/ref=sr_1_1?keywords=shoe&qid=1&tag=mama086-21&sr=8-1"
     out = lr.compact_amazon_product_link(url, "ravi099-21")
     assert out == "https://www.amazon.in/dp/B0ABCDE1234?tag=ravi099-21"
+
+
+def test_amazon_nonproduct_routes_keep_required_query_and_replace_only_tag():
+    url = (
+        "https://www.amazon.in/gp/slredirect/picassoRedirect.html"
+        "?url=%2Fdp%2FB012345678&tag=source-21&ref_=feed&campaign=summer#details"
+    )
+    out = lr.apply_amazon_tag(url, "creator-21")
+    assert out == (
+        "https://www.amazon.in/gp/slredirect/picassoRedirect.html"
+        "?url=%2Fdp%2FB012345678&ref_=feed&campaign=summer&tag=creator-21#details"
+    )
+
+
+def test_amazon_marketplace_is_preserved_for_product_and_search_links():
+    product = lr.apply_amazon_tag(
+        "https://amazon.com/dp/B0ABCDEFGH?tag=source-21&th=1", "creator-21"
+    )
+    assert product == "https://www.amazon.com/dp/B0ABCDEFGH?th=1&tag=creator-21"
+
+    search = lr.apply_amazon_tag(
+        "https://www.amazon.com/s?k=running+shoes&tag=source-21&ref=sr_pg_1",
+        "creator-21",
+    )
+    assert search == (
+        "https://www.amazon.com/s?k=running+shoes&ref=sr_pg_1&tag=creator-21"
+    )
+
+
+def test_amazon_shortlink_path_and_non_tag_params_are_kept():
+    source = "https://amzn.to/example?tag=source-21&ref=feed"
+    assert lr.apply_amazon_tag(source, "creator-21") == (
+        "https://amzn.to/example?ref=feed&tag=creator-21"
+    )
 
 
 def test_render_for_influencer():

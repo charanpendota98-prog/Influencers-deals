@@ -17,6 +17,16 @@ def test_hypd_classification_and_routing():
     assert converted_custom == "https://hypd.store/77777/afflink/daol5bac45l0tc0oo5rg"
 
 
+def test_hypd_retag_preserves_query_and_fragment_but_rejects_non_affiliate_pages():
+    affiliate = "https://www.hypd.store/12345/afflink/token_123?src=creator#product"
+    assert link_router.convert_hypd_store_link(affiliate, "77777") == (
+        "https://hypd.store/77777/afflink/token_123?src=creator#product"
+    )
+    store_page = "https://hypd.store/12345?aff=other"
+    assert link_router.convert_hypd_store_link(store_page, "77777") == store_page
+    assert link_router.convert_hypd_store_link(affiliate, "invalid-store") == affiliate
+
+
 def test_render_hypd_deal():
     deal_text = (
         "🔥 Meesho Saree at ₹299 only!\n"
@@ -42,7 +52,7 @@ def test_hypd_pipeline_toggle(monkeypatch):
     iid = db.add_influencer(
         name="HypdTester",
         amazon_tag="hypdtest-21",
-        allow_amazon=True,
+        allow_amazon=False,
         allow_earnkaro=False,
         allow_hypd=True,
         hypd_store_id="93944"
@@ -50,7 +60,7 @@ def test_hypd_pipeline_toggle(monkeypatch):
     cid = db.add_channel(
         iid, "telegram", "@hypd_channel_test",
         role="broadcast", status="ready",
-        allow_amazon=True, allow_earnkaro=False, allow_hypd=True, hypd_store_id="93944"
+        allow_amazon=False, allow_earnkaro=False, allow_hypd=True, hypd_store_id="93944"
     )
 
     dispatched_msgs = []
