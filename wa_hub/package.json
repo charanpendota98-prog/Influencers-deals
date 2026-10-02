@@ -5,7 +5,8 @@
   "type": "module",
   "engines": { "node": ">=20" },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "baileys": "7.0.0-rc14",

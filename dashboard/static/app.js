@@ -1,35 +1,76 @@
-// Polls the wa_hub QR endpoint and renders the live QR for the influencer's
-// WhatsApp session. Falls back silently if the hub isn't running yet.
+// Read-only status/QR polling keeps the displayed connection state current
+// across page loads and later disconnects. Session creation remains an explicit
+// operator action on the pairing form.
 (function () {
   const box = document.getElementById('qrbox');
   if (!box) return;
   const key = box.dataset.key;
   if (!key) return;
 
+  function showMessage(message, color = '#86efac') {
+    const text = document.createElement('p');
+    text.className = 'hint';
+    text.style.color = color;
+    text.textContent = message;
+    box.replaceChildren(text);
+  }
+
+  function showConnected(phone) {
+    const badge = document.createElement('div');
+    badge.style.cssText = 'background:#064e3b; color:#86efac; padding:12px 18px; border-radius:8px; font-weight:bold; font-size:15px; border:1px solid #10b981;';
+    badge.textContent = `✅ WhatsApp Linked Successfully! (${phone || 'Connected'})`;
+    box.replaceChildren(badge);
+  }
+
+  function showQR(dataUrl) {
+    const frame = document.createElement('div');
+    frame.style.cssText = 'background:#fff; padding:12px; border-radius:12px; display:inline-block; box-shadow:0 10px 25px rgba(0,0,0,0.5);';
+    const image = document.createElement('img');
+    image.src = dataUrl;
+    image.alt = 'Scan WhatsApp QR';
+    image.style.cssText = 'width:240px; height:240px; display:block;';
+    frame.appendChild(image);
+
+    const hint = document.createElement('p');
+    hint.style.cssText = 'color:#86efac; font-weight:bold; font-size:13px; margin-top:10px;';
+    hint.textContent = '📲 Influencer Phone lo WhatsApp > Linked Devices తో ఈ QR స్కాన్ చేయండి';
+    box.replaceChildren(frame, hint);
+  }
+
   async function tick() {
+    let nextPollMs = 2500;
     try {
-      const res = await fetch(`/api/wa/${key}/qr`);
-      const data = await res.json();
-      if (data && data.qr) {
-        box.innerHTML = `
-          <div style="background:#fff; padding:12px; border-radius:12px; display:inline-block; box-shadow:0 10px 25px rgba(0,0,0,0.5);">
-            <img src="${data.qr}" alt="Scan WhatsApp QR" style="width:240px; height:240px; display:block;" />
-          </div>
-          <p style="color:#86efac; font-weight:bold; font-size:13px; margin-top:10px;">📲 Influencer Phone lo WhatsApp > Linked Devices తో ఈ QR స్కాన్ చేయండి</p>
-        `;
-      } else if (data && data.status === 'connected') {
-        box.innerHTML = `
-          <div style="background:#064e3b; color:#86efac; padding:12px 18px; border-radius:8px; font-weight:bold; font-size:15px; border:1px solid #10b981;">
-            ✅ WhatsApp Linked Successfully! (${data.phone || 'Connected'})
-          </div>
-        `;
-        return; // stop polling once connected
+      const statusResponse = await fetch(`/api/wa/${encodeURIComponent(key)}/status`, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+      });
+      const status = await statusResponse.json();
+      if (status && status.ok && status.status === 'connected') {
+        showConnected(status.phone);
+        nextPollMs = 5000;
+      } else if (status && status.ok && status.hasQR) {
+        const qrResponse = await fetch(`/api/wa/${encodeURIComponent(key)}/qr`, {
+          cache: 'no-store',
+          credentials: 'same-origin',
+        });
+        const qr = await qrResponse.json();
+        if (qr && qr.qr) showQR(qr.qr);
+        else showMessage('WhatsApp QR is refreshing. Please wait…');
+      } else if (status && status.ok && status.status === 'connecting') {
+        showMessage('Connecting to WhatsApp…');
+      } else if (status && status.ok && status.status === 'offline') {
+        showMessage('WhatsApp is offline. The hub may retry; use Generate Live QR Code to pair again.', '#fbbf24');
+        nextPollMs = 5000;
       }
     } catch (e) {
-      // Hub waiting or quiet
+      // Keep the current view while the hub is unavailable; polling is GET-only.
+      nextPollMs = 5000;
     }
-    setTimeout(tick, 2000);
+    // Keep checking after a successful connection so a later disconnect is
+    // reflected instead of leaving a stale green badge on the page.
+    window.setTimeout(tick, nextPollMs);
   }
+
   tick();
 })();
 
