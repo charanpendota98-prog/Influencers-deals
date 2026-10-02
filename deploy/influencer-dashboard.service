@@ -4,12 +4,16 @@ After=network.target influencer-wa-hub.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/user/Influencers-deals/dashboard
-ExecStart=/home/user/Influencers-deals/.venv/bin/python app.py
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@REPO_ROOT@
+ExecStart=@REPO_ROOT@/.venv/bin/gunicorn --bind 127.0.0.1:5000 --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile - dashboard.wsgi:app
 Restart=on-failure
 RestartSec=5
-Environment=PYTHONPATH=/home/user/Influencers-deals
-EnvironmentFile=/home/user/Influencers-deals/.env
+Environment=PYTHONPATH=@REPO_ROOT@
+Environment=HUB_TELEGRAM_SESSION_SLOT=dashboard
+UMask=0077
+EnvironmentFile=-@REPO_ROOT@/.env
 
 [Install]
 WantedBy=multi-user.target

@@ -1,37 +1,36 @@
 """Link routing — the heart of the influencer scheme.
 
 For a given deal text and a given influencer we produce a copy of the text in
-which:
-
-  * AMAZON links carry THE INFLUENCER's amazon associate tag
-    (so the commission on Amazon sales goes to them)
-  * every OTHER supported merchant link (Flipkart, Myntra, Ajio, ...) is
-    replaced by OUR EarnKaro link (so the commission goes to us)
+which Amazon links use that influencer's configured Associate tag, while
+eligible links from other supported merchants may be replaced by a configured
+affiliate-network result. This preserves the identifiers and routing choices
+that the application controls; it cannot guarantee network approval or
+commission attribution.
 
 This module is PURE and has NO network or credentials dependency, so it is
-exercised directly by the unit tests. The EarnKaro conversion itself is an
-async network call done by the pipeline and passed in as a precomputed map.
+exercised directly by the unit tests. EarnKaro conversion itself is an async
+network call done by the pipeline and passed in as a precomputed map.
 """
 from __future__ import annotations
 
 import re
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-# Hostnames we treat as "Amazon" (taggable).
-AMAZON_DOMAINS = {"amazon.in", "www.amazon.in", "amazon.com", "www.amazon.com"}
+from . import config
 
-HYPD_DOMAINS = {"hypd.store", "www.hypd.store"}
+# Amazon product hosts supported by this India-first integration.
+AMAZON_DOMAINS = {"amazon.in", "amazon.com", "amzn.to", "amzn.in"}
+HYPD_DOMAINS = {"hypd.store"}
 
-# Merchant domains we monetise through OUR EarnKaro account (everything except
-# Amazon and direct HYPD). Add more here as the deal pool grows.
+# Merchant domains we route through EarnKaro (except Amazon, HYPD, and
+# Meesho). Meesho has its own HYPD path and must never be sent to EarnKaro.
 MERCHANT_DOMAINS = {
-    "flipkart.com", "www.flipkart.com",
+    "flipkart.com", "www.flipkart.com", "fktr.in",
     "shopsy.in", "www.shopsy.in",
     "myntra.com", "www.myntra.com",
     "ajio.com", "www.ajio.com",
     "nykaa.com", "www.nykaa.com",
     "snapdeal.com", "www.snapdeal.com",
-    "meesho.com", "www.meesho.com",
 }
 
 # A reasonably permissive URL finder (http/https only).
@@ -51,41 +50,88 @@ def find_urls(text: str) -> list[str]:
 
 def _host_of(url: str) -> str:
     try:
-        return urlparse(url).netloc.lower()
+        return (urlparse(url).hostname or "").lower().rstrip(".")
     except Exception:
         return ""
 
 
+def _is_domain(host: str, domain: str) -> bool:
+    return host == domain or host.endswith("." + domain)
+
+
+def _is_lehlah_meesho_affiliate(url: str) -> bool:
+    """Detect LehLah/AppsFlyer tracking so its existing affiliate attribution is kept."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    if not _is_domain(host, "meesho.com"):
+        return False
+    params = {key.lower(): value for key, value in parse_qsl(parsed.query, keep_blank_values=True)}
+    return (
+        params.get("af_siteid", "").lower() == "lehlah"
+        or params.get("mcn", "").lower() == "lehlah"
+        or "lehlah" in params.get("pid", "").lower()
+    )
+
+
 def classify_url(url: str) -> str:
-    """Return 'amazon' | 'hypd' | 'merchant' | 'other'."""
+    """Return 'amazon' | 'hypd' | 'lehlah' | 'meesho' | 'merchant' | 'other'."""
     host = _host_of(url)
-    if host in AMAZON_DOMAINS:
+    if any(_is_domain(host, domain) for domain in AMAZON_DOMAINS):
         return "amazon"
-    if host in HYPD_DOMAINS:
+    if _is_domain(host, "hypd.store"):
         return "hypd"
-    if host in MERCHANT_DOMAINS:
+    if _is_lehlah_meesho_affiliate(url):
+        return "lehlah"
+    if _is_domain(host, "meesho.com"):
+        return "meesho"
+    if any(_is_domain(host, domain.removeprefix("www.")) for domain in MERCHANT_DOMAINS):
         return "merchant"
     return "other"
 
 
-def convert_hypd_store_link(url: str, target_store_id: str = "93944") -> str:
-    """Convert any HYPD affiliate link (whether from another creator or source)
-    into OUR HYPD affiliate store ID (e.g. 93944).
-    Example:
-      https://hypd.store/12345/afflink/daol5bac45l0tc0oo5rg
-      -> https://hypd.store/93944/afflink/daol5bac45l0tc0oo5rg
-      https://hypd.store/product/123?aff=other
-      -> https://hypd.store/93944?aff=93944
+def convert_hypd_store_link(url: str, target_store_id: str | None = None) -> str:
+    """Retag a valid existing HYPD ``/afflink/<token>`` URL.
+
+    Store-only pages and raw Meesho product URLs are not affiliate tokens, so
+    they are deliberately left unchanged. Query parameters and fragments on a
+    valid affiliate URL are preserved while the creator's numeric store ID is
+    replaced.
     """
-    store = (target_store_id or "93944").strip()
-    m = re.search(r"https?://(?:www\.)?hypd\.store/(?:\d+|[A-Za-z0-9_-]+)/afflink/([A-Za-z0-9_-]+)", url, re.I)
-    if m:
-        aff_id = m.group(1)
-        return f"https://hypd.store/{store}/afflink/{aff_id}"
-    m_direct = re.search(r"https?://(?:www\.)?hypd\.store/([A-Za-z0-9_-]+)/?$", url, re.I)
-    if m_direct and m_direct.group(1).isdigit():
-        return f"https://hypd.store/{store}"
-    return url
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except (TypeError, ValueError):
+        return url
+
+    if (
+        parsed.scheme not in {"http", "https"}
+        or host not in {"hypd.store", "www.hypd.store"}
+        or parsed.username
+        or parsed.password
+        or port is not None
+    ):
+        return url
+
+    store = str(target_store_id or config.HYPD_STORE_ID).strip()
+    if not re.fullmatch(r"\d+", store):
+        return url
+    match = re.fullmatch(
+        r"/(?:\d+|[A-Za-z0-9_-]+)/afflink/([A-Za-z0-9_-]+)",
+        parsed.path,
+        re.I,
+    )
+    if not match:
+        return url
+
+    token = match.group(1)
+    return urlunparse((
+        "https", "hypd.store", f"/{store}/afflink/{token}", "",
+        parsed.query, parsed.fragment,
+    ))
 
 
 def collect_links(text: str) -> dict[str, str]:
@@ -102,95 +148,161 @@ def compact_merchant_url(url: str) -> str:
     Prevents long clumsy URLs from breaking WhatsApp and Telegram message layouts."""
     try:
         p = urlparse(url)
-        host = p.netloc.lower()
+        host = _host_of(url)
 
         # Flipkart / Shopsy: keep clean canonical /product/p/itmXXX?pid=YYY
-        if "flipkart.com" in host or "shopsy.in" in host:
-            # Don't touch short redirects like /s/ or dl.flipkart.com
-            if "/s/" in p.path or "dl.flipkart.com" in host or "fktr.in" in host:
+        if (
+            _is_domain(host, "flipkart.com")
+            or _is_domain(host, "shopsy.in")
+            or _is_domain(host, "fktr.in")
+        ):
+            # Don't touch short redirects like /s/ or dl.flipkart.com; they
+            # cannot be expanded without making an external request.
+            if "/s/" in p.path or _is_domain(host, "dl.flipkart.com") or _is_domain(host, "fktr.in"):
                 return url
             m_itm = re.search(r"(/[^/]+/p/itm[a-zA-Z0-9]+|/p/itm[a-zA-Z0-9]+)", p.path)
             q = dict(parse_qsl(p.query, keep_blank_values=True))
             pid = q.get("pid")
-            clean_query = f"pid={pid}" if pid else ""
+            clean_query = urlencode({"pid": pid}) if pid else ""
             clean_path = m_itm.group(1) if m_itm else p.path
-            return urlunparse((p.scheme, p.netloc, clean_path, "", clean_query, ""))
+            canonical_host = "www.shopsy.in" if _is_domain(host, "shopsy.in") else "www.flipkart.com"
+            return urlunparse(("https", canonical_host, clean_path, "", clean_query, ""))
 
         # Myntra: keep clean /.../<id>/buy
-        if "myntra.com" in host:
+        if _is_domain(host, "myntra.com"):
             m_myn = re.search(r"(/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+/\d+/buy)", p.path)
             clean_path = m_myn.group(1) if m_myn else p.path
-            return urlunparse((p.scheme, p.netloc, clean_path, "", "", ""))
+            return urlunparse(("https", "www.myntra.com", clean_path, "", "", ""))
 
         # Ajio: keep clean /p/<id>
-        if "ajio.com" in host:
+        if _is_domain(host, "ajio.com"):
             m_ajio = re.search(r"(/[a-zA-Z0-9_-]+/p/[a-zA-Z0-9_-]+)", p.path)
             clean_path = m_ajio.group(1) if m_ajio else p.path
-            return urlunparse((p.scheme, p.netloc, clean_path, "", "", ""))
+            return urlunparse(("https", "www.ajio.com", clean_path, "", "", ""))
 
         return url
     except Exception:
         return url
 
 
+def _amazon_asin(parsed) -> str | None:
+    """Extract an ASIN from common Amazon product URL shapes."""
+    path_patterns = (
+        r"/(?:dp|product)/([A-Za-z0-9]{8,12})(?:/|$)",
+        r"/gp/(?:product|aw/d)/([A-Za-z0-9]{8,12})(?:/|$)",
+    )
+    for pattern in path_patterns:
+        match = re.search(pattern, parsed.path, re.I)
+        if match:
+            return match.group(1).upper()
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() == "asin" and re.fullmatch(r"[A-Za-z0-9]{8,12}", value or "", re.I):
+            return value.upper()
+    return None
+
+
 def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
-    """Normalise an Amazon URL to https://www.amazon.in/dp/<ASIN>?tag=<tag>.
+    """Retag Amazon URLs without changing their marketplace or breaking routes.
 
-    Strips tracking junk (session/attribution params) and keeps only the ASIN
-    and the associate tag. If no ASIN is present the original host/path is
-    preserved with the tag attached.
+    Recognized product ASIN links on Amazon marketplace domains are normalized
+    to ``/dp/<ASIN>`` on the same marketplace. Safe numeric variant selectors
+    ``th`` and ``psc`` are retained; the effective Associate ``tag`` replaces
+    any source tag. Opaque short links and non-product routes keep their path,
+    required query parameters, and destination host because they cannot safely
+    be expanded or canonicalized without following the network redirect.
     """
-    parsed = urlparse(url)
-    host = parsed.netloc.lower()
-    if host not in AMAZON_DOMAINS:
+    try:
+        parsed = urlparse(url)
+        host = _host_of(url)
+    except (TypeError, ValueError):
         return url
-    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    asin = None
-    m = re.search(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{8,12})", parsed.path, re.I)
-    if m:
-        asin = m.group(1).upper()
-    else:
-        for k, v in q.items():
-            if k.lower() in ("asin",) and re.fullmatch(r"[A-Za-z0-9]{8,12}", v or "", re.I):
-                asin = v.upper()
-                break
-    if asin:
-        path = f"/dp/{asin}"
-    else:
-        path = parsed.path or "/"
-    if tag:
-        q = {"tag": tag}
-    else:
-        q = {k: v for k, v in q.items() if k.lower() == "tag"}
-    query = urlencode(q)
-    return urlunparse(("https", "www.amazon.in", path, "", query, ""))
-
-
-def apply_amazon_tag(url: str, tag: str) -> str:
-    """Ensure an Amazon URL carries exactly `tag` (replacing any existing one)."""
-    parsed = urlparse(url)
-    if parsed.netloc.lower() not in AMAZON_DOMAINS:
+    if not any(_is_domain(host, domain) for domain in AMAZON_DOMAINS):
         return url
-    # If it is a clean product link, compact + set tag.
-    if re.search(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{8,12})", parsed.path, re.I):
-        return compact_amazon_product_link(url, tag)
-    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    q["tag"] = tag
-    # Drop duplicate tag keys (case-insensitive) that some sources double up.
-    seen = set()
-    filtered = []
-    for k, v in q.items():
-        lk = k.lower()
-        if lk == "tag":
-            if "tag" in seen:
-                continue
-            seen.add("tag")
-        filtered.append((k, v))
-    query = urlencode(filtered)
-    return urlunparse(parsed._replace(query=query))
+    # Avoid rewriting unusual authorities (credentials/nonstandard ports).
+    try:
+        if parsed.username or parsed.password or parsed.port is not None:
+            return url
+    except ValueError:
+        return url
+
+    query_values = parse_qsl(parsed.query, keep_blank_values=True)
+    effective_tag = (tag or "").strip()
+    if not effective_tag:
+        effective_tag = next(
+            (value for key, value in query_values if key.lower() == "tag" and value),
+            config.AMAZON_ASSOCIATE_TAG,
+        )
+    asin = _amazon_asin(parsed)
+    marketplace_host = (
+        "www.amazon.in" if _is_domain(host, "amazon.in")
+        else "www.amazon.com" if _is_domain(host, "amazon.com")
+        else None
+    )
+    if asin and marketplace_host:
+        # Keep Amazon's small set of safe product-variant selectors (e.g. the
+        # ``th=1`` in official DetailPageURLs), but discard incoming tracking,
+        # campaign, ref, and other Associate IDs before appending the effective tag.
+        safe_product_params: dict[str, str] = {}
+        for key, value in query_values:
+            normalized_key = key.lower()
+            if normalized_key in {"th", "psc"} and value.isdigit():
+                safe_product_params[normalized_key] = value
+        canonical_query = list(safe_product_params.items())
+        if effective_tag:
+            canonical_query.append(("tag", effective_tag))
+        query = urlencode(canonical_query)
+        return urlunparse(("https", marketplace_host, f"/dp/{asin}", "", query, ""))
+
+    # A short Amazon redirect (amzn.to/amzn.in) and non-product routes (such
+    # as search or storefront pages) cannot be safely canonicalized without
+    # resolving their destination. Preserve their existing parameters, replacing
+    # only the source Associate tag so required redirect/search data survives.
+    preserved_query = [(key, value) for key, value in query_values if key.lower() != "tag"]
+    if effective_tag:
+        preserved_query.append(("tag", effective_tag))
+    authority = host
+    query = urlencode(preserved_query)
+    return urlunparse((
+        "https", authority, parsed.path or "/", "", query, parsed.fragment,
+    ))
 
 
-def _render_base(text: str, amazon_tag: str, ek: dict[str, str], hypd_store_id: str = "93944") -> str:
+def apply_amazon_tag(url: str, tag: str | None = None) -> str:
+    """Compact a supported Amazon URL and set exactly one associate tag."""
+    if classify_url(url) != "amazon":
+        return url
+    return compact_amazon_product_link(url, tag or config.AMAZON_ASSOCIATE_TAG)
+
+
+def filter_disallowed_affiliate_links(text: str, allowed_kinds: set[str]) -> str:
+    """Remove links disabled by merchant settings without discarding allowed deals.
+
+    Only supported affiliate kinds (Amazon, EarnKaro merchants, HYPD, LehLah) are
+    filtered. Informational/unknown URLs are left untouched. A line containing
+    only disabled links is removed, while product copy and allowed URLs survive.
+    """
+    allowed = set(allowed_kinds)
+    kept_lines: list[str] = []
+    for line in text.splitlines():
+        urls = find_urls(line)
+        blocked = [url for url in urls
+                   if classify_url(url) in {"amazon", "merchant", "hypd", "meesho", "lehlah"}
+                   and classify_url(url) not in allowed]
+        remaining = [url for url in urls if url not in blocked]
+        if urls and not remaining:
+            continue
+        output = line
+        for url in blocked:
+            output = output.replace(url, "")
+        if output.strip():
+            kept_lines.append(output.rstrip())
+    return "\n".join(kept_lines).strip()
+
+
+def _render_base(
+    text: str, amazon_tag: str, ek: dict[str, str],
+    hypd_store_id: str = config.HYPD_STORE_ID,
+) -> str:
     out_parts: list[str] = []
     last = 0
     for m in URL_RE.finditer(text):
@@ -206,8 +318,15 @@ def _render_base(text: str, amazon_tag: str, ek: dict[str, str], hypd_store_id: 
             replacement = apply_amazon_tag(raw_url, amazon_tag)
         elif kind == "hypd":
             replacement = convert_hypd_store_link(raw_url, hypd_store_id)
+        elif kind == "meesho":
+            # Raw Meesho product URLs need HYPD's official generator to earn.
+            # Preserve the source URL until that conversion contract is configured.
+            replacement = raw_url
         elif kind == "merchant":
             replacement = ek.get(raw_url) or compact_merchant_url(raw_url)
+        elif kind == "lehlah":
+            # Preserve AppsFlyer/LehLah attribution parameters exactly.
+            replacement = raw_url
         else:
             replacement = raw_url
         out_parts.append(text[last:start])
@@ -218,13 +337,13 @@ def _render_base(text: str, amazon_tag: str, ek: dict[str, str], hypd_store_id: 
 
 
 def _approval_render(text: str, amazon_tag: str) -> str:
-    """Produce an Amazon-approval-friendly post.
+    """Produce an Amazon-only preview with native Amazon links.
 
-    Requirements (matching Amazon associate policies + SmartBuy Hub format):
-      1. ONLY Amazon products/links (native amazon.in links with ?tag=<influencer_tag>).
-      2. Non-Amazon merchant lines/links are completely removed.
-      3. No URL shorteners on Amazon links (plain amazon.in visible).
-      4. Ends with the mandatory disclosure: '#ad (paid link)'.
+    This formatter does not guarantee Associates program approval. It applies
+    the configured tag, avoids shorteners, removes supported non-Amazon affiliate
+    links, and adds the requested ``#ad (paid link)`` disclosure footer. Amazon
+    marketplace destinations are preserved; the disclosure may not replace any
+    additional policy or program requirements.
     """
     lines = text.splitlines()
     kept_lines: list[str] = []
@@ -239,7 +358,7 @@ def _approval_render(text: str, amazon_tag: str) -> str:
 
         # Line contains URLs: check if any is Amazon vs merchant/hypd
         line_has_amazon = any(classify_url(u) == "amazon" for u in urls)
-        line_has_non_amazon = any(classify_url(u) in ("merchant", "hypd") for u in urls)
+        line_has_non_amazon = any(classify_url(u) in ("merchant", "hypd", "meesho", "lehlah") for u in urls)
 
         if line_has_amazon:
             # Retag all amazon URLs on this line
@@ -247,7 +366,7 @@ def _approval_render(text: str, amazon_tag: str) -> str:
             for u in urls:
                 if classify_url(u) == "amazon":
                     out_line = out_line.replace(u, apply_amazon_tag(u, amazon_tag))
-                elif classify_url(u) in ("merchant", "hypd"):
+                elif classify_url(u) in ("merchant", "hypd", "meesho", "lehlah"):
                     # Drop merchant or hypd url from line
                     out_line = out_line.replace(u, "").strip()
             if out_line.strip():
@@ -269,10 +388,16 @@ def _approval_render(text: str, amazon_tag: str) -> str:
     return result
 
 
-def _strip_amazon_render(text: str, ek: dict[str, str], hypd_store_id: str = "93944") -> str:
-    """Produce a post where Amazon links/lines are completely REMOVED,
-    and all non-Amazon merchant links are converted to our EarnKaro,
-    and HYPD links rewritten to our hypd_store_id."""
+def _strip_amazon_render(
+    text: str, ek: dict[str, str],
+    hypd_store_id: str = config.HYPD_STORE_ID,
+) -> str:
+    """Remove Amazon-only lines; use supplied merchant conversions if any.
+
+    Existing valid HYPD links are retagged to ``hypd_store_id``. Other links
+    without a configured conversion remain unchanged so filtering/routing can
+    fail safely without dropping the deal.
+    """
     lines = text.splitlines()
     kept_lines: list[str] = []
 
@@ -283,7 +408,7 @@ def _strip_amazon_render(text: str, ek: dict[str, str], hypd_store_id: str = "93
             continue
 
         line_has_amazon = any(classify_url(u) == "amazon" for u in urls)
-        line_has_other = any(classify_url(u) in ("merchant", "hypd") for u in urls)
+        line_has_other = any(classify_url(u) in ("merchant", "hypd", "meesho", "lehlah") for u in urls)
 
         if line_has_amazon and not line_has_other:
             # Pure Amazon line -> remove completely
@@ -322,14 +447,14 @@ def render_for_influencer(
     role: str = "broadcast",
     strip_amazon: bool = False,
     clean_promos: bool = True,
-    hypd_store_id: str = "93944",
+    hypd_store_id: str = config.HYPD_STORE_ID,
 ) -> str:
     """Render `text` for one influencer on a given channel `role`.
 
     shortened_links:
-      Map of URL -> Bitly short link (if Bitly shortening was executed for 2+ links or long links).
-      Applied on non-approval channels to keep multi-link posts clean and uncluttered.
-      NOTE: Amazon approval channel ALWAYS bypasses shorteners to preserve compliance with Amazon's native link rules.
+      Map of eligible merchant URL -> Bitly short link. Amazon Associate and
+      HYPD affiliate URLs are never replaced here; optional first-party redirects
+      for those links are handled after canonical rendering.
 
     clean_promos:
       If True (default), strips source channel promotional text, invite links, and @channel watermarks,
@@ -340,10 +465,13 @@ def render_for_influencer(
       Only Flipkart/Myntra/HYPD/etc. are posted.
 
     role:
-      'broadcast' / 'whatsapp' -> full deal: Amazon links retagged to THEIR tag
-          (or omitted if strip_amazon=True), HYPD rewritten to OUR store ID, other merchants swapped to OUR EarnKaro.
-      'approval' -> Amazon-only, posted NATIVELY (no shortener, amazon.in visible)
-          with the '#ad (paid link)' disclosure.
+      'broadcast' / 'whatsapp' -> Amazon links use the selected tag, valid HYPD
+          links can be retagged, and merchant URLs use only conversions supplied
+          by the pipeline. Disabled or unavailable conversions leave the source
+          URL intact unless upstream filtering removes that affiliate category.
+      'approval' -> supported affiliate links are Amazon-only and native (not
+          shortened), with the '#ad (paid link)' disclosure. This is a formatter,
+          not a program-approval guarantee.
     """
     post_text = clean_source_post(text) if clean_promos else text
     ek = earnkaro_links or {}
@@ -359,7 +487,12 @@ def render_for_influencer(
     # Apply Bitly shortener replacements if available (for broadcast/whatsapp channels)
     if shortened_links and role != "approval":
         for long_u, short_u in shortened_links.items():
-            if long_u and short_u and long_u != short_u:
+            if (
+                long_u
+                and short_u
+                and long_u != short_u
+                and classify_url(long_u) not in {"amazon", "hypd", "meesho", "lehlah"}
+            ):
                 rendered = rendered.replace(long_u, short_u)
 
     return rendered
@@ -375,7 +508,7 @@ def extract_price(text: str) -> float | None:
         r"(?:₹|rs\.?|inr)\s*(\d+(?:\.\d{1,2})?)",
         r"@\s*(\d+(?:\.\d{1,2})?)",
         r"(?:deal price|price|at|for|just)\s*(?:₹|rs\.?|inr|:)?\s*(\d+(?:\.\d{1,2})?)",
-        r"(\d+)\s*/-",
+        r"(?<!\d)(\d{1,7}(?:\.\d{1,2})?)\s*/-",
     ]
     prices: list[float] = []
     for pat in patterns:
@@ -437,7 +570,7 @@ def clean_source_post(text: str) -> str:
             continue
 
         urls = find_urls(stripped)
-        has_store_url = any(classify_url(u) in ("amazon", "merchant") for u in urls)
+        has_store_url = any(classify_url(u) in ("amazon", "merchant", "hypd", "meesho", "lehlah") for u in urls)
 
         if not has_store_url:
             # 1. Pure Telegram or WhatsApp invite links
@@ -577,9 +710,11 @@ def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> boo
     When set to 'all' or empty, NO restrictions are applied: ANY deal in the world is allowed!
     """
     s = (allowed_categories_spec or "").strip().lower()
-    if not s or s == "all" or s == "any" or "all" in [x.strip() for x in s.split(",")]:
+    unrestricted = {"all", "any", "unrestricted", "all categories", "all deals", "*", "no_filter", "default"}
+    tokens = {x.strip() for x in s.split(",") if x.strip()}
+    if not tokens or tokens.intersection(unrestricted):
         return True
-    allowed_set = {x.strip() for x in s.split(",") if x.strip()}
+    allowed_set = tokens
     deal_cats = set(classify_deal_category(deal_text))
     # If the deal matches any allowed category, return True
     if deal_cats.intersection(allowed_set):
@@ -600,7 +735,7 @@ def is_time_in_schedule(schedule_spec: str, current_time: str | None = None) -> 
     Empty schedule_spec means active 24/7 (always True).
     """
     spec = (schedule_spec or "").strip()
-    if not spec or spec.lower() == "all" or spec.lower() == "24/7":
+    if spec.lower() in {"", "all", "any", "unrestricted", "24/7", "*", "no_filter", "default"}:
         return True
 
     from datetime import datetime
@@ -674,8 +809,10 @@ def calculate_deal_loot_score(text: str) -> float:
 
 
 def format_loot_of_the_hour_post(original_post: str, hour_label: str = "") -> str:
-    """Transform the best deal of the hour into an eye-catching, high-converting banner post.
-    hour_label: e.g. '2:00 PM', '3:00 PM' (IST)
+    """Wrap a ranked recent deal in the application's hourly promo banner.
+
+    The ranking is heuristic and the banner does not predict sales.
+    ``hour_label`` may be a local-time label such as ``2:00 PM``.
     """
     time_badge = f" [ {hour_label} SPECIAL ]" if hour_label else ""
     lines = [
@@ -694,18 +831,13 @@ def format_loot_of_the_hour_post(original_post: str, hour_label: str = "") -> st
 
 
 def deal_signature(text: str) -> str:
-    """Enterprise-grade cross-source product deduplication signature.
-    Identifies identical products posted across MULTIPLE different source channels
-    (Powerloot, Meesho Deals, Shopsy, Secret Loots, Mega Deals, etc.):
-    1. Amazon: Canonical ASIN (/dp/B0..., /gp/product/B0...)
-    2. HYPD / Meesho: Canonical item/afflink token (/afflink/..., /store/<digits>/...),
-       guaranteeing that different referral links or different store IDs for the same product match!
-    3. Flipkart / Shopsy: Canonical product item code (/p/itm... or pid=...)
-    4. Myntra: Canonical article ID (/kurtas/.../<digits>/buy)
-    5. Ajio: Canonical product code (/p/<digits_or_color>)
-    6. General URLs: Stripped of all query params, UTM tags, and affiliate tracking.
-    7. Fallback: Clean title token + price fingerprint.
-    Guarantees duplicate products are NEVER re-posted to the same group/channel.
+    """Build a heuristic signature used for per-channel deduplication.
+
+    Known product identifiers (Amazon ASIN, HYPD token, Flipkart item code,
+    Myntra article ID, or Ajio product code) take priority; otherwise a cleaned
+    URL or title/price fingerprint is used. This catches common cross-source
+    duplicates but cannot identify every variant or guarantee zero false
+    positives/negatives.
     """
     import hashlib
 

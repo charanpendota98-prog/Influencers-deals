@@ -11,8 +11,6 @@ import asyncio
 from typing import Iterable
 import aiohttp
 
-from . import config
-
 BITLY_API_URL = "https://api-ssl.bitly.com/v4/shorten"
 BITLY_CACHE: dict[str, str] = {}
 
@@ -53,7 +51,9 @@ async def shorten_one(session: aiohttp.ClientSession, long_url: str, token: str)
 
 
 async def shorten_urls(urls: Iterable[str], token: str | None = None) -> dict[str, str]:
-    api_token = token or config.BITLY_API_KEY
+    # Tokens are resolved per channel/profile in the pipeline; never fall back
+    # to a global credential here, where it could leak across influencers.
+    api_token = str(token or "").strip()
     urls_list = list(urls)
     if not api_token or not urls_list:
         return {u: u for u in urls_list}

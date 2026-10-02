@@ -3,7 +3,9 @@ from dashboard.app import app
 from influencer_hub import db, config, pipeline
 
 
-def test_secret_affiliate_vault_password_protection():
+def test_secret_affiliate_vault_password_protection(monkeypatch):
+    monkeypatch.setitem(app.config, "TESTING", True)
+    monkeypatch.setattr(config, "ADMIN_DELETE_PASSWORD", "unit-test-admin-password")
     db.init()
     db.migrate()
     client = app.test_client()

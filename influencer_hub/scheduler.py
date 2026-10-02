@@ -1,13 +1,11 @@
-"""Automated Background Scheduler for Influencer Deals Platform.
+"""Background scheduler for periodic deal highlights.
 
 Responsibilities:
-1. Hourly 'Loot of the Hour' Dispatcher:
-   - Evaluates the top-rated deal across active channels every hour (at XX:00 IST).
-   - Formats the deal with the royal hourly highlight banner and dispatches it.
-2. Anti-Ban Jitter & Cooling Supervisor:
-   - Ensures WhatsApp sessions maintain human-like pauses and safety resets.
-3. Health & Auto-Recovery Monitor:
-   - Keeps SQLite connections healthy and garbage-collects old dedup signatures (>30 days).
+1. Hourly highlight dispatcher: asks the pipeline to rank recent deals and
+   dispatches the selected banner to eligible destinations.
+2. Send pacing is handled by the pipeline; it reduces frequency but does not
+   guarantee account safety or platform acceptance.
+3. Database cleanup is handled by the relevant pipeline/DB maintenance tasks.
 """
 from __future__ import annotations
 
@@ -26,7 +24,7 @@ _RUNNING = False
 async def _scheduler_loop():
     global _RUNNING
     _RUNNING = True
-    print("[scheduler] Automated Loot & Anti-Ban Supervisor started.")
+    print("[scheduler] Periodic deal-highlight scheduler started.")
     last_hourly_check = -1
 
     while _RUNNING:

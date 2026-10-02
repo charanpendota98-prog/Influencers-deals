@@ -1,0 +1,23 @@
+{% extends "layout.html" %}
+{% block title %}Admin Sign In · Influencer Hub{% endblock %}
+{% block content %}
+<section class="auth-shell" aria-labelledby="login-title">
+  <div class="auth-card">
+    <div class="auth-mark" aria-hidden="true">🔐</div>
+    <p class="eyebrow">PRIVATE OPERATIONS CONSOLE</p>
+    <h1 id="login-title">Sign in to Influencer Hub</h1>
+    <p class="auth-copy">Use the dashboard admin password configured on the server. This session expires after 12 hours.</p>
+    {% if login_error %}
+      <div class="alert alert-error" role="alert">{{ login_error }}</div>
+    {% endif %}
+    <form method="post" action="{{ url_for('login') }}" class="auth-form">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+      <input type="hidden" name="next" value="{{ next_url or '' }}" />
+      <label for="password">Admin password</label>
+      <input id="password" type="password" name="password" required autofocus autocomplete="current-password" />
+      <button type="submit" class="button-primary">Sign in securely</button>
+    </form>
+    <p class="auth-footnote">Protected with a server-side session, CSRF checks, and secure cookie settings.</p>
+  </div>
+</section>
+{% endblock %}

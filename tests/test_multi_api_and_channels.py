@@ -81,13 +81,21 @@ def test_custom_wa_session_per_channel():
 def test_pipeline_uses_influencer_bitly_key_for_multilink():
     """Ensure pipeline passes the influencer's specific Bitly token when post has 2+ links."""
     db.init()
-    iid = db.add_influencer("Bitly VIP", "vip-21", bitly_api_key="vip-secret-bitly-token")
-    cid = db.add_channel(iid, "telegram", "@viploots", role="broadcast", status="ready")
+    iid = db.add_influencer(
+        "Bitly VIP", "vip-21", bitly_api_key="vip-secret-bitly-token",
+        allow_amazon=False,
+    )
+    cid = db.add_channel(
+        iid, "telegram", "@viploots", role="broadcast", status="ready",
+        allow_amazon=False,
+    )
 
+    # Amazon URLs remain visible/canonical and are deliberately not sent to
+    # Bitly; use two non-Amazon merchant URLs to exercise the channel token.
     deal_multilink = (
         "🔥 Combo Offer\n"
-        "Item 1: https://www.amazon.in/dp/B081111111\n"
-        "Item 2: https://www.amazon.in/dp/B082222222"
+        "Item 1: https://www.flipkart.com/headphones/p/itm11111111111111?pid=HEADPHONE1&track=one\n"
+        "Item 2: https://www.myntra.com/shoes/brand/running-shoes/1234567/buy?utm_source=feed"
     )
 
     shortened_tokens_used = []
@@ -109,13 +117,20 @@ def test_pipeline_uses_influencer_bitly_key_for_multilink():
 def test_pipeline_skips_bitly_when_influencer_has_no_key():
     """If influencer hasn't provided a Bitly key, standard affiliate links are used without Bitly."""
     db.init()
-    iid = db.add_influencer("No Bitly User", "nobitly-21", bitly_api_key="")
-    cid = db.add_channel(iid, "telegram", "@nobitly", role="broadcast", status="ready")
+    iid = db.add_influencer(
+        "No Bitly User", "nobitly-21", bitly_api_key="", allow_amazon=False
+    )
+    cid = db.add_channel(
+        iid, "telegram", "@nobitly", role="broadcast", status="ready",
+        allow_amazon=False,
+    )
 
+    # Amazon URLs remain visible/canonical; non-Amazon links remain unshortened
+    # when this influencer has no Bitly key.
     deal_multilink = (
         "🔥 Combo Offer\n"
-        "Item 1: https://www.amazon.in/dp/B081111111\n"
-        "Item 2: https://www.amazon.in/dp/B082222222"
+        "Item 1: https://www.flipkart.com/headphones/p/itm11111111111111?pid=HEADPHONE1&track=one\n"
+        "Item 2: https://www.myntra.com/shoes/brand/running-shoes/1234567/buy?utm_source=feed"
     )
 
     shorten_called = False

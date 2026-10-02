@@ -26,13 +26,25 @@ On boot it auto-resumes any previously paired sessions from `./auth/<key>/`.
 | POST | `/sessions/:key/send` | `{to, text}` |
 | POST | `/sessions/:key/group` | `{subject, participant}` → creates a group the influencer owns |
 | POST | `/sessions/:key/newsletter` | `{name, description}` → creates an official Channel |
+| POST | `/sessions/:key/resolve-newsletter` | resolve a `whatsapp.com/channel/...` invite to its `@newsletter` JID |
 | POST | `/sessions/:key/stop` | logout + forget |
 
-Auth: if `WA_HUB_TOKEN` is set, all routes require `Authorization: Bearer <token>`.
+All routes require `Authorization: Bearer <token>` when `WA_HUB_TOKEN` is set;
+production refuses to start without it. The server binds to `127.0.0.1` by
+default (`WA_HUB_HOST` can override this only for an intentional private setup).
 
 ## Notes
-- Each session persists creds under `./auth/<key>/`, so a restart does not need
-  a re-scan (until the phone logs the session out).
-- Official WhatsApp Channel **creation** works; automated **posting** to a
-  newsletter is not exposed by this baileys build — the group feed is the
-  automated path. See the top-level README for the rationale.
+- Each session persists credentials under `./auth/<key>/`; a restart normally
+  does not need a re-scan unless WhatsApp logs the linked device out.
+- The pinned Baileys build has a low-level text-message route for newsletter
+  JIDs. The dashboard resolves Channel links to a real `@newsletter` JID, saves
+  it as Pending, and only activates it after an operator's explicit test post
+  succeeds. This tests the connected number's posting access; it cannot promise
+  future delivery or prevent WhatsApp account restrictions.
+- WhatsApp Channels are not exposed by Meta's official Cloud API. Baileys is an
+  unofficial WhatsApp-Web integration, so this Channel path is best-effort and
+  may break when WhatsApp changes its protocol. The deal pipeline sends text
+  with links; do not assume media posts work for newsletters.
+- A WhatsApp group invite link resolves metadata but does not silently join the
+  group. The paired account must already be a member with posting permission
+  before the test succeeds.

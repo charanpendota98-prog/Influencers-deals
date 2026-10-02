@@ -1,11 +1,9 @@
 """influencer_hub — multi-tenant influencer layer on top of the bestgaa loot bot.
 
-One shared deal pool. Per influencer:
-  * we create a Telegram channel under our bot account
-  * we pair the influencer's WhatsApp number (QR) for a group feed + an
-    official WhatsApp Channel
-  * Amazon links carry THEIR amazon associate tag
-  * every other merchant link carries OUR EarnKaro publisher id
+One shared deal pool is rendered separately for each influencer and destination.
+Amazon URLs use the saved profile/channel Associate tag; supported non-Amazon
+URLs follow enabled affiliate-network settings when credentials and conversion
+support are available. Network attribution and commissions are not guaranteed.
 
 See README.md for the full walkthrough.
 """

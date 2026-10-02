@@ -53,22 +53,76 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    try:
+        return float(_env(name) or default)
+    except ValueError:
+        return default
+
+
 # ----- Database -----
 DB_PATH = Path(_env("HUB_DB_PATH", str(BASE_DIR / "influencer_hub" / "hub.sqlite3")))
 
-# ----- Telegram (our bot account that owns the created channels) -----
-TELEGRAM_API_ID = _env("TELEGRAM_API_ID")
+# ----- Amazon Associates / Creators API -----
+# The configured Associate tag is a public identifier, not an API credential.
+# It is only a fallback for new/unspecified profiles; use each creator's own
+# supplied tag whenever one is available.
+AMAZON_ASSOCIATE_TAG = _env("AMAZON_ASSOCIATE_TAG", "mama086-21")
+DEFAULT_AMAZON_TAG = AMAZON_ASSOCIATE_TAG
+AMAZON_CREATORS_API_CLIENT_ID = _env(
+    "AMAZON_CREATORS_API_CLIENT_ID",
+    "amzn1.application-oa2-client.83229d9d14664351be9fc2059038a4f2",
+)
+AMAZON_CREATORS_API_CLIENT_SECRET = _env("AMAZON_CREATORS_API_CLIENT_SECRET")
+# Amazon assigns a version to each Creators API credential. The default is
+# configurable; set this to the exact version shown in Associates Central.
+AMAZON_CREATORS_API_VERSION = _env("AMAZON_CREATORS_API_VERSION", "3.2")
+AMAZON_CREATORS_API_MARKETPLACE = _env("AMAZON_CREATORS_API_MARKETPLACE", "www.amazon.in")
+AMAZON_CREATORS_API_ENDPOINT = _env(
+    "AMAZON_CREATORS_API_ENDPOINT", "https://creatorsapi.amazon/catalog/v1"
+)
+AMAZON_CREATORS_API_APP_NAME = _env("AMAZON_CREATORS_API_APP_NAME", "SMART_BUY")
+AMAZON_CREATORS_API_TIMEOUT = _int("AMAZON_CREATORS_API_TIMEOUT", 15)
+# Optional first-party short-link base (an HTTPS domain routed to the Flask app).
+# Blank keeps Amazon's canonical /dp/<ASIN>?tag=... links.
+AMAZON_SHORT_LINK_BASE_URL = _env("AMAZON_SHORT_LINK_BASE_URL", "").rstrip("/")
+
+# ----- Telegram (the account that reads joined source dialogs and posts) -----
+# API_ID is an application identifier. API_HASH is kept out of source control;
+# put the value in the VM's ignored .env file or a secret manager.
+TELEGRAM_API_ID = _env("TELEGRAM_API_ID", "33595682")
 TELEGRAM_API_HASH = _env("TELEGRAM_API_HASH")
-# Telethon session file used by the existing bestgaa bot; we reuse it so the
-# channels we create live under the SAME account that already runs 2 channels.
+# The existing authorized Telethon SQLite session is used as the seed for a
+# process-local session copy so Flask, the worker, and CLI never open the same
+# SQLite file concurrently.
 TELEGRAM_SESSION = _env("TELEGRAM_SESSION", "bestgaa_fresh")
-# The posting bot we add as admin to every created channel.
+TELEGRAM_SESSION_ISOLATION = _bool("TELEGRAM_SESSION_ISOLATION", True)
+TELEGRAM_SESSION_SLOT = _env("HUB_TELEGRAM_SESSION_SLOT", "")
+TELEGRAM_SOURCE_REQUEST_SPACING = max(0.0, _float("TELEGRAM_SOURCE_REQUEST_SPACING", 0.25))
+TELEGRAM_OUTPUT_CHANNELS = [
+    s.strip() for s in _env("TELEGRAM_OUTPUT_CHANNELS", "").split(",") if s.strip()
+]
+# The posting bot we optionally add as admin to created channels.
 BOT_TOKEN = _env("BOT_TOKEN")
 BOT_USERNAME = _env("BOT_USERNAME", "your_posting_bot")  # without leading @
 
-# ----- EarnKaro (OUR publisher id — used for every non-Amazon merchant link) -----
+# ----- Continuous deal worker -----
+DEAL_WORKER_POLL_INTERVAL = _int("DEAL_WORKER_POLL_INTERVAL", 30)
+DEAL_WORKER_BATCH_SIZE = _int("DEAL_WORKER_BATCH_SIZE", 100)
+DEAL_WORKER_INITIAL_BATCH_SIZE = _int("DEAL_WORKER_INITIAL_BATCH_SIZE", 10)
+DEAL_WORKER_MAX_BACKOFF = _int("DEAL_WORKER_MAX_BACKOFF", 900)
+HYPD_STORE_ID = _env("HYPD_STORE_ID", "93944")
+# Optional branded first-party domain for shortening existing HYPD and LehLah
+# Meesho affiliate links (e.g. https://go.yourbrand.in). No API key is needed.
+MEESHO_SHORT_LINK_BASE_URL = _env("MEESHO_SHORT_LINK_BASE_URL", "").rstrip("/")
+# LehLah short redirects stay disabled until your account is approved and an
+# operator explicitly enables this setting.
+LEHLAH_SHORTLINKS_ENABLED = _bool("LEHLAH_SHORTLINKS_ENABLED", False)
+
+# ----- EarnKaro (optional configured network for eligible non-Amazon links) -----
 EARNKARO_API_KEY = _env("EARNKARO_API_KEY")
-EARNKARO_PUBLISHER_ID = _env("EARNKARO_PUBLISHER_ID")
+# Known owner ID used by the dashboard's vault default; explicit env/DB values override it.
+EARNKARO_PUBLISHER_ID = _env("EARNKARO_PUBLISHER_ID", "5478322")
 EARNKARO_API_URL = _env("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public")
 
 # ----- Shared deal pool (one central source list for all influencers) -----
@@ -78,20 +132,38 @@ SHARED_SOURCES = [s for s in _env("SHARED_SOURCES", "").split(",") if s]
 # is flagged use_dummy_sources=true (safe staging before going live).
 DUMMY_SOURCES = [s for s in _env("DUMMY_SOURCES", "").split(",") if s]
 
-# ----- WhatsApp hub (Node/baileys multi-session service) -----
+# ----- WhatsApp hub (Node/Baileys multi-session service) -----
 WA_HUB_URL = _env("WA_HUB_URL", "http://127.0.0.1:8088")
-WA_HUB_TOKEN = _env("WA_HUB_TOKEN", "")  # optional shared secret
+WA_HUB_TOKEN = _env("WA_HUB_TOKEN", "")  # required by the hub in production
 
 # ----- Ops / monitoring -----
 # Telegram channel (username or id) where VM/bot health is reported.
 OPS_TELEGRAM_CHANNEL = _env("OPS_TELEGRAM_CHANNEL", "")
 VM_WATCH_INTERVAL = _int("VM_WATCH_INTERVAL", 300)  # seconds
 
-# ----- Bitly shortener (for multi-link clean formatting) -----
+# ----- Bitly shortener (for eligible links only) -----
 BITLY_API_KEY = _env("BITLY_API_KEY", "")
+# Global API credentials are opt-in per owned influencer database ID. A blank
+# allowlist means the global key is not used for anyone; per-profile/channel
+# keys continue to work normally.
+BITLY_GLOBAL_INFLUENCER_IDS = {
+    value.strip()
+    for value in _env("BITLY_GLOBAL_INFLUENCER_IDS").split(",")
+    if value.strip()
+}
 
-# ----- Security & Admin protection -----
-ADMIN_DELETE_PASSWORD = _env("ADMIN_DELETE_PASSWORD", "admin123")
+# ----- Dashboard security -----
+# No default admin password is shipped. The dashboard fails closed until a
+# password is set in the private environment. ADMIN_DELETE_PASSWORD may be
+# separate; if omitted, it inherits the dashboard password.
+_ADMIN_DELETE_PASSWORD = _env("ADMIN_DELETE_PASSWORD")
+DASHBOARD_ADMIN_PASSWORD = _env("DASHBOARD_ADMIN_PASSWORD") or _ADMIN_DELETE_PASSWORD
+ADMIN_DELETE_PASSWORD = _ADMIN_DELETE_PASSWORD or DASHBOARD_ADMIN_PASSWORD
+DASHBOARD_SECRET_KEY = _env("DASHBOARD_SECRET_KEY")
+HUB_ENV = _env("HUB_ENV", "development").lower()
+DASHBOARD_COOKIE_SECURE = _bool(
+    "DASHBOARD_COOKIE_SECURE", default=HUB_ENV == "production"
+)
 
 # ----- Pipeline pacing -----
 QUEUE_WORKERS = _int("HUB_QUEUE_WORKERS", 4)
