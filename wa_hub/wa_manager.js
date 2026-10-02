@@ -22,20 +22,21 @@ import makeWASocket, {
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const AUTH_ROOT = path.join(__dirname, 'auth')
 const SESSIONS_FILE = path.join(__dirname, 'sessions.json')
-fs.mkdirSync(AUTH_ROOT, { recursive: true })
 
 const logger = pino({ level: process.env.WA_LOG_LEVEL || 'info' })
 
 class Session {
-  constructor(key, meta = {}) {
+  constructor(key, meta = {}, authRoot = AUTH_ROOT) {
     this.key = key
     this.meta = meta
     this.sock = null
+    this.startPromise = null
+    this.stopping = false
     this.qr = null
     this.status = 'offline' // offline | qr | connecting | connected | error
     this.phone = ''
     this.listeners = new Set() // SSE subscribers
-    this.authDir = path.join(AUTH_ROOT, sanitize(key))
+    this.authDir = path.join(authRoot, sanitize(key))
   }
 
   emit(event) {
@@ -52,17 +53,35 @@ function sanitize(key) {
 }
 
 export class Hub {
-  constructor() {
+  constructor({
+    authRoot = AUTH_ROOT,
+    sessionsFile = SESSIONS_FILE,
+    useAuthState = useMultiFileAuthState,
+    makeSocket = makeWASocket,
+    cacheSignalKeyStore = makeCacheableSignalKeyStore,
+    schedule = setTimeout,
+    sessionLogger = logger,
+  } = {}) {
+    this.authRoot = authRoot
+    this.sessionsFile = sessionsFile
+    this.useAuthState = useAuthState
+    this.makeSocket = makeSocket
+    this.cacheSignalKeyStore = cacheSignalKeyStore
+    this.schedule = schedule
+    this.logger = sessionLogger
     this.sessions = new Map()
+    fs.mkdirSync(this.authRoot, { recursive: true, mode: 0o700 })
     this._load()
   }
 
   _load() {
     try {
-      const saved = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'))
+      const saved = JSON.parse(fs.readFileSync(this.sessionsFile, 'utf8'))
       for (const s of saved) {
-        // Re-create the object shell; the socket is connected lazily on start().
-        const sess = new Session(s.key, s.meta || {})
+        if (!s?.key) continue
+        // The session identity persists; connection status is re-read from the
+        // live socket after its saved Baileys credentials are resumed.
+        const sess = new Session(s.key, s.meta || {}, this.authRoot)
         this.sessions.set(s.key, sess)
       }
     } catch (_) { /* no saved sessions yet */ }
@@ -70,7 +89,7 @@ export class Hub {
 
   _save() {
     const data = [...this.sessions.values()].map(s => ({ key: s.key, meta: s.meta }))
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2))
+    fs.writeFileSync(this.sessionsFile, JSON.stringify(data, null, 2), { mode: 0o600 })
   }
 
   list() {
@@ -86,34 +105,51 @@ export class Hub {
   get(key) { return this.sessions.get(key) }
 
   async start(key, meta = {}) {
-    if (this.sessions.has(key) && this.sessions.get(key).sock) {
-      return this.sessions.get(key)
-    }
-    const sess = this.sessions.get(key) || new Session(key, meta)
+    const sess = this.sessions.get(key) || new Session(key, meta, this.authRoot)
     sess.meta = { ...sess.meta, ...meta }
     this.sessions.set(key, sess)
-    this._save()
+    if (sess.sock) return sess
+    if (sess.startPromise) return sess.startPromise
 
-    const { state, saveCreds } = await useMultiFileAuthState(sess.authDir)
+    sess.stopping = false
     sess.status = 'connecting'
-    const sock = makeWASocket({
+    this._save()
+    const startPromise = this._openSocket(sess)
+    sess.startPromise = startPromise
+    try {
+      return await startPromise
+    } catch (error) {
+      if (this.sessions.get(key) === sess && !sess.sock) sess.status = 'offline'
+      throw error
+    } finally {
+      if (sess.startPromise === startPromise) sess.startPromise = null
+    }
+  }
+
+  async _openSocket(sess) {
+    const { state, saveCreds } = await this.useAuthState(sess.authDir)
+    if (this.sessions.get(sess.key) !== sess || sess.stopping) return sess
+
+    const sock = this.makeSocket({
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
+        keys: this.cacheSignalKeyStore(state.keys, this.logger),
       },
-      logger,
+      logger: this.logger,
       printQRInTerminal: false,
       connectTimeoutMs: 60_000,
     })
     sess.sock = sock
 
     sock.ev.on('connection.update', (u) => {
+      // Ignore late events from a socket replaced during reconnect or logout.
+      if (this.sessions.get(sess.key) !== sess || sess.sock !== sock) return
       const { connection, qr, lastDisconnect } = u
       if (qr) {
         sess.qr = qr
         sess.status = 'qr'
         sess.emit({ type: 'qr', qr })
-        logger.info({ key }, 'QR available')
+        this.logger.info({ key: sess.key }, 'QR available')
       }
       if (connection === 'connecting') sess.status = 'connecting'
       if (connection === 'open') {
@@ -121,17 +157,34 @@ export class Hub {
         sess.phone = sock.user?.id?.split('@')[0] || ''
         sess.qr = null
         sess.emit({ type: 'status', status: 'connected', phone: sess.phone })
-        logger.info({ key, phone: sess.phone }, 'session connected')
+        this.logger.info({ key: sess.key, phone: sess.phone }, 'session connected')
       }
       if (connection === 'close') {
         const reason = lastDisconnect?.error?.output?.statusCode
+        const loggedOut = reason === DisconnectReason.loggedOut
+        sess.sock = null
+        sess.qr = null
         sess.status = 'offline'
-        const shouldReconnect = reason !== DisconnectReason.loggedOut
+        if (loggedOut) {
+          sess.phone = ''
+          try {
+            fs.rmSync(sess.authDir, { recursive: true, force: true })
+          } catch (error) {
+            this.logger.warn({ key: sess.key, error }, 'could not clear logged-out auth state')
+          }
+        }
+        const shouldReconnect = !sess.stopping && !loggedOut
         sess.emit({ type: 'status', status: 'offline' })
-        logger.warn({ key, reason }, 'session closed')
+        this.logger.warn({ key: sess.key, reason }, 'session closed')
         if (shouldReconnect) {
-          // baileys will auto-reconnect using saved creds; give it a tick.
-          setTimeout(() => this.start(key, sess.meta).catch(() => {}), 3000)
+          // Clear the closed socket before retrying so start() can really create
+          // a replacement socket instead of returning the stale one.
+          this.schedule(() => {
+            if (this.sessions.get(sess.key) !== sess || sess.stopping || sess.sock || sess.startPromise) return
+            return this.start(sess.key, sess.meta).catch((error) => {
+              this.logger.warn({ key: sess.key, error }, 'session reconnect failed')
+            })
+          }, 3000)
         }
       }
     })
@@ -271,9 +324,28 @@ export class Hub {
 
   async stop(key) {
     const s = this.sessions.get(key)
-    if (s?.sock) { try { await s.sock.logout() } catch (_) {} try { s.sock.end() } catch (_) {} }
-    this.sessions.delete(key)
+    if (!s) return
+    s.stopping = true
+    if (s.startPromise) {
+      try { await s.startPromise } catch (_) { /* best-effort shutdown */ }
+    }
+
+    const sock = s.sock
+    s.sock = null
+    s.qr = null
+    s.phone = ''
+    s.status = 'offline'
+    if (sock) {
+      try { await sock.logout() } catch (_) { /* best effort */ }
+      try { sock.end() } catch (_) { /* best effort */ }
+    }
+    if (this.sessions.get(key) === s) this.sessions.delete(key)
     this._save()
+    try {
+      await fs.promises.rm(s.authDir, { recursive: true, force: true })
+    } catch (error) {
+      this.logger.warn({ key, error }, 'could not remove stopped session auth state')
+    }
   }
 }
 

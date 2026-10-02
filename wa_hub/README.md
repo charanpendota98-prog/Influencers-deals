@@ -34,8 +34,14 @@ production refuses to start without it. The server binds to `127.0.0.1` by
 default (`WA_HUB_HOST` can override this only for an intentional private setup).
 
 ## Notes
-- Each session persists credentials under `./auth/<key>/`; a restart normally
-  does not need a re-scan unless WhatsApp logs the linked device out.
+- Session identities and labels are saved in `sessions.json`; Baileys credentials
+  persist under `./auth/<key>/`. On restart the hub resumes those credentials and
+  derives `status` and `phone` from the live socket instead of restoring a stale
+  `connected` claim. Transient disconnects retry with a new socket; a logged-out
+  session clears its invalid auth files so an operator can pair again.
+- Dashboard QR/status polling uses GET-only endpoints and does not start sessions,
+  send messages, or activate destinations. Pairing and test posts remain explicit
+  operator actions. Run the hub unit tests with `npm test`.
 - The pinned Baileys build has a low-level text-message route for newsletter
   JIDs. The dashboard resolves Channel links to a real `@newsletter` JID, saves
   it as Pending, and only activates it after an operator's explicit test post

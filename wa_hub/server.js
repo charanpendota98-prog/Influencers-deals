@@ -69,9 +69,9 @@ app.get('/sessions/:key/qr', async (req, res) => {
   const s = hub.get(req.params.key)
   if (!s) return res.status(404).json({ ok: false, error: 'no such session' })
   const qr = s.qr
-  if (!qr) return res.json({ ok: true, qr: null, status: s.status })
+  if (!qr) return res.json({ ok: true, qr: null, status: s.status, phone: s.phone })
   const dataUrl = await QRCode.toDataURL(qr, { width: 320 })
-  res.json({ ok: true, qr: dataUrl, status: s.status })
+  res.json({ ok: true, qr: dataUrl, status: s.status, phone: s.phone })
 })
 
 // Server-Sent Events: live QR + status for the dashboard.
@@ -171,6 +171,7 @@ app.listen(PORT, HOST, () => {
   console.log(`[wa-hub] listening on ${HOST}:${PORT}`)
   // Auto-resume any previously paired sessions.
   for (const s of hub.list()) {
-    hub.start(s.key, s.meta).catch((e) => console.error('resume failed', s.key, e))
+    const saved = hub.get(s.key)
+    hub.start(s.key, saved?.meta || {}).catch((e) => console.error('resume failed', s.key, e))
   }
 })
