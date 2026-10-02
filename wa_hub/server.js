@@ -10,9 +10,11 @@
 //   POST /sessions/:key/send      { to, text }
 //   POST /sessions/:key/group     { subject, participant }
 //   POST /sessions/:key/newsletter { name, description }
+//   POST /sessions/:key/resolve-newsletter { invite }
 //   POST /sessions/:key/stop
 //
-// Auth: if WA_HUB_TOKEN is set, all routes require `Authorization: Bearer <token>`.
+// Auth: all routes require `Authorization: Bearer <token>` when configured;
+// production requires a strong token and loopback-only binding.
 
 import express from 'express'
 import QRCode from 'qrcode'
@@ -23,6 +25,16 @@ app.use(express.json())
 
 const TOKEN = process.env.WA_HUB_TOKEN || ''
 const PORT = parseInt(process.env.WA_HUB_PORT || '8088', 10)
+const HOST = process.env.WA_HUB_HOST || '127.0.0.1'
+
+if (process.env.NODE_ENV === 'production' && TOKEN.length < 32) {
+  console.error('[wa-hub] a private WA_HUB_TOKEN of at least 32 characters is required in production')
+  process.exit(1)
+}
+if (process.env.NODE_ENV === 'production' && !['127.0.0.1', '::1'].includes(HOST)) {
+  console.error('[wa-hub] production host must remain loopback-only (127.0.0.1 or ::1)')
+  process.exit(1)
+}
 
 function auth(req, res, next) {
   if (!TOKEN) return next()
@@ -89,9 +101,22 @@ app.post('/sessions/:key/resolve-invite', async (req, res) => {
   if (!invite) return res.status(400).json({ ok: false, error: 'invite required' })
   try {
     const r = await hub.resolveInviteCode(req.params.key, invite)
+    if (!r?.ok || !r?.jid) return res.status(422).json(r)
     res.json(r)
   } catch (e) {
-    res.status(500).json({ ok: false, error: String(e) })
+    res.status(422).json({ ok: false, error: String(e) })
+  }
+})
+
+app.post('/sessions/:key/resolve-newsletter', async (req, res) => {
+  const { invite } = req.body || {}
+  if (!invite) return res.status(400).json({ ok: false, error: 'invite required' })
+  try {
+    const r = await hub.resolveNewsletterInvite(req.params.key, invite)
+    if (!r?.ok || !r?.jid) return res.status(422).json(r)
+    res.json(r)
+  } catch (e) {
+    res.status(422).json({ ok: false, error: String(e) })
   }
 })
 
@@ -142,8 +167,8 @@ app.post('/sessions/:key/stop', async (req, res) => {
   res.json({ ok: true })
 })
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[wa-hub] listening on 0.0.0.0:${PORT}`)
+app.listen(PORT, HOST, () => {
+  console.log(`[wa-hub] listening on ${HOST}:${PORT}`)
   // Auto-resume any previously paired sessions.
   for (const s of hub.list()) {
     hub.start(s.key, s.meta).catch((e) => console.error('resume failed', s.key, e))

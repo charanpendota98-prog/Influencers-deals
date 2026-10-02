@@ -46,11 +46,20 @@
     {% endif %}
     {% if request.args.get('test_status') == 'posted' %}
       <div style="background:#065f46; color: #a7f3d0; padding:4px 10px; border-radius:6px; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">
-        🚀 Test Message Dispatched Successfully to {{ request.args.get('ch_name') }}!
+        ✅ Test post accepted for {{ request.args.get('ch_name') }}. Check WhatsApp; a pending WhatsApp destination is now active.
       </div>
     {% elif request.args.get('test_status') == 'failed' %}
       <div style="background:#7f1d1d; color: #fca5a5; padding:4px 10px; border-radius:6px; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">
         ⚠️ Test Message Failed to {{ request.args.get('ch_name') }}: {{ request.args.get('test_err') }}
+      </div>
+    {% endif %}
+    {% if request.args.get('wa_link_status') == 'pending' %}
+      <div style="background:#713f12; color:#fde68a; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
+        WhatsApp destination resolved and saved as Pending. Use Test to verify this account can post; it will not receive deal posts before a successful test.
+      </div>
+    {% elif request.args.get('wa_link_status') == 'failed' %}
+      <div style="background:#7f1d1d; color:#fecaca; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
+        WhatsApp destination was not saved: {{ request.args.get('wa_link_error') }}
       </div>
     {% endif %}
   </div>
@@ -377,7 +386,7 @@
             </select>
           </td>
           <td>
-            <button form="channel-update-{{ c.id }}" type="submit" formaction="{{ url_for('send_test_message', channel_id=c.id) }}" style="background: #10b981; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: bold; cursor: pointer;" title="Send instant test alert message">🚀 Test</button>
+            <button form="channel-update-{{ c.id }}" type="submit" formaction="{{ url_for('send_test_message', channel_id=c.id) }}" style="background: #10b981; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: bold; cursor: pointer;" title="This sends a real visible test post; a successful pending WhatsApp test activates that destination">🚀 Test</button>
           </td>
           <td>
             <button form="channel-update-{{ c.id }}" type="submit" style="background: #0284c7; color: white; border: none; padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;">Save</button>
@@ -404,7 +413,7 @@
       <span style="background:rgba(56,189,248,0.15); color:#38bdf8; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:700;">Unlimited Multi-Channel Support</span>
     </div>
     <p class="hint" style="font-size:13px; color:#94a3b8; margin-bottom:14px; line-height:1.5;">
-      ఈ ఇన్‌ఫ్లుయెన్సర్‌కు <b>రెండో టెలిగ్రామ్ ఛానల్ (Extra Telegram #2)</b> ఉన్నా, లేదా <b>2 లక్షల మంది ఫాలోవర్స్ ఉన్న పెద్ద వాట్సాప్ ఛానల్ / గ్రూప్ (WhatsApp Channel / Group)</b> ఉన్నా — ఎన్ని ఛానెల్స్ అయినా సరే ఇక్కడ 1-క్లిక్‌తో ఈజీగా లింక్ చేయవచ్చు:
+      Extra Telegram destinations can be saved here. For WhatsApp, choose Group or Channel and provide its invite URL/JID; it is saved Pending until an explicit test post succeeds. Channel posting needs this connected number to be an admin.
     </p>
     <form method="post" action="{{ url_for('add_manual_channel', inf_id=inf.id) }}" class="row" data-require-reauth>
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
@@ -418,7 +427,7 @@
         <option value="whatsapp_group">WhatsApp Group</option>
         <option value="whatsapp_channel">WhatsApp Channel</option>
       </select>
-      <input name="identifier" placeholder="@channel or link / WhatsApp invite" required style="flex: 1; min-width: 180px;" />
+      <input name="identifier" placeholder="@telegram, whatsapp.com/channel/… or chat.whatsapp.com/…" required style="flex: 1; min-width: 180px;" />
       <input name="bitly_api_key" placeholder="Bitly Key (optional)" style="width: 130px; font-family: monospace; font-size: 11px;" />
       <input name="categories" placeholder="clothing,electronics (All)" style="width: 140px; font-size: 11px;" />
       <input name="posting_schedule" placeholder="06:00-02:00 (24/7)" style="width: 130px; font-size: 11px;" />
@@ -452,7 +461,7 @@
     <h2 style="color: #4ade80; margin: 0; font-size:18px;">💬 Dedicated WhatsApp Account &amp; Channel Linker</h2>
     <span style="background:#064e3b; color:#86efac; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ISOLATED SESSION</span>
   </div>
-  <p class="hint">Influencer phone login chesi, valla phone lo unna dedicated WhatsApp Channel / Group ki connect cheyandi:</p>
+  <p class="hint">Influencer permission tho valla own WhatsApp number-ni Linked Devices QR tho pair cheyandi. Channel link resolve ayyaka destination Pending-ga untundi; admin account nunchi oka real test post successful ayithe maatrame automatic deal posting enable avutundi. QR session is sensitive and Baileys is an unofficial WhatsApp-Web integration, so account behavior/risk cannot be guaranteed.</p>
   
   <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-top:14px;">
     <!-- Step 1: Login Phone -->
@@ -498,8 +507,8 @@
           <label style="font-size:12px; font-weight:bold; color:#cbd5e1; display:block; margin-bottom:4px;">
             {% if wa_status_info.chats %}B) Or Paste WhatsApp Group/Channel Link:{% else %}Paste WhatsApp Group/Channel Link:{% endif %}
           </label>
-          <input name="invite_link" placeholder="e.g. https://chat.whatsapp.com/ABC123xyz" style="width:100%; font-size:13px;" />
-          <span class="hint" style="font-size:10px; color:#86efac;">Phone lo create chesina WhatsApp group/channel invite link ikkada paste chesthe auto connect avuthundi!</span>
+          <input name="invite_link" placeholder="https://whatsapp.com/channel/… or https://chat.whatsapp.com/…" style="width:100%; font-size:13px;" />
+          <span class="hint" style="font-size:10px; color:#86efac;">Channel invite URL actual @newsletter JID-ga resolve avutundi. Posting account aa Channel admin-ga undali. Group invite resolve ayina, account group-lo member/admin kakapothe test fail avutundi; invite link alone group-lo join cheyyadu.</span>
         </div>
 
         <div>

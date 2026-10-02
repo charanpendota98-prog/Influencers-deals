@@ -130,3 +130,56 @@
     passwordInput.value = '';
   });
 })();
+
+// Runs bounded, read-only source-to-service checks from the Setup Center.
+(function () {
+  const button = document.getElementById('run-live-setup-checks');
+  const resultsBox = document.getElementById('live-setup-results');
+  if (!button || !resultsBox) return;
+
+  const labels = {
+    telegram: 'Telegram account',
+    sources: 'Joined source matching',
+    whatsapp_hub: 'WhatsApp hub',
+  };
+  const goodStates = new Set(['connected', 'matched', 'reachable']);
+  const errorStates = new Set(['error', 'offline', 'timeout', 'not_configured', 'not_authorized', 'no_matches', 'no_sources']);
+
+  function showResult(title, result) {
+    const row = document.createElement('div');
+    const state = String(result?.state || 'error');
+    row.className = `live-check-result ${goodStates.has(state) ? 'is-ok' : (errorStates.has(state) ? 'is-error' : 'is-warn')}`;
+    const heading = document.createElement('strong');
+    heading.textContent = `${title} · ${state.replaceAll('_', ' ')}`;
+    const detail = document.createElement('span');
+    detail.textContent = String(result?.message || 'No diagnostic detail returned.');
+    row.append(heading, detail);
+    resultsBox.appendChild(row);
+  }
+
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    button.textContent = 'Checking…';
+    resultsBox.replaceChildren();
+    resultsBox.setAttribute('aria-busy', 'true');
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    try {
+      const response = await fetch('/api/setup/live-checks', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrf, 'Accept': 'application/json' },
+        credentials: 'same-origin',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.checks) {
+        throw new Error(response.status === 401 ? 'Sign in again to run diagnostics.' : 'Live checks could not be completed.');
+      }
+      Object.entries(labels).forEach(([key, label]) => showResult(label, payload.checks[key] || {}));
+    } catch (error) {
+      showResult('Live checks', { state: 'error', message: error.message || 'Check your connection and retry.' });
+    } finally {
+      resultsBox.setAttribute('aria-busy', 'false');
+      button.disabled = false;
+      button.textContent = 'Run live checks';
+    }
+  });
+})();

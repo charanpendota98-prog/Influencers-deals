@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import random
-import time
 from typing import Iterable
 
 from . import (
@@ -43,46 +42,23 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
     return await earnkaro.convert_links(urls)
 
 
-# WhatsApp Session Safety Tracking (Per Session Key):
-# Maps session_key -> dict of {"last_post_ts": float, "hour_start_ts": float, "posts_this_hour": int}
-WA_PACING_STATE: dict[str, dict] = {}
-
-
 async def apply_whatsapp_safety_pacing(session_key: str) -> None:
-    """Apply conservative per-session pauses before WhatsApp sends.
+    """Reserve a durable, conservative WhatsApp send slot for this session.
 
-    Consecutive posts are separated by a random 45–65 second gap, with a
-    120–150 second pause when the tracked session window rolls over. These
-    delays reduce send frequency; they cannot guarantee account safety or
-    prevent platform enforcement.
+    SQLite serializes the slot across worker/dashboard processes and preserves
+    it across restarts. Consecutive reservations are separated by a random
+    45–65 second gap, with a 120–150 second rest at the hourly window boundary.
+    These delays reduce send frequency; they cannot guarantee account safety
+    or prevent platform enforcement. Failed sends also consume their reserved
+    slot, intentionally favoring conservative pacing over throughput.
     """
-    now = time.time()
-    state = WA_PACING_STATE.setdefault(session_key, {
-        "last_post_ts": 0.0,
-        "hour_start_ts": now,
-        "posts_this_hour": 0,
-    })
-
-    # Check 1-hour window reset
-    if now - state["hour_start_ts"] >= 3600.0:
-        # 1 hour elapsed: take 120 - 150s extended rest before new hourly cycle
-        long_break = random.uniform(120.0, 150.0)
-        await asyncio.sleep(long_break)
-        state["hour_start_ts"] = time.time()
-        state["posts_this_hour"] = 0
-
-    # Check gap since last post
-    last_post = state["last_post_ts"]
-    if last_post > 0:
-        elapsed = now - last_post
-        target_gap = random.uniform(45.0, 65.0)
-        if elapsed < target_gap:
-            wait_time = target_gap - elapsed
-            await asyncio.sleep(wait_time)
-
-    # Update state
-    state["last_post_ts"] = time.time()
-    state["posts_this_hour"] += 1
+    delay = db.reserve_whatsapp_send(
+        session_key,
+        gap_seconds=random.uniform(45.0, 65.0),
+        rest_seconds=random.uniform(120.0, 150.0),
+    )
+    if delay > 0:
+        await asyncio.sleep(delay)
 
 
 async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str:

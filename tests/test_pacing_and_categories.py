@@ -1,9 +1,26 @@
 import asyncio
+import multiprocessing
 import time
+from concurrent.futures import ProcessPoolExecutor
 from unittest.mock import patch
+
 import pytest
 
-from influencer_hub import link_router as lr, pipeline
+from influencer_hub import config, db, link_router as lr, pipeline
+
+
+@pytest.fixture
+def pacing_database(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "whatsapp-pacing.sqlite3")
+    db.init()
+
+
+def _reserve_whatsapp_slot_in_process(args):
+    database_path, session_key, now = args
+    config.DB_PATH = database_path
+    return db.reserve_whatsapp_send(
+        session_key, gap_seconds=50.0, rest_seconds=130.0, now=now
+    )
 
 
 def test_category_classification_and_filtering():
@@ -47,47 +64,77 @@ def test_time_schedule_window_filtering():
     assert lr.is_time_in_schedule("all", current_time="02:00") is True
 
 
-def test_whatsapp_pacing_human_gap():
-    """Verify that apply_whatsapp_safety_pacing enforces 45-65s gap between consecutive posts."""
-    pipeline.WA_PACING_STATE.clear()
+def test_whatsapp_pacing_human_gap(pacing_database):
+    """The pipeline reserves a persisted 45–65 second gap between sends."""
     session = "test-session-pacing"
-
     sleep_durations = []
 
     async def fake_sleep(duration):
         sleep_durations.append(duration)
 
     with patch("asyncio.sleep", side_effect=fake_sleep):
-        # 1st post: initial post
         asyncio.run(pipeline.apply_whatsapp_safety_pacing(session))
-        assert len(sleep_durations) == 0  # No wait on first post
+        assert sleep_durations == []  # The first reservation can send now.
 
-        # 2nd post immediately after: should sleep between 45 and 65 seconds
         asyncio.run(pipeline.apply_whatsapp_safety_pacing(session))
         assert len(sleep_durations) == 1
         assert 45.0 <= sleep_durations[0] <= 65.0
 
 
-def test_whatsapp_pacing_hourly_cooldown():
-    """Verify that after 1 hour of posting, an extended 120-150s rest is enforced."""
-    pipeline.WA_PACING_STATE.clear()
+def test_whatsapp_pacing_hourly_cooldown(pacing_database, monkeypatch):
+    """The hourly rest is reserved in SQLite and survives process restarts."""
     session = "test-session-hourly"
+    first_reserved_at = time.time() - 3700.0
+    assert db.reserve_whatsapp_send(
+        session, gap_seconds=50.0, rest_seconds=130.0, now=first_reserved_at
+    ) == 0.0
 
-    # Seed state as if 1 hour has elapsed
-    now = time.time()
-    pipeline.WA_PACING_STATE[session] = {
-        "last_post_ts": now - 100,  # last post was 100s ago
-        "hour_start_ts": now - 3700, # hour started >3600s ago
-        "posts_this_hour": 15,
-    }
-
+    # Make the runtime-selected break deterministic while retaining the real
+    # persisted timestamp transition in the pacing implementation.
+    monkeypatch.setattr(pipeline.random, "uniform", lambda low, _high: low)
     sleep_durations = []
 
     async def fake_sleep(duration):
         sleep_durations.append(duration)
 
+    # Re-running initialization models a worker/dashboard restart: it must not
+    # clear the persisted reservation or its hourly boundary.
+    db.init()
     with patch("asyncio.sleep", side_effect=fake_sleep):
         asyncio.run(pipeline.apply_whatsapp_safety_pacing(session))
-        # Should have taken the hourly break (120 to 150s)
-        assert len(sleep_durations) >= 1
-        assert 120.0 <= sleep_durations[0] <= 150.0
+
+    assert sleep_durations == pytest.approx([120.0], abs=0.1)
+
+
+def test_whatsapp_pacing_honors_hourly_boundary_for_queued_slots(pacing_database):
+    """A queued slot cannot cross the hourly boundary without the long rest."""
+    session = "test-session-queued-hourly"
+    assert db.reserve_whatsapp_send(
+        session, gap_seconds=50.0, rest_seconds=130.0, now=1000.0
+    ) == 0.0
+    # Reserve just before the one-hour boundary; this slot is still eligible.
+    assert db.reserve_whatsapp_send(
+        session, gap_seconds=50.0, rest_seconds=130.0, now=4590.0
+    ) == 0.0
+    # Its next slot would be scheduled beyond the boundary, so reserve the
+    # hourly rest after that already-reserved gap instead of skipping the rest.
+    assert db.reserve_whatsapp_send(
+        session, gap_seconds=50.0, rest_seconds=130.0, now=4591.0
+    ) == pytest.approx(179.0)
+
+
+def test_whatsapp_pacing_reservations_are_atomic_across_processes(pacing_database):
+    """Parallel worker/dashboard processes receive distinct, ordered slots."""
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("cross-process SQLite reservation test requires fork support")
+
+    session = "test-session-concurrent"
+    args = [(str(config.DB_PATH), session, 1000.0)] * 8
+    with ProcessPoolExecutor(
+        max_workers=8, mp_context=multiprocessing.get_context("fork")
+    ) as executor:
+        delays = list(executor.map(_reserve_whatsapp_slot_in_process, args))
+
+    assert sorted(delays) == pytest.approx(
+        [0.0, 50.0, 100.0, 150.0, 200.0, 250.0, 300.0, 350.0]
+    )

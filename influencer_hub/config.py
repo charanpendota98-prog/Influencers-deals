@@ -132,9 +132,9 @@ SHARED_SOURCES = [s for s in _env("SHARED_SOURCES", "").split(",") if s]
 # is flagged use_dummy_sources=true (safe staging before going live).
 DUMMY_SOURCES = [s for s in _env("DUMMY_SOURCES", "").split(",") if s]
 
-# ----- WhatsApp hub (Node/baileys multi-session service) -----
+# ----- WhatsApp hub (Node/Baileys multi-session service) -----
 WA_HUB_URL = _env("WA_HUB_URL", "http://127.0.0.1:8088")
-WA_HUB_TOKEN = _env("WA_HUB_TOKEN", "")  # optional shared secret
+WA_HUB_TOKEN = _env("WA_HUB_TOKEN", "")  # required by the hub in production
 
 # ----- Ops / monitoring -----
 # Telegram channel (username or id) where VM/bot health is reported.

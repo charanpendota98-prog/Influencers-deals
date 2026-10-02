@@ -32,7 +32,9 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, url
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from influencer_hub import config, db, hypd_shortlinks, lehlah_shortlinks, whatsapp_client  # noqa: E402
+from influencer_hub import (
+    config, db, hypd_shortlinks, lehlah_shortlinks, puller, telegram_ops, whatsapp_client,
+)  # noqa: E402
 
 app = Flask(__name__)
 app.secret_key = config.DASHBOARD_SECRET_KEY or secrets.token_hex(32)
@@ -56,7 +58,7 @@ REAUTH_REQUIRED_ENDPOINTS = frozenset({
     "bulk_import", "delete_channel", "toggle_influencer_active",
     "toggle_channel_status", "onboard", "set_flags", "onboard_tg",
     "onboard_wa", "create_tg", "pair_wa", "create_group",
-    "wa_connect_chat", "create_newsletter",
+    "wa_connect_chat", "create_newsletter", "send_test_message",
 })
 
 DEFAULT_SOURCE_CATALOG = [
@@ -224,6 +226,128 @@ def clean_identifier(raw: str) -> str:
     if "@" in s:
         return s if s.startswith("@") else "@" + s.split("@")[-1]
     return f"@{s}" if not s.endswith(".net") and not s.endswith(".us") else s
+
+
+def _classify_whatsapp_destination(raw: str) -> tuple[str, str] | None:
+    """Validate a WhatsApp JID or an invite URL before using it as a destination."""
+    value = str(raw or "").strip()
+    if re.fullmatch(r"[0-9]+@newsletter", value):
+        return "whatsapp_channel_jid", value
+    if re.fullmatch(r"[0-9-]+@g\.us", value):
+        return "whatsapp_group_jid", value
+    if not value:
+        return None
+
+    candidate = value if re.match(r"^https?://", value, re.I) else f"https://{value.lstrip('/')}"
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "https":
+        return None
+    host = (parsed.hostname or "").lower()
+    if host in {"whatsapp.com", "www.whatsapp.com"}:
+        match = re.fullmatch(r"/channel/([A-Za-z0-9_-]+)/?", parsed.path, re.I)
+        if match:
+            return "whatsapp_channel_link", value
+    if host == "chat.whatsapp.com":
+        match = re.fullmatch(r"/([A-Za-z0-9_-]+)/?", parsed.path)
+        if match:
+            return "whatsapp_group_link", value
+    return None
+
+
+def _resolve_whatsapp_destination(inf_id: int, raw: str) -> tuple[dict | None, str]:
+    """Resolve an explicitly supplied channel/group link to its real WhatsApp JID.
+
+    Newsletter invite resolution uses Baileys metadata; group invite resolution
+    only finds the JID and does not silently join the group. A test send is still
+    required before a newly linked destination becomes active.
+    """
+    classified = _classify_whatsapp_destination(raw)
+    if not classified:
+        return None, "Enter a valid whatsapp.com/channel link, chat.whatsapp.com group invite, or detected WhatsApp JID."
+
+    kind, value = classified
+    if kind == "whatsapp_channel_jid":
+        return {"platform": "whatsapp_channel", "identifier": value, "invite_link": ""}, ""
+    if kind == "whatsapp_group_jid":
+        return {"platform": "whatsapp_group", "identifier": value, "invite_link": ""}, ""
+
+    try:
+        if kind == "whatsapp_channel_link":
+            result = _run(whatsapp_client.resolve_newsletter(WA_SESSION_KEY(inf_id), value))
+            expected_suffix = "@newsletter"
+            platform = "whatsapp_channel"
+        else:
+            result = _run(whatsapp_client.resolve_invite(WA_SESSION_KEY(inf_id), value))
+            expected_suffix = "@g.us"
+            platform = "whatsapp_group"
+    except Exception:
+        return None, "Could not resolve this link. Pair the influencer's WhatsApp account first, then try again."
+
+    jid = str((result or {}).get("jid") or "").strip()
+    valid_jid = (
+        re.fullmatch(r"[0-9]+@newsletter", jid)
+        if expected_suffix == "@newsletter"
+        else re.fullmatch(r"[0-9-]+@g\.us", jid)
+    )
+    if not (result or {}).get("ok") or not valid_jid:
+        return None, "WhatsApp did not resolve that invite to a valid destination. Check the link and paired account."
+    return {"platform": platform, "identifier": jid, "invite_link": value}, ""
+
+
+def _save_whatsapp_destination(
+    inf_id: int,
+    destination: dict,
+    *,
+    role: str = "whatsapp",
+    allowed_sources: str = "",
+    wa_session_key: str = "",
+    channel_settings: dict | None = None,
+) -> int:
+    """Save a new WhatsApp destination as pending, deduplicating the same JID.
+
+    Pending destinations cannot receive feed posts until an operator explicitly
+    sends a test message; a successful test activates the channel.
+    """
+    platform = destination["platform"]
+    jid = str(destination.get("identifier") or "").strip()
+    if platform == "whatsapp_channel" and not re.fullmatch(r"[0-9]+@newsletter", jid):
+        raise ValueError("WhatsApp Channel destination must be a validated @newsletter JID.")
+    if platform == "whatsapp_group" and not re.fullmatch(r"[0-9-]+@g\.us", jid):
+        raise ValueError("WhatsApp Group destination must be a validated @g.us JID.")
+    session_key = wa_session_key or WA_SESSION_KEY(inf_id)
+    existing = next(
+        (channel for channel in db.list_channels(inf_id)
+         if channel.get("platform") == platform and channel.get("identifier") == jid),
+        None,
+    )
+    settings = dict(channel_settings or {})
+    if existing:
+        db.update_channel_details(
+            existing["id"],
+            identifier=jid,
+            invite_link=destination.get("invite_link") or existing.get("invite_link") or "",
+            role=role,
+            status="pending",
+            allowed_sources=allowed_sources or existing.get("allowed_sources") or "",
+            wa_session_key=session_key,
+            **settings,
+        )
+        return int(existing["id"])
+
+    return db.add_channel(
+        inf_id,
+        platform,
+        jid,
+        invite_link=destination.get("invite_link") or "",
+        status="pending",
+        role=role,
+        allowed_sources=allowed_sources,
+        wa_session_key=session_key,
+        **settings,
+    )
 
 
 def _get_csrf_token() -> str:
@@ -486,6 +610,190 @@ def lehlah_meesho_short_link(code: str):
     return redirect(target, code=302)
 
 
+def _setup_readiness_snapshot() -> dict:
+    """Build a local, secret-free source-to-channel launch checklist."""
+    all_profiles = db.list_influencers()
+    active_profiles = [profile for profile in all_profiles if profile.get("active")]
+    profile_ids = {int(profile["id"]) for profile in active_profiles}
+    channels = [
+        channel for channel in db.list_channels()
+        if int(channel.get("influencer_id", -1)) in profile_ids
+    ]
+    active_sources = db.list_sources(kind="production", active_only=True)
+    source_specs = {
+        str(source.get("spec") or "").strip().casefold()
+        for source in active_sources if str(source.get("spec") or "").strip()
+    }
+    source_specs.update(
+        str(spec).strip().casefold()
+        for spec in config.SHARED_SOURCES if str(spec).strip()
+    )
+    ready_channels = [
+        channel for channel in channels
+        if str(channel.get("status", "")).strip().lower() in {"ready", "active"}
+    ]
+    pending_whatsapp = [
+        channel for channel in channels
+        if str(channel.get("platform", "")).startswith("whatsapp")
+        and str(channel.get("status", "")).strip().lower() == "pending"
+    ]
+    telegram_channels = [
+        channel for channel in ready_channels
+        if str(channel.get("platform", "")).lower() == "telegram"
+    ]
+    whatsapp_channels = [
+        channel for channel in ready_channels
+        if str(channel.get("platform", "")).startswith("whatsapp")
+    ]
+
+    def enabled(value, default=True):
+        if value is None:
+            return default
+        return str(value).strip().lower() not in {"", "0", "false", "no", "off", "disabled", "none"}
+
+    active_amazon_profiles = [
+        profile for profile in active_profiles
+        if enabled(profile.get("allow_amazon"), True)
+    ]
+    fallback_tag = str(config.AMAZON_ASSOCIATE_TAG or "").strip().casefold()
+    fallback_tag_profiles = sum(
+        not str(profile.get("amazon_tag") or "").strip()
+        or str(profile.get("amazon_tag") or "").strip().casefold() == fallback_tag
+        for profile in active_amazon_profiles
+    )
+    earnkaro_enabled = any(
+        enabled(profile.get("allow_earnkaro"), True)
+        and not enabled(profile.get("only_amazon"), False)
+        for profile in active_profiles
+    )
+    earnkaro_configured = bool(
+        db.get_global_setting("earnkaro_api_key", "") or config.EARNKARO_API_KEY
+    )
+    worker = db.get_worker_heartbeat()
+    worker_age = max(0.0, time.time() - float(worker.get("heartbeat_at", 0))) if worker else None
+    worker_freshness = max(45, int(config.DEAL_WORKER_POLL_INTERVAL) * 2)
+    worker_live = bool(
+        worker and worker.get("state") in {"running", "degraded"}
+        and worker_age is not None and worker_age <= worker_freshness
+    )
+    try:
+        session_file_exists = telegram_ops._session_base_path().is_file()
+    except (OSError, ValueError):
+        session_file_exists = False
+    telegram_configured = bool(config.TELEGRAM_API_ID and config.TELEGRAM_API_HASH and session_file_exists)
+    production = config.HUB_ENV == "production"
+    wa_url_host = (urlparse(config.WA_HUB_URL).hostname or "").lower()
+    wa_loopback = wa_url_host in {"127.0.0.1", "::1", "localhost"}
+    wa_hub_configured = (
+        len(config.WA_HUB_TOKEN) >= 32 and wa_loopback
+        if production else bool(wa_loopback)
+    )
+
+    production_security_ok = (
+        config.HUB_ENV == "production"
+        and _dashboard_security_ready()
+        and config.DASHBOARD_COOKIE_SECURE
+    )
+    items = [
+        {
+            "key": "dashboard",
+            "title": "Private dashboard access",
+            "status": "ready" if production_security_ok else "warning",
+            "detail": (
+                "Production password/session security is configured. Keep this behind Tailscale Serve with device approval and do not expose Flask ports publicly."
+                if production_security_ok else
+                "This process is not verified as a private production deployment. Use a strong password, stable secret, Secure cookies, loopback binding, and Tailscale device controls before real use."
+            ),
+            "action": "Review health",
+            "href": url_for("vm"),
+        },
+        {
+            "key": "telegram",
+            "title": "Telegram account",
+            "status": "warning" if telegram_configured else "blocked",
+            "detail": (
+                "API configuration and a session file are present. Run the live check to verify authorization."
+                if telegram_configured else
+                "Set TELEGRAM_API_HASH and provision/authorize the configured Telethon session before source reads or Telegram posts."
+            ),
+            "action": "Check account",
+            "href": "#live-checks",
+        },
+        {
+            "key": "sources",
+            "title": "Joined deal sources",
+            "status": "warning" if source_specs else "blocked",
+            "detail": (
+                f"{len(source_specs)} active production selector(s). The worker reads only dialogs already joined to the Telegram account; it never joins invite links."
+                if source_specs else
+                "Add source selectors, then join those channels from the authorized Telegram account. Adding a link here does not join it."
+            ),
+            "action": "Manage sources",
+            "href": "#source-pool",
+        },
+        {
+            "key": "worker",
+            "title": "24/7 deal worker",
+            "status": "ready" if worker_live and worker.get("state") == "running" else ("warning" if worker_live else "blocked"),
+            "detail": (
+                "Worker heartbeat is fresh; a successful live source scan is still required to verify ingestion."
+                if worker_live and worker.get("state") == "running" else
+                "Worker is alive but reporting a poll error. Check worker logs and the source/live-check results."
+                if worker_live else
+                "No fresh worker heartbeat. Install/start the deal-worker service; a running dashboard alone does not ingest deals."
+            ),
+            "action": "Open health",
+            "href": url_for("vm"),
+        },
+        {
+            "key": "destinations",
+            "title": "Output channels",
+            "status": "warning" if ready_channels else ("warning" if pending_whatsapp else "blocked"),
+            "detail": (
+                f"{len(telegram_channels)} configured-ready Telegram and {len(whatsapp_channels)} ready WhatsApp destination(s); {len(pending_whatsapp)} WhatsApp destination(s) still need a successful visible test post. Telegram destinations need their own explicit test post before treating delivery as verified."
+                if ready_channels or pending_whatsapp else
+                "Add output destinations. WhatsApp destinations stay Pending until an explicit test post succeeds."
+            ),
+            "action": "Add a creator/channel",
+            "href": "#quick-add-form",
+        },
+        {
+            "key": "routing",
+            "title": "Affiliate routing",
+            "status": "warning" if (fallback_tag_profiles or (earnkaro_enabled and not earnkaro_configured)) else "ready",
+            "detail": (
+                f"{fallback_tag_profiles} active Amazon-enabled profile(s) use the configured fallback tag; confirm each creator's own tag. "
+                if fallback_tag_profiles else ""
+            ) + (
+                "EarnKaro is enabled but its API credential is missing; eligible non-Amazon/non-Meesho links will not be converted yet."
+                if earnkaro_enabled and not earnkaro_configured else
+                "Amazon uses each saved creator tag; EarnKaro is for supported non-Amazon/non-Meesho merchants; HYPD is reserved for Meesho."
+            ),
+            "action": "Review routes",
+            "href": "#quick-add-form",
+        },
+        {
+            "key": "whatsapp-hub",
+            "title": "WhatsApp hub",
+            "status": "warning" if wa_hub_configured else "blocked",
+            "detail": (
+                "Loopback-only URL and production token length are configured. Live reachability is checked below."
+                if production and wa_hub_configured else
+                "The hub URL is loopback-only. Live reachability is checked below; production additionally requires a private token of at least 32 characters."
+                if wa_hub_configured else
+                "Keep WA_HUB_URL loopback-only; production also requires a private WA_HUB_TOKEN of at least 32 characters."
+            ),
+            "action": "Check hub",
+            "href": "#live-checks",
+        },
+    ]
+    return {
+        "items": items,
+        "blocked_count": sum(item["status"] == "blocked" for item in items),
+        "warning_count": sum(item["status"] == "warning" for item in items),
+    }
+
+
 @app.route("/")
 def index():
     """Read-only operational overview; all setup actions live under /setup."""
@@ -521,15 +829,119 @@ def setup():
         influencers=influencers,
         settings=settings,
         sources=sources,
+        readiness=_setup_readiness_snapshot(),
         search_query=q,
         current_ek_key=current_ek_key,
         current_ek_pubid=current_ek_pubid,
         current_hypd_store=current_hypd_store,
         default_amazon_tag=config.AMAZON_ASSOCIATE_TAG,
         sources_added=request.args.get("sources_added", type=int),
+        source_saved=request.args.get("source_saved", type=int),
+        source_updated=request.args.get("source_updated", type=int),
+        source_deleted=request.args.get("source_deleted", type=int),
+        source_error=request.args.get("source_error", ""),
         imported=request.args.get("imported", type=int),
         import_error=request.args.get("import_error", ""),
     )
+
+
+@app.route("/api/setup/live-checks", methods=["POST"])
+def setup_live_checks():
+    """Run bounded, read-only Telegram/source and WhatsApp-hub checks.
+
+    These checks never join sources, read Telegram message history, send a post,
+    or activate a destination. Actual channel permissions still require the
+    operator's explicit per-channel test-post action.
+    """
+    checks = {}
+    if not (config.TELEGRAM_API_ID and config.TELEGRAM_API_HASH):
+        checks["telegram"] = {
+            "state": "not_configured",
+            "message": "Set TELEGRAM_API_ID and TELEGRAM_API_HASH before testing Telegram.",
+        }
+        checks["sources"] = {
+            "state": "not_checked",
+            "message": "Source matching was not checked because Telegram credentials are incomplete.",
+        }
+    else:
+        try:
+            source_report = _run(asyncio.wait_for(
+                puller.inspect_source_selection(), timeout=30
+            ))
+            if not source_report.get("authorized"):
+                checks["telegram"] = {
+                    "state": "not_authorized",
+                    "message": "Telegram connected, but the configured session is not authorized. Sign in with the account that has joined your sources.",
+                }
+                checks["sources"] = {
+                    "state": "not_checked",
+                    "message": "Authorize the Telegram session, then run this check again.",
+                }
+            else:
+                checks["telegram"] = {
+                    "state": "connected",
+                    "message": "Telegram account authorization succeeded. No message was sent.",
+                }
+                source_state = (
+                    "fallback" if source_report.get("selected_sources")
+                    and source_report.get("selection_mode") == "joined_dialog_fallback" else
+                    "matched" if source_report.get("selected_sources") else
+                    "no_matches" if source_report.get("configured_sources") else
+                    "no_sources"
+                )
+                details = (
+                    f"{source_report.get('selected_sources', 0)} joined dialog(s) selected from "
+                    f"{source_report.get('configured_sources', 0)} production selector(s); "
+                    f"{source_report.get('joined_group_channels', 0)} joined group/channel dialog(s) were visible."
+                )
+                if source_report.get("unresolved_private_invites"):
+                    details += (
+                        " Some private invite selectors have no display name; the worker's safe fallback uses already-joined dialogs only."
+                    )
+                details += " No invite was checked or joined, and no history was read."
+                checks["sources"] = {"state": source_state, "message": details}
+        except asyncio.TimeoutError:
+            checks["telegram"] = {
+                "state": "timeout",
+                "message": "Telegram check timed out. Check the VM network and Telegram session, then retry.",
+            }
+            checks["sources"] = {
+                "state": "not_checked",
+                "message": "Source matching did not finish before the safe timeout.",
+            }
+        except Exception as exc:
+            error_code = type(exc).__name__
+            checks["telegram"] = {
+                "state": "error",
+                "message": f"Telegram check failed ({error_code}). Review API credentials, session authorization, and worker logs.",
+            }
+            checks["sources"] = {
+                "state": "not_checked",
+                "message": "Fix the Telegram connection first, then retry source matching.",
+            }
+
+    try:
+        hub = _run(asyncio.wait_for(whatsapp_client.health_snapshot(), timeout=8))
+        checks["whatsapp_hub"] = {
+            "state": "reachable",
+            "message": (
+                f"Hub reachable: {hub['connected_count']} connected, "
+                f"{hub['qr_pending_count']} waiting for QR, "
+                f"{hub['offline_count']} offline/error, "
+                f"{hub['session_count']} session(s) known. No message was sent."
+            ),
+        }
+    except asyncio.TimeoutError:
+        checks["whatsapp_hub"] = {
+            "state": "timeout",
+            "message": "WhatsApp hub check timed out. Confirm the private hub service is running on loopback.",
+        }
+    except Exception as exc:
+        checks["whatsapp_hub"] = {
+            "state": "offline",
+            "message": f"WhatsApp hub is unreachable or rejected authentication ({type(exc).__name__}). Check WA_HUB_URL, token, and service logs.",
+        }
+    return jsonify({"ok": True, "checks": checks})
 
 
 @app.route("/sources/seed-defaults", methods=["POST"])
@@ -549,12 +961,20 @@ def seed_default_sources():
 def add_deal_source():
     name = request.form.get("name", "").strip()
     spec = request.form.get("spec", "").strip()
-    kind = request.form.get("kind", "production").strip()
+    kind = request.form.get("kind", "production").strip().lower()
     from_vault = request.form.get("from_vault") == "1"
-    if spec:
+    from_setup = request.form.get("from_setup") == "1"
+    if kind not in {"production", "dummy"}:
+        kind = "production"
+    if spec and len(spec) <= 512:
+        _, _, is_private_invite = puller._source_parts(spec)
+        if is_private_invite and not name:
+            return redirect(url_for("setup", source_error="private_name_required"))
         if not name:
             name = spec.split("/")[-1].replace("+", "").replace("@", "")
-        db.add_source(name, spec, kind=kind)
+        db.add_source(name[:120], spec, kind=kind)
+    if from_setup:
+        return redirect(url_for("setup", source_saved=1))
     if from_vault:
         return redirect(url_for("secret_vault_tab"))
     return redirect(url_for("index"))
@@ -563,7 +983,10 @@ def add_deal_source():
 @app.route("/sources/<int:source_id>/delete", methods=["POST"])
 def delete_deal_source(source_id):
     from_vault = request.form.get("from_vault") == "1"
+    from_setup = request.form.get("from_setup") == "1"
     db.delete_source(source_id)
+    if from_setup:
+        return redirect(url_for("setup", source_deleted=1))
     if from_vault:
         return redirect(url_for("secret_vault_tab"))
     return redirect(url_for("index"))
@@ -572,7 +995,10 @@ def delete_deal_source(source_id):
 @app.route("/sources/<int:source_id>/toggle", methods=["POST"])
 def toggle_deal_source(source_id):
     from_vault = request.form.get("from_vault") == "1"
+    from_setup = request.form.get("from_setup") == "1"
     db.toggle_source(source_id)
+    if from_setup:
+        return redirect(url_for("setup", source_updated=1))
     if from_vault:
         return redirect(url_for("secret_vault_tab"))
     return redirect(url_for("index"))
@@ -724,16 +1150,36 @@ def quick_add():
                        allow_earnkaro=allow_earnkaro, allow_hypd=allow_hypd,
                        hypd_store_id=hypd_store_id)
 
-    # 3. WhatsApp Channel/Group
+    # 3. WhatsApp destinations are type-checked and staged Pending. Invite links
+    # need the creator's paired account to resolve; direct groups/channels JIDs
+    # can be saved now, but none activate before an explicit successful test.
     if whatsapp_id:
-        db.add_channel(iid, "whatsapp_group", whatsapp_id, role="whatsapp", status="ready",
-                       strip_amazon=strip_amz_all,
-                       price_filter=price_filt if price_filt != "all" else "",
-                       allowed_sources=allowed_src, bitly_api_key=bitly_key,
-                       categories=categories, posting_schedule=schedule,
-                       only_amazon=only_amazon, allow_amazon=allow_amazon,
-                       allow_earnkaro=allow_earnkaro, allow_hypd=allow_hypd,
-                       hypd_store_id=hypd_store_id)
+        destination, wa_error = _resolve_whatsapp_destination(iid, whatsapp_id)
+        if destination:
+            _save_whatsapp_destination(
+                iid,
+                destination,
+                role="whatsapp",
+                allowed_sources=allowed_src,
+                wa_session_key=WA_SESSION_KEY(iid),
+                channel_settings={
+                    "strip_amazon": strip_amz_all,
+                    "price_filter": price_filt if price_filt != "all" else "",
+                    "bitly_api_key": bitly_key,
+                    "categories": categories,
+                    "posting_schedule": schedule,
+                    "only_amazon": only_amazon,
+                    "allow_amazon": allow_amazon,
+                    "allow_earnkaro": allow_earnkaro,
+                    "allow_hypd": allow_hypd,
+                    "hypd_store_id": hypd_store_id,
+                },
+            )
+        else:
+            return redirect(url_for(
+                "influencer_detail", inf_id=iid,
+                wa_link_status="failed", wa_link_error=wa_error,
+            ))
 
     return redirect(url_for("influencer_detail", inf_id=iid))
 
@@ -804,7 +1250,18 @@ def update_profile(inf_id):
 
 @app.route("/channel/<int:channel_id>/update", methods=["POST"])
 def update_channel_route(channel_id):
-    inf_id = request.form.get("inf_id")
+    current_channel = next(
+        (channel for channel in db.list_channels()
+         if int(channel.get("id", -1)) == int(channel_id)),
+        None,
+    )
+    if not current_channel:
+        return redirect(url_for("index"))
+    owner_id = int(current_channel["influencer_id"])
+    provided_inf_id = request.form.get("inf_id", "").strip()
+    if provided_inf_id and provided_inf_id.isdigit() and int(provided_inf_id) != owner_id:
+        return redirect(url_for("influencer_detail", inf_id=owner_id))
+
     ident = request.form.get("identifier", "").strip()
     role = request.form.get("role", "").strip()
     status = request.form.get("status", "").strip()
@@ -826,14 +1283,35 @@ def update_channel_route(channel_id):
     btn_en = _form_flag("custom_button_enabled", default=None)
     btn_text = request.form.get("custom_button_text")
     btn_url = request.form.get("custom_button_url")
+    invite_link = None
+    needs_test = False
 
-    if ident:
-        ident = clean_identifier(ident) if not ident.startswith("120") else ident
+    if current_channel.get("platform") in {"whatsapp_group", "whatsapp_channel"}:
+        if ident:
+            destination, error = _resolve_whatsapp_destination(owner_id, ident)
+            if not destination or destination["platform"] != current_channel["platform"]:
+                error = error or "The supplied destination does not match this WhatsApp channel type."
+                return redirect(url_for(
+                    "influencer_detail", inf_id=owner_id,
+                    wa_link_status="failed", wa_link_error=error,
+                ))
+            ident = destination["identifier"]
+            invite_link = destination.get("invite_link") or None
+            if ident != current_channel.get("identifier"):
+                status = "pending"
+                needs_test = True
+        if current_channel.get("status") == "pending" and status in {"ready", "active"}:
+            status = None
+            needs_test = True
+        wa_key = wa_key or current_channel.get("wa_session_key") or WA_SESSION_KEY(owner_id)
+    elif ident:
+        ident = clean_identifier(ident)
 
     db.update_channel_details(
         channel_id,
         identifier=ident if ident else None,
         role=role if role else None,
+        invite_link=invite_link,
         status=status if status else None,
         amazon_override_tag=override_tag,
         strip_amazon=strip_amz,
@@ -852,9 +1330,11 @@ def update_channel_route(channel_id):
         custom_button_text=btn_text,
         custom_button_url=btn_url,
     )
-    if inf_id:
-        return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
-    return redirect(url_for("index"))
+    if needs_test:
+        return redirect(url_for(
+            "influencer_detail", inf_id=owner_id, wa_link_status="pending"
+        ))
+    return redirect(url_for("influencer_detail", inf_id=owner_id))
 
 
 @app.route("/influencer/<int:inf_id>/add-manual-channel", methods=["POST"])
@@ -880,28 +1360,63 @@ def add_manual_channel(inf_id):
     )
 
     if raw_ident:
-        ident = clean_identifier(raw_ident) if platform == "telegram" else raw_ident
-        db.add_channel(
-            inf_id,
-            platform,
-            ident,
-            invite_link=invite,
-            status="ready",
-            role=role,
-            amazon_override_tag=override_tag,
-            strip_amazon=strip_amz,
-            price_filter=price_filt,
-            allowed_sources=allowed_src,
-            wa_session_key=wa_key,
-            bitly_api_key=bitly_key,
-            categories=categories,
-            posting_schedule=schedule,
-            only_amazon=only_amz,
-            allow_amazon=allow_amz,
-            allow_earnkaro=allow_ek,
-            allow_hypd=allow_hypd,
-            hypd_store_id=hypd_store_id,
-        )
+        channel_settings = {
+            "amazon_override_tag": override_tag,
+            "strip_amazon": strip_amz,
+            "price_filter": price_filt,
+            "bitly_api_key": bitly_key,
+            "categories": categories,
+            "posting_schedule": schedule,
+            "only_amazon": only_amz,
+            "allow_amazon": allow_amz,
+            "allow_earnkaro": allow_ek,
+            "allow_hypd": allow_hypd,
+            "hypd_store_id": hypd_store_id,
+        }
+        if platform == "telegram":
+            ident = clean_identifier(raw_ident)
+            db.add_channel(
+                inf_id,
+                "telegram",
+                ident,
+                invite_link=invite,
+                status="ready",
+                role=role,
+                allowed_sources=allowed_src,
+                wa_session_key=wa_key,
+                **channel_settings,
+            )
+        elif platform in {"whatsapp_group", "whatsapp_channel"}:
+            destination, error = _resolve_whatsapp_destination(inf_id, raw_ident)
+            if not destination:
+                return redirect(url_for(
+                    "influencer_detail", inf_id=inf_id,
+                    wa_link_status="failed", wa_link_error=error,
+                ))
+            if destination["platform"] != platform:
+                return redirect(url_for(
+                    "influencer_detail", inf_id=inf_id,
+                    wa_link_status="failed",
+                    wa_link_error="The selected WhatsApp type does not match the supplied link or JID.",
+                ))
+            if invite and not destination.get("invite_link"):
+                destination["invite_link"] = invite
+            _save_whatsapp_destination(
+                inf_id,
+                destination,
+                role="whatsapp",
+                allowed_sources=allowed_src,
+                wa_session_key=wa_key,
+                channel_settings=channel_settings,
+            )
+            return redirect(url_for(
+                "influencer_detail", inf_id=inf_id, wa_link_status="pending"
+            ))
+        else:
+            return redirect(url_for(
+                "influencer_detail", inf_id=inf_id,
+                wa_link_status="failed", wa_link_error="Unsupported destination type.",
+            ))
 
     return redirect(url_for("influencer_detail", inf_id=inf_id))
 
@@ -985,16 +1500,26 @@ def toggle_influencer_active(inf_id):
 
 @app.route("/channel/<int:channel_id>/toggle-status", methods=["POST"])
 def toggle_channel_status(channel_id):
-    """Instant 1-click switch to turn posting ON (ready) or totally OFF (paused) for this specific channel."""
-    inf_id = request.form.get("inf_id")
-    channels = db.list_channels(int(inf_id)) if inf_id else []
-    ch = next((c for c in channels if c["id"] == channel_id), None)
-    if ch:
-        new_status = "paused" if ch.get("status") == "ready" else "ready"
-        db.update_channel_details(channel_id, status=new_status)
-    if inf_id:
-        return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
-    return redirect(url_for("index"))
+    """Toggle a verified destination; pending WhatsApp channels require a test first."""
+    supplied_inf_id = request.form.get("inf_id", "").strip()
+    ch = next(
+        (channel for channel in db.list_channels()
+         if int(channel.get("id", -1)) == int(channel_id)),
+        None,
+    )
+    if not ch:
+        return redirect(url_for("index"))
+    owner_id = int(ch["influencer_id"])
+    if supplied_inf_id.isdigit() and int(supplied_inf_id) != owner_id:
+        return redirect(url_for("influencer_detail", inf_id=owner_id))
+    if ch.get("platform") in {"whatsapp_group", "whatsapp_channel"} and ch.get("status") == "pending":
+        return redirect(url_for(
+            "influencer_detail", inf_id=owner_id, wa_link_status="pending"
+        ))
+
+    new_status = "paused" if ch.get("status") in {"ready", "active"} else "ready"
+    db.update_channel_details(channel_id, status=new_status)
+    return redirect(url_for("influencer_detail", inf_id=owner_id))
 
 
 @app.route("/influencer/<int:inf_id>/delete", methods=["POST"])
@@ -1196,7 +1721,12 @@ def create_group(inf_id):
         res = _run(whatsapp_client.create_group(key, subject, participant))
         jid = res.get("jid")
         if jid:
-            db.add_channel(inf_id, "whatsapp_group", jid, status="ready")
+            _save_whatsapp_destination(
+                inf_id,
+                {"platform": "whatsapp_group", "identifier": jid, "invite_link": ""},
+                role="whatsapp",
+                wa_session_key=key,
+            )
     except Exception as e:  # pragma: no cover
         res = {"error": str(e)}
     return redirect(url_for("influencer_detail", inf_id=inf_id))
@@ -1204,32 +1734,29 @@ def create_group(inf_id):
 
 @app.route("/influencer/<int:inf_id>/wa-connect-chat", methods=["POST"])
 def wa_connect_chat(inf_id):
-    """Directly connect an existing WhatsApp Group/Channel either by selecting from dropdown OR entering link."""
-    jid = request.form.get("chat_jid", "").strip()
+    """Resolve a WhatsApp group/channel link or save a detected JID as pending."""
+    chat_jid = request.form.get("chat_jid", "").strip()
     invite_link = request.form.get("invite_link", "").strip()
-    role = request.form.get("role", "whatsapp").strip()
-    wa_key = WA_SESSION_KEY(inf_id)
-
-    # If user provided invite link (e.g. https://chat.whatsapp.com/ABC123xyz), resolve it via Baileys socket!
-    resolved_jid = jid
+    raw_destination = invite_link or chat_jid
     allowed_src = request.form.get("allowed_sources", "").strip()
-    if invite_link:
-        try:
-            res = _run(whatsapp_client.resolve_invite(wa_key, invite_link))
-            if res.get("ok") and res.get("jid"):
-                resolved_jid = res.get("jid")
-            else:
-                # Store invite link directly
-                resolved_jid = clean_identifier(invite_link)
-        except Exception:
-            resolved_jid = clean_identifier(invite_link)
 
-    if resolved_jid:
-        db.add_channel(inf_id, "whatsapp_group" if resolved_jid.endswith("@g.us") else "whatsapp_channel",
-                       resolved_jid, invite_link=invite_link, status="ready", role=role,
-                       allowed_sources=allowed_src)
+    destination, error = _resolve_whatsapp_destination(inf_id, raw_destination)
+    if not destination:
+        return redirect(url_for(
+            "influencer_detail", inf_id=inf_id,
+            wa_link_status="failed", wa_link_error=error,
+        ))
 
-    return redirect(url_for("influencer_detail", inf_id=inf_id))
+    _save_whatsapp_destination(
+        inf_id,
+        destination,
+        role="whatsapp",
+        allowed_sources=allowed_src,
+        wa_session_key=WA_SESSION_KEY(inf_id),
+    )
+    return redirect(url_for(
+        "influencer_detail", inf_id=inf_id, wa_link_status="pending"
+    ))
 
 
 @app.route("/api/test-render-deal", methods=["POST"])
@@ -1345,14 +1872,14 @@ def trigger_hourly_loot(inf_id):
 
 @app.route("/channel/<int:channel_id>/send-test", methods=["POST"])
 def send_test_message(channel_id):
-    """Instant test message dispatcher to verify channel connectivity."""
+    """Send a visible test post; activate a pending WhatsApp destination only on success."""
     inf_id = int(request.form.get("inf_id", 0))
     inf = db.get_influencer(inf_id)
     channels = db.list_channels(inf_id)
     ch = next((c for c in channels if c["id"] == channel_id), None)
 
-    status = "ok"
-    err_msg = ""
+    status = "failed"
+    err_msg = "Channel or profile was not found."
     if ch and inf:
         test_payload = (
             f"✅ Test Alert: {inf['name']} Channel Connected Successfully!\n"
@@ -1362,18 +1889,22 @@ def send_test_message(channel_id):
         )
         try:
             from influencer_hub import pipeline
-            res = _run(pipeline.dispatch_to_channel(inf, ch, test_payload))
-            if res.startswith("failed:"):
-                status = "failed"
-                err_msg = res[len("failed:"):]
-            else:
+            result = _run(pipeline.dispatch_to_channel(inf, ch, test_payload))
+            if result == "posted":
                 status = "posted"
-        except Exception as e:
-            status = "failed"
-            err_msg = str(e)
-            print(f"Test dispatch failed: {e}")
+                err_msg = ""
+                if ch.get("platform") in {"whatsapp_group", "whatsapp_channel"} and ch.get("status") == "pending":
+                    db.update_channel_details(channel_id, status="ready")
+            else:
+                err_msg = result.removeprefix("failed:") or "The destination did not accept the test post."
+        except Exception as exc:
+            err_msg = str(exc)
+            print(f"Test dispatch failed: {exc}")
 
-    return redirect(url_for("influencer_detail", inf_id=inf_id, test_status=status, test_err=err_msg, ch_name=ch['identifier'] if ch else ''))
+    return redirect(url_for(
+        "influencer_detail", inf_id=inf_id, test_status=status,
+        test_err=err_msg, ch_name=ch["identifier"] if ch else "",
+    ))
 
 
 @app.route("/influencer/<int:inf_id>/create-newsletter", methods=["POST"])
@@ -1385,30 +1916,45 @@ def create_newsletter(inf_id):
         res = _run(whatsapp_client.create_channel(key, name, desc))
         jid = res.get("jid")
         if jid:
-            db.add_channel(inf_id, "whatsapp_channel", jid, status="ready")
+            _save_whatsapp_destination(
+                inf_id,
+                {"platform": "whatsapp_channel", "identifier": jid, "invite_link": res.get("invite", "")},
+                role="whatsapp",
+                wa_session_key=key,
+            )
     except Exception as e:  # pragma: no cover
         res = {"error": str(e)}
     return redirect(url_for("influencer_detail", inf_id=inf_id))
 
 
+def _wa_hub_get(path: str) -> dict:
+    """Authenticated read-only proxy to the loopback WhatsApp hub."""
+    headers = {"Accept": "application/json"}
+    if config.WA_HUB_TOKEN:
+        headers["Authorization"] = f"Bearer {config.WA_HUB_TOKEN}"
+    req = urllib.request.Request(
+        f"{config.WA_HUB_URL.rstrip('/')}{path}",
+        headers=headers,
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=10) as response:
+        return json.loads(response.read())
+
+
 @app.route("/api/wa/<key>/qr")
 def wa_qr(key):
-    url = f"{config.WA_HUB_URL.rstrip('/')}/sessions/{key}/qr"
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
-            return jsonify(json.loads(r.read()))
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "qr": None})
+        return jsonify(_wa_hub_get(f"/sessions/{key}/qr"))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "qr": None})
 
 
 @app.route("/api/wa/<key>/status")
 def wa_status(key):
-    url = f"{config.WA_HUB_URL.rstrip('/')}/sessions/{key}"
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
-            return jsonify(json.loads(r.read()))
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+        return jsonify(_wa_hub_get(f"/sessions/{key}"))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)})
 
 
 @app.route("/vm")

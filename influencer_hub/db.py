@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import re
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -85,6 +87,29 @@ CREATE TABLE IF NOT EXISTS vm_stats (
 CREATE TABLE IF NOT EXISTS global_settings (
     key   TEXT PRIMARY KEY,
     val   TEXT NOT NULL DEFAULT ''
+);
+
+-- Durable, cross-process WhatsApp send reservations. The worker and dashboard
+-- share one SQLite row per WhatsApp session so restarts and parallel send paths
+-- cannot independently reset the conservative pacing schedule.
+CREATE TABLE IF NOT EXISTS wa_pacing_state (
+    session_key       TEXT PRIMARY KEY,
+    window_started_at REAL NOT NULL,
+    next_allowed_at   REAL NOT NULL,
+    posts_in_window   INTEGER NOT NULL DEFAULT 0,
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- A small heartbeat lets the dashboard distinguish a configured worker from
+-- a live worker. The singleton row is refreshed by the worker's own event loop.
+CREATE TABLE IF NOT EXISTS worker_heartbeat (
+    singleton        INTEGER PRIMARY KEY CHECK (singleton = 1),
+    pid              INTEGER NOT NULL,
+    state            TEXT NOT NULL,
+    started_at       REAL NOT NULL,
+    heartbeat_at     REAL NOT NULL,
+    last_poll_at     REAL NOT NULL DEFAULT 0,
+    last_error_code  TEXT NOT NULL DEFAULT ''
 );
 
 -- Durable per-dialog cursor for the continuous worker. A cursor advances only
@@ -814,7 +839,7 @@ def add_bulk_influencers(records: list[dict]) -> int:
                     "strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, "
                     "categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, "
                     "allow_hypd, hypd_store_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (iid, "whatsapp_group", ident, "whatsapp", "ready", int(strip_amz),
+                    (iid, "whatsapp_group", ident, "whatsapp", "pending", int(strip_amz),
                      price_filt if price_filt != "all" else "", sources,
                      str(r.get("wa_session_key") or "").strip(), bitly_key, categories,
                      schedule, int(only_amz), int(allow_amz), int(allow_ek),
@@ -881,6 +906,73 @@ def list_sources(kind: Optional[str] = None, active_only: bool = True) -> list[d
         con.close()
 
 
+def record_worker_heartbeat(
+    state: str,
+    *,
+    poll_completed: bool = False,
+    error_code: str = "",
+) -> None:
+    """Record worker lifecycle/health without persisting sensitive exception text."""
+    normalized = str(state or "").strip().lower()
+    if normalized not in {"starting", "running", "degraded", "stopping", "stopped"}:
+        raise ValueError("Unsupported worker heartbeat state")
+    pid = os.getpid()
+    now = time.time()
+    safe_error = str(error_code or "")[:80] if normalized == "degraded" else ""
+
+    con = _connect()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT pid, started_at, last_poll_at FROM worker_heartbeat WHERE singleton=1"
+        ).fetchone()
+        new_instance = row is None or int(row["pid"]) != pid or normalized == "starting"
+        started_at = now if new_instance else float(row["started_at"])
+        last_poll_at = now if poll_completed else (float(row["last_poll_at"]) if row else 0.0)
+        con.execute(
+            "INSERT INTO worker_heartbeat "
+            "(singleton, pid, state, started_at, heartbeat_at, last_poll_at, last_error_code) "
+            "VALUES (1,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET "
+            "pid=excluded.pid, state=excluded.state, started_at=excluded.started_at, "
+            "heartbeat_at=excluded.heartbeat_at, last_poll_at=excluded.last_poll_at, "
+            "last_error_code=excluded.last_error_code",
+            (pid, normalized, started_at, now, last_poll_at, safe_error),
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def touch_worker_heartbeat() -> bool:
+    """Refresh liveness from the recorded worker process, preserving its state."""
+    con = _connect()
+    try:
+        cur = con.execute(
+            "UPDATE worker_heartbeat SET heartbeat_at=? WHERE singleton=1 AND pid=?",
+            (time.time(), os.getpid()),
+        )
+        con.commit()
+        return cur.rowcount == 1
+    finally:
+        con.close()
+
+
+def get_worker_heartbeat() -> Optional[dict]:
+    """Return the worker's most recent heartbeat, if it has ever started."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT pid, state, started_at, heartbeat_at, last_poll_at, last_error_code "
+            "FROM worker_heartbeat WHERE singleton=1"
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+
 def get_worker_offset(source_key: str) -> int:
     """Return the last fully handled Telegram message id for a joined dialog."""
     con = _connect()
@@ -910,6 +1002,77 @@ def set_worker_offset(source_key: str, last_message_id: int) -> None:
             (key, message_id, _now()),
         )
         con.commit()
+    finally:
+        con.close()
+
+
+def reserve_whatsapp_send(
+    session_key: str,
+    gap_seconds: float,
+    rest_seconds: float,
+    window_seconds: float = 3600.0,
+    now: float | None = None,
+) -> float:
+    """Atomically reserve a send slot and return seconds to wait before it.
+
+    ``BEGIN IMMEDIATE`` serializes reservations from independent processes using
+    the same SQLite database. Reservations are persisted before network I/O, so
+    a crash/restart or a failed send consumes its slot conservatively rather
+    than allowing another process to send immediately.
+    """
+    key = str(session_key or "").strip()
+    if not key:
+        raise ValueError("A WhatsApp session key is required for pacing")
+
+    reserved_at = float(now) if now is not None else datetime.now(timezone.utc).timestamp()
+    gap = max(0.0, float(gap_seconds))
+    rest = max(0.0, float(rest_seconds))
+    window = max(1.0, float(window_seconds))
+    con = _connect()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT window_started_at, next_allowed_at, posts_in_window "
+            "FROM wa_pacing_state WHERE session_key=?",
+            (key,),
+        ).fetchone()
+
+        if row is None:
+            scheduled_at = reserved_at
+            window_started_at = scheduled_at
+            posts_in_window = 1
+            con.execute(
+                "INSERT INTO wa_pacing_state "
+                "(session_key, window_started_at, next_allowed_at, posts_in_window, updated_at) "
+                "VALUES (?,?,?,?,?)",
+                (key, window_started_at, scheduled_at + gap, posts_in_window, _now()),
+            )
+        else:
+            previous_window_start = float(row["window_started_at"])
+            previous_next_allowed = float(row["next_allowed_at"])
+            scheduled_at = max(reserved_at, previous_next_allowed)
+            if scheduled_at >= previous_window_start + window:
+                # Check the reserved send time, not just the current clock: a
+                # busy queue must not schedule posts past the hourly boundary
+                # without first reserving the break. Starting the new window
+                # here prevents concurrent callers from taking the same break.
+                scheduled_at += rest
+                window_started_at = scheduled_at
+                posts_in_window = 1
+            else:
+                window_started_at = previous_window_start
+                posts_in_window = int(row["posts_in_window"]) + 1
+            con.execute(
+                "UPDATE wa_pacing_state SET window_started_at=?, next_allowed_at=?, "
+                "posts_in_window=?, updated_at=? WHERE session_key=?",
+                (window_started_at, scheduled_at + gap, posts_in_window, _now(), key),
+            )
+
+        con.commit()
+        return max(0.0, scheduled_at - reserved_at)
+    except Exception:
+        con.rollback()
+        raise
     finally:
         con.close()
 

@@ -4,11 +4,10 @@
 // state on disk so it survives restarts without re-scanning the QR. The Python
 // side talks to this service over a tiny REST/SSE API (see server.js).
 //
-// Design note on "official WhatsApp Channels": baileys can CREATE a newsletter
-// (channel) on the connected number and the influencer can follow it, but
-// reliable automated posting to a newsletter is NOT exposed by this baileys
-// build. We create the channel and fall back to the group feed for automated
-// deal posting. This is documented in the README.
+// WhatsApp Channels (newsletters): the pinned Baileys build has a low-level
+// text-send path for @newsletter JIDs. Channel-link resolution and a visible
+// test post are required before a destination is activated. This is an
+// unofficial WhatsApp-Web integration; never promise delivery or account safety.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -185,6 +184,57 @@ export class Hub {
     return { ok: true, jid, name }
   }
 
+  async resolveNewsletterInvite(key, inviteUrlOrCode) {
+    const s = this.sessions.get(key)
+    if (!s?.sock) throw new Error('session not connected: ' + key)
+
+    const input = String(inviteUrlOrCode || '').trim()
+    if (!input) throw new Error('channel link required')
+
+    let code = ''
+    if (/^\d+@newsletter$/.test(input)) {
+      const metadata = await s.sock.newsletterMetadata('jid', input)
+      if (!metadata?.id || !metadata.id.endsWith('@newsletter')) {
+        throw new Error('could not verify WhatsApp Channel JID')
+      }
+      return {
+        ok: true,
+        jid: metadata.id,
+        name: metadata.name || '',
+        invite: metadata.invite || '',
+      }
+    }
+
+    if (/^[0-9A-Za-z_-]{8,}$/.test(input)) {
+      code = input
+    } else {
+      let candidate = input
+      if (!/^https?:\/\//i.test(candidate)) candidate = `https://${candidate}`
+      let parsed
+      try { parsed = new URL(candidate) } catch (_) {
+        throw new Error('invalid WhatsApp Channel link')
+      }
+      const host = parsed.hostname.toLowerCase()
+      if (parsed.protocol !== 'https:' || !['whatsapp.com', 'www.whatsapp.com'].includes(host)) {
+        throw new Error('use an HTTPS whatsapp.com/channel link')
+      }
+      const match = parsed.pathname.match(/^\/channel\/([0-9A-Za-z_-]+)\/?$/i)
+      if (!match) throw new Error('invalid WhatsApp Channel link')
+      code = match[1]
+    }
+
+    const metadata = await s.sock.newsletterMetadata('invite', code)
+    if (!metadata?.id || !metadata.id.endsWith('@newsletter')) {
+      throw new Error('WhatsApp did not return a Channel destination')
+    }
+    return {
+      ok: true,
+      jid: metadata.id,
+      name: metadata.name || '',
+      invite: metadata.invite || input,
+    }
+  }
+
   async resolveInviteCode(key, inviteUrlOrCode) {
     const s = this.sessions.get(key)
     if (!s?.sock) throw new Error('session not connected: ' + key)
@@ -198,7 +248,6 @@ export class Hub {
       const info = await s.sock.groupGetInviteInfo(code)
       return { ok: true, jid: info.id, subject: info.subject, size: info.size }
     } catch (e) {
-      // If unable to query metadata, accept the raw code/jid
       return { ok: false, error: String(e), code }
     }
   }

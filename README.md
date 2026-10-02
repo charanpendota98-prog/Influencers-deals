@@ -55,7 +55,7 @@ Each profile can use an Amazon-only Telegram preview, a broadcast Telegram chann
 ```
 influencer_hub/   Python brain
   config.py          env config and safe production defaults
-  db.py              SQLite: influencers, channels, posts, sources, durable worker cursors
+  db.py              SQLite: profiles, channels, posts, sources, durable cursors and shared WhatsApp pacing
   link_router.py     Amazon tag handling, configured affiliate routing and deal filters
   amazon_creators.py official Amazon Creators API OAuth/catalog client
   earnkaro.py        EarnKaro converter client with configured publisher checks
@@ -169,32 +169,54 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
   run `sudo ./deploy/install_systemd.sh` from the checkout to render units for
   that path and the invoking non-root account, then enable only the services
   you have configured. Do not run the shell supervisor and systemd unit for the
-  same service at the same time (especially the deal worker).
+  same service at the same time (especially the deal worker). Keep the dashboard
+  and worker on the same writable SQLite database: WhatsApp send slots are
+  atomically shared there and survive restarts. This coordinates this app's
+  send paths only; it does not guarantee delivery or account safety. The Setup
+  Center's Launch readiness panel checks worker heartbeat and offers bounded,
+  read-only Telegram/source-selector and WhatsApp-hub diagnostics; it does not
+  join sources or send messages. Channel permissions still require explicit
+  per-destination test posts.
 
 ## Secure dashboard deployment
 
 The dashboard now requires an admin password before exposing management pages or APIs; it also applies CSRF checks, rate-limits sign-in attempts, uses `HttpOnly`/`SameSite=Lax` session cookies, and adds security headers. Production service definitions run the Flask app through Gunicorn; `python dashboard/app.py` is for local development only. Configure these values in the private `.env` before starting it:
 
-Generate two independent values and paste them into the private `.env` file (the `.env` loader does not evaluate shell substitutions):
+Generate three independent values and paste them into the private `.env` file (the `.env` loader does not evaluate shell substitutions):
 
 ```bash
 python -c 'import secrets; print(secrets.token_urlsafe(24))'  # admin password; keep it private
 python -c 'import secrets; print(secrets.token_urlsafe(48))'  # Flask session signing key
+python -c 'import secrets; print(secrets.token_urlsafe(48))'  # WA_HUB_TOKEN; keep it private
 ```
 
-Set `DASHBOARD_ADMIN_PASSWORD` to the first value and `DASHBOARD_SECRET_KEY` to the second, plus `HUB_ENV=production`. The admin password must be at least 16 characters; the signing key must remain stable across restarts and workers. Leave `ADMIN_DELETE_PASSWORD` unset to reuse the dashboard password for destructive confirmations. Set DNS/TLS and put the dashboard behind an HTTPS reverse proxy before public access; production mode enables Secure cookies. Production systemd/supervisor configs bind Gunicorn to `127.0.0.1:5000`; expose only the TLS proxy (typically 443), never port 5000. The Oracle bootstrap script deliberately does not open 5000. `/healthz` is the sole unauthenticated health endpoint besides validated first-party affiliate redirects. Do not deploy publicly with missing/weak dashboard credentials.
+Set `DASHBOARD_ADMIN_PASSWORD` to the first value, `DASHBOARD_SECRET_KEY` to the second, `WA_HUB_TOKEN` to the third, plus `HUB_ENV=production`. The admin password must be at least 16 characters; the signing key must remain stable across restarts and workers. Leave `ADMIN_DELETE_PASSWORD` unset to reuse the dashboard password for destructive confirmations. Production mode enables Secure cookies. The dashboard and WhatsApp hub bind to loopback; the hub refuses production startup without its private token. Never expose ports 5000 or 8088 directly. `/healthz` is the sole unauthenticated health endpoint besides validated first-party affiliate redirects. Do not deploy publicly with missing/weak dashboard credentials.
+
+### Private phone/laptop access with Tailscale (no purchased domain)
+
+For a small, trusted set of devices, use Tailscale Serve rather than a public IP or Funnel:
+
+1. Install Tailscale on the `influencers` VM and only the chosen phones/laptops. Use separate Tailscale identities; turn on **Device Approval** in the admin console and approve only these devices. If the tailnet contains other devices, add an access policy that denies them access to this server.
+2. Enable MagicDNS and HTTPS certificates in Tailscale's DNS settings. Authenticate the VM, deploy the production dashboard so it answers on `127.0.0.1:5000`, and verify `/healthz` locally.
+3. Run `sudo ./deploy/enable_tailscale_serve.sh`. It verifies the dashboard is healthy and loopback-only, checks that the WhatsApp hub is not listening on a public interface, then configures HTTPS Serve to proxy to the dashboard. It never enables Funnel or opens cloud firewall ports.
+4. Open the printed `https://<vm>.<tailnet>.ts.net` URL only from an approved device with Tailscale connected. Verify access from one approved device and denial from an unapproved device. Keep OCI ingress for 5000/8088 closed; with this private setup, no paid domain or public web port is needed.
+
+Tailscale Serve is tailnet-only; Funnel is public internet exposure. See [Tailscale Serve docs](https://tailscale.com/docs/reference/tailscale-cli/serve). To remove the HTTPS handler, run `sudo tailscale serve --https=443 off`.
 
 ## Onboarding an influencer (production)
 
 1. `add-influencer "Ravi" --tag <creator-tag>` to save the influencer's own Associate tag. Omitting `--tag` uses configured `mama086-21` only as a fallback.
-2. **Telegram:** `create-tg <id> --title "Ravi Loots"` — we create the channel
-   under our bot account and add the posting bot as admin.
-3. **WhatsApp:** `pair-wa <id>` starts a WA session; the dashboard shows the QR.
-   The influencer scans it with **their** WhatsApp number. Then:
-   - `create-group <id>` makes a group they own (our automated deal feed).
-   - `create-newsletter <id>` creates their official WhatsApp Channel.
-4. Deals from the shared pool are rendered per influencer and pushed to every
-   ready channel. Dedup is per (influencer, channel, deal).
+2. **Telegram:** `create-tg <id> --title "Ravi Loots"` uses the configured
+   authorized Telegram account to create the channel. An optional bot-admin
+   grant is best-effort; the authorized account itself publishes posts.
+3. **WhatsApp:** `pair-wa <id>` starts a per-influencer QR session; the creator
+   scans it with their own WhatsApp account. Add their Channel invite URL from
+   the dashboard. It resolves to a newsletter JID and remains Pending until an
+   explicit test post succeeds. The connected number must be an admin with
+   posting rights. WhatsApp groups likewise require membership before testing.
+4. Deals from the shared pool are rendered per influencer and pushed to ready
+   channels. Amazon links use that creator's saved tag; dedup is per
+   (influencer, channel, deal).
 
 All of this is also doable from the **dashboard**. For local development only, run `cd dashboard && PYTHONPATH=.. python app.py` (binds `0.0.0.0:5000`; do not expose this development server publicly). Production uses Gunicorn under systemd, bound to loopback behind HTTPS.
 
@@ -241,18 +263,18 @@ fails.
 
 ---
 
-## Honest limitation — official WhatsApp Channels
+## WhatsApp Channel posting: supported path and limits
 
-baileys can **create** a WhatsApp Channel (newsletter) on the connected number
-and the influencer can follow it, but reliable **automated posting** to a
-newsletter is not exposed by this baileys build. So:
+The pinned Baileys release has a text-message route for WhatsApp newsletter
+JIDs. The dashboard can resolve a `https://whatsapp.com/channel/...` invite to
+its real `@newsletter` JID, save it as **Pending**, and only activate that
+destination after an operator sends a visible test post successfully. The
+connected influencer account must be a Channel admin with posting rights. A
+WhatsApp group invite is different: resolving its JID does not silently join
+the group; the paired account must already be a member with posting access.
 
-- The **WhatsApp group** is the reliable, fully-automated deal feed.
-- The **official Channel** is created + followed; posting there is done from the
-  phone (or we mirror the group). This is flagged in `wa_manager.js` and the UI.
-
-If you later want fully automated Channel posting, the path is the Meta
-Business/Cloud API for Channels, which is a separate integration.
+This is **not an official Meta Channel API**: Meta's Cloud API documentation
+lists Channels as unsupported ([Meta onboarding feature comparison](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-business-app-users/)). Baileys uses the WhatsApp-Web protocol; behavior can change and account restrictions cannot be ruled out. The pipeline sends text and links to Channels; newsletter media delivery is not guaranteed (see the [Baileys newsletter text/media report](https://github.com/WhiskeySockets/Baileys/issues/2345)). QR pairing is implemented; a phone-number pairing-code flow is not currently included. Test with a low-risk creator/channel before enabling automatic posts.
 
 ## VM watch ("ma VM chusthundta bot")
 

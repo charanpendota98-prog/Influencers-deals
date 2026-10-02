@@ -266,6 +266,42 @@ async def _iter_source_dialogs(client, use_dummy: bool = False) -> list[tuple[ob
             for dialog in selected]
 
 
+async def inspect_source_selection() -> dict:
+    """Safely verify Telegram auth and source matching without touching invites.
+
+    This only enumerates dialogs already joined to the account and applies the
+    exact selector/output-exclusion rules used by the deal worker. It never
+    checks an invite, joins a dialog, reads message history, or sends a message.
+    """
+    client = telegram_ops._client()
+    was_connected = client.is_connected()
+    try:
+        await _ensure_connected(client)
+        authorized = await client.is_user_authorized()
+        if not authorized:
+            return {"ok": False, "authorized": False, "reason": "telegram_session_not_authorized"}
+
+        dialogs = await _read_dialog_list(client)
+        entries = _source_entries(use_dummy=False)
+        selected = _joined_source_dialogs(dialogs, entries)
+        unresolved_private = sum(
+            1 for entry in entries
+            if _source_parts(entry.get("spec", ""))[2] and not entry.get("name")
+        )
+        return {
+            "ok": bool(entries) and bool(selected),
+            "authorized": True,
+            "configured_sources": len(entries),
+            "joined_group_channels": sum(1 for dialog in dialogs if _is_group_or_channel(dialog)),
+            "selected_sources": len(selected),
+            "unresolved_private_invites": unresolved_private,
+            "selection_mode": "joined_dialog_fallback" if unresolved_private else "configured_selectors",
+        }
+    finally:
+        if not was_connected and client.is_connected():
+            await client.disconnect()
+
+
 async def _collect_messages(client, entity, limit: int | None, after_id: int = 0) -> list:
     """Collect messages with bounded flood-wait recovery and no invite lookups."""
     kwargs = {}

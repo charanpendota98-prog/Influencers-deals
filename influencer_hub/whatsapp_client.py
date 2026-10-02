@@ -34,6 +34,22 @@ async def list_sessions() -> list[dict]:
     return (await _request("GET", "/sessions")).get("sessions", [])
 
 
+async def health_snapshot() -> dict:
+    """Check hub reachability and return counts only (no phone/session IDs)."""
+    health = await _request("GET", "/health", timeout=5)
+    if not health.get("ok"):
+        raise RuntimeError("WhatsApp hub health check was rejected")
+    sessions = await list_sessions()
+    statuses = [str(item.get("status") or "").lower() for item in sessions]
+    return {
+        "ok": True,
+        "session_count": len(sessions),
+        "connected_count": sum(status == "connected" for status in statuses),
+        "qr_pending_count": sum(status == "qr" for status in statuses),
+        "offline_count": sum(status in {"offline", "error"} for status in statuses),
+    }
+
+
 async def list_chats(session_key: str) -> list[dict]:
     res = await _request("GET", f"/sessions/{session_key}/chats")
     return res.get("chats", [])
@@ -41,7 +57,15 @@ async def list_chats(session_key: str) -> list[dict]:
 
 async def resolve_invite(session_key: str, invite_url_or_code: str) -> dict:
     return await _request("POST", f"/sessions/{session_key}/resolve-invite", json={"invite": invite_url_or_code})
-    return (await _request("GET", "/sessions")).get("sessions", [])
+
+
+async def resolve_newsletter(session_key: str, invite_url_or_code: str) -> dict:
+    """Resolve an official WhatsApp Channel link/code to its newsletter JID."""
+    return await _request(
+        "POST",
+        f"/sessions/{session_key}/resolve-newsletter",
+        json={"invite": invite_url_or_code},
+    )
 
 
 async def create_session(influencer_id: int, label: str) -> dict:
