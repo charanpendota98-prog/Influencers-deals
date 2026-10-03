@@ -7,7 +7,9 @@ sense (e.g. upsert by natural key).
 from __future__ import annotations
 
 import base64
+import difflib
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -145,9 +147,39 @@ CREATE TABLE IF NOT EXISTS lehlah_short_links (
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Engagement polls are manually created and globally de-duplicated by a
+-- normalized question. The creator id intentionally has no FK so deleting an
+-- influencer cannot erase question history and permit a repeated poll later.
+CREATE TABLE IF NOT EXISTS polls (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_by_influencer_id   INTEGER NOT NULL,
+    question                   TEXT NOT NULL,
+    normalized_question        TEXT NOT NULL UNIQUE,
+    options_json               TEXT NOT NULL,
+    allow_multiple             INTEGER NOT NULL DEFAULT 0,
+    created_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- One durable queued/send record per poll/destination. Once claimed, a delivery
+-- is never retried automatically: a timeout can happen after the platform
+-- accepted a poll, so a retry could create a visible duplicate.
+CREATE TABLE IF NOT EXISTS poll_deliveries (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    poll_id              INTEGER NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+    channel_id           INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    status               TEXT NOT NULL DEFAULT 'queued', -- queued|sending|posted|failed|skipped
+    error                TEXT NOT NULL DEFAULT '',
+    platform_message_id  TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(poll_id, channel_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_channels_influencer ON channels(influencer_id);
 CREATE INDEX IF NOT EXISTS idx_posts_sig ON posts(deal_sig, influencer_id);
 CREATE INDEX IF NOT EXISTS idx_wa_influencer ON wa_sessions(influencer_id);
+CREATE INDEX IF NOT EXISTS idx_polls_creator_created ON polls(created_by_influencer_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_poll_deliveries_poll ON poll_deliveries(poll_id);
 """
 
 
@@ -691,6 +723,218 @@ def delete_influencer(influencer_id: int) -> None:
     try:
         con.execute("DELETE FROM influencers WHERE id=?", (influencer_id,))
         con.commit()
+    finally:
+        con.close()
+
+
+def _poll_questions_near_duplicate(existing: str, candidate: str) -> bool:
+    """Catch high-confidence rewordings without blocking short/common prompts."""
+    if not existing or not candidate:
+        return False
+    if existing == candidate:
+        return True
+    if min(len(existing), len(candidate)) < 28:
+        return False
+    existing_words = set(existing.split())
+    candidate_words = set(candidate.split())
+    if min(len(existing_words), len(candidate_words)) < 4:
+        return False
+    word_overlap = len(existing_words & candidate_words) / max(
+        len(existing_words), len(candidate_words)
+    )
+    char_similarity = difflib.SequenceMatcher(
+        None, existing, candidate, autojunk=False
+    ).ratio()
+    return word_overlap >= 0.78 and char_similarity >= 0.86
+
+
+def create_poll_question(
+    influencer_id: int,
+    question: str,
+    normalized_question: str,
+    options: list[str],
+    allow_multiple: bool = False,
+    channel_ids: Iterable[int] = (),
+) -> dict:
+    """Atomically save a globally unique poll question.
+
+    The normalized string is unique across all profiles and destinations. A
+    conservative fuzzy check also blocks near-identical long prompts, while
+    intentionally leaving short/common prompts alone to avoid false positives.
+    """
+    question = str(question or "").strip()
+    normalized = str(normalized_question or "").strip()
+    if not question or not normalized:
+        raise ValueError("A poll question is required")
+    if len(options) < 2:
+        raise ValueError("A poll needs at least two answer options")
+
+    options_json = json.dumps([str(option) for option in options], ensure_ascii=False)
+    destination_ids = list(dict.fromkeys(int(channel_id) for channel_id in channel_ids))
+    con = _connect()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        for channel_id in destination_ids:
+            owner = con.execute(
+                "SELECT influencer_id FROM channels WHERE id=?", (channel_id,)
+            ).fetchone()
+            if not owner or int(owner["influencer_id"]) != int(influencer_id):
+                raise ValueError("Poll destinations must belong to the selected influencer")
+
+        rows = con.execute(
+            "SELECT id, question, normalized_question FROM polls ORDER BY id DESC"
+        ).fetchall()
+        for row in rows:
+            prior_normalized = str(row["normalized_question"] or "")
+            exact = prior_normalized == normalized
+            near = not exact and _poll_questions_near_duplicate(prior_normalized, normalized)
+            if exact or near:
+                con.rollback()
+                return {
+                    "created": False,
+                    "poll_id": int(row["id"]),
+                    "existing_question": str(row["question"]),
+                    "duplicate_kind": "exact" if exact else "similar",
+                }
+
+        created_at = _now()
+        cur = con.execute(
+            "INSERT INTO polls "
+            "(created_by_influencer_id, question, normalized_question, options_json, allow_multiple, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                int(influencer_id), question, normalized, options_json,
+                1 if _as_bool(allow_multiple, default=False) else 0, created_at,
+            ),
+        )
+        poll_id = int(cur.lastrowid)
+        con.executemany(
+            "INSERT INTO poll_deliveries "
+            "(poll_id, channel_id, status, created_at, updated_at) "
+            "VALUES (?, ?, 'queued', ?, ?)",
+            [(poll_id, channel_id, created_at, created_at) for channel_id in destination_ids],
+        )
+        con.commit()
+        return {
+            "created": True,
+            "poll_id": poll_id,
+            "destination_count": len(destination_ids),
+        }
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def claim_next_poll_delivery() -> dict | None:
+    """Atomically move the oldest queued poll destination to ``sending``."""
+    con = _connect()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT d.id AS delivery_id, d.poll_id, d.channel_id, "
+            "p.question, p.options_json, p.allow_multiple, "
+            "c.influencer_id AS channel_influencer_id, c.platform AS channel_platform, "
+            "c.identifier AS channel_identifier, c.role AS channel_role, "
+            "c.status AS channel_status, c.wa_session_key, "
+            "c.posting_schedule AS channel_posting_schedule, "
+            "i.active AS influencer_active, i.telegram_enabled AS influencer_telegram_enabled, "
+            "i.whatsapp_enabled AS influencer_whatsapp_enabled, "
+            "i.posting_schedule AS influencer_posting_schedule "
+            "FROM poll_deliveries d "
+            "JOIN polls p ON p.id=d.poll_id "
+            "JOIN channels c ON c.id=d.channel_id "
+            "JOIN influencers i ON i.id=c.influencer_id "
+            "WHERE d.status='queued' ORDER BY d.id LIMIT 1"
+        ).fetchone()
+        if not row:
+            con.commit()
+            return None
+
+        cur = con.execute(
+            "UPDATE poll_deliveries SET status='sending', updated_at=? "
+            "WHERE id=? AND status='queued'",
+            (_now(), int(row["delivery_id"])),
+        )
+        if cur.rowcount != 1:
+            con.rollback()
+            return None
+        con.commit()
+        result = dict(row)
+        try:
+            result["options"] = json.loads(result.pop("options_json"))
+        except (TypeError, json.JSONDecodeError):
+            result["options"] = []
+            result.pop("options_json", None)
+        return result
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def finish_poll_delivery(
+    poll_id: int,
+    channel_id: int,
+    status: str,
+    *,
+    error: str = "",
+    platform_message_id: str = "",
+) -> None:
+    """Persist a final delivery result; failures are not blindly retried."""
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"posted", "failed", "skipped"}:
+        raise ValueError("Poll delivery status must be posted, failed, or skipped")
+    con = _connect()
+    try:
+        con.execute(
+            "UPDATE poll_deliveries SET status=?, error=?, platform_message_id=?, updated_at=? "
+            "WHERE poll_id=? AND channel_id=?",
+            (
+                normalized_status, str(error or "")[:500],
+                str(platform_message_id or "")[:200], _now(),
+                int(poll_id), int(channel_id),
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def list_recent_polls(influencer_id: int, limit: int = 8) -> list[dict]:
+    """Return an influencer's newest poll records with aggregate send outcomes."""
+    safe_limit = max(1, min(50, int(limit)))
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT p.id, p.question, p.options_json, p.allow_multiple, p.created_at, "
+            "COUNT(d.id) AS destination_count, "
+            "COALESCE(SUM(CASE WHEN d.status='posted' THEN 1 ELSE 0 END), 0) AS posted_count, "
+            "COALESCE(SUM(CASE WHEN d.status='failed' THEN 1 ELSE 0 END), 0) AS failed_count, "
+            "COALESCE(SUM(CASE WHEN d.status IN ('queued', 'sending') THEN 1 ELSE 0 END), 0) AS pending_count, "
+            "COALESCE(SUM(CASE WHEN d.status='skipped' THEN 1 ELSE 0 END), 0) AS skipped_count, "
+            "GROUP_CONCAT(CASE WHEN d.id IS NOT NULL THEN "
+            "COALESCE(c.identifier, 'destination') || ': ' || d.status || "
+            "CASE WHEN d.error!='' THEN ' (' || SUBSTR(d.error,1,160) || ')' ELSE '' END "
+            "END, ' · ') AS destination_details "
+            "FROM polls p LEFT JOIN poll_deliveries d ON d.poll_id=p.id "
+            "LEFT JOIN channels c ON c.id=d.channel_id "
+            "WHERE p.created_by_influencer_id=? "
+            "GROUP BY p.id ORDER BY p.id DESC LIMIT ?",
+            (int(influencer_id), safe_limit),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["options"] = json.loads(item.pop("options_json"))
+            except (TypeError, json.JSONDecodeError):
+                item["options"] = []
+                item.pop("options_json", None)
+            result.append(item)
+        return result
     finally:
         con.close()
 

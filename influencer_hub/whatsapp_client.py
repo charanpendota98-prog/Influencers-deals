@@ -7,6 +7,7 @@ WhatsApp lifting stays in Node (matching the proven bestgaa bridge).
 from __future__ import annotations
 
 import asyncio
+from urllib.parse import quote
 
 import aiohttp
 
@@ -88,6 +89,18 @@ async def session_status(session_key: str) -> dict:
 async def send_text(session_key: str, to_jid: str, text: str) -> dict:
     return await _request("POST", f"/sessions/{session_key}/send", json={
         "to": to_jid, "text": text})
+
+
+async def send_poll(session_key: str, to_jid: str, question: str,
+                    options: list[str], allow_multiple: bool = False) -> dict:
+    """Send a native WhatsApp poll; the hub accepts group JIDs only."""
+    safe_key = quote(str(session_key), safe="")
+    return await _request("POST", f"/sessions/{safe_key}/poll", json={
+        "to": to_jid,
+        "question": question,
+        "options": options,
+        "allow_multiple": bool(allow_multiple),
+    })
 
 
 async def create_group(session_key: str, subject: str, participant: str) -> dict:

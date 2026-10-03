@@ -34,6 +34,24 @@ Each profile can use an Amazon-only Telegram preview, a broadcast Telegram chann
 | **Channel 2: Real / Broadcast Channel** | Telegram | Amazon, EarnKaro, and HYPD links follow their independent selected toggles; the explicit Only Amazon mode suppresses non-Amazon affiliate links. | Per-profile and per-channel routing controls. |
 | **Channel 3: WhatsApp Feed** | WhatsApp | Same independent network routing as its profile/channel settings; the explicit Only Amazon mode remains exclusive. | Per-profile and per-channel routing controls. |
 
+### Native engagement polls (manual + no-repeat)
+The influencer detail page includes an explicit poll composer for native Telegram
+polls and WhatsApp **groups**. Questions and answer options are validated,
+Telegram/WhatsApp supports single- or multiple-answer voting, and selected
+ready destinations are sent once. WhatsApp newsletters/Channels are excluded:
+poll delivery is not verified in the pinned unofficial Baileys integration.
+
+Poll questions are recorded in a global SQLite history. Case, punctuation, and
+spacing variants—and high-confidence near-duplicate long questions—are blocked
+across profiles and platforms, even if a profile or channel is later removed.
+The dashboard queues sends durably and the background worker drains one poll
+destination per cycle, so conservative WhatsApp pacing cannot hold an admin web
+request open. Destinations are reserved before network I/O; failures or uncertain
+sends are recorded and are not blindly retried because a timeout may occur after
+a platform accepted the poll. Poll creation is manual and requires fresh
+password confirmation; no AI prompt generator or automatic poll
+schedule runs in the background.
+
 ### How to onboard unlimited influencers (1-Click Easy Setup)
 1. **Dashboard Self-Serve (/onboard):**
    Go to `/onboard`, enter the influencer's own Amazon Associate tag (the configured `mama086-21` value is only a fallback). Choose the supported affiliate-network and platform toggles, then click **"⚡ Save & Create Selected Destinations"**. When Telegram is enabled, the app attempts to create the Approval + Broadcast channels; when WhatsApp is enabled, it starts a QR session. Check the result messages, pair WhatsApp, and connect or create a group/channel afterward.
@@ -63,6 +81,7 @@ influencer_hub/   Python brain
   puller.py          ingestion from already joined Telegram dialogs (no invite checks)
   whatsapp_client.py HTTP client for the wa_hub
   pipeline.py        shared deal -> render per influencer -> dispatch to channels
+  polls.py           manual Telegram/WhatsApp-group polls with global deduplication
   worker.py          24/7 pull/dispatch daemon with cursoring and recovery
   vm_watch.py        host health (cpu/mem/disk/bot) -> DB + ops Telegram channel
   cli.py             management CLI

@@ -79,6 +79,38 @@ def test_sensitive_setup_changes_require_a_one_use_password_confirmation(monkeyp
     assert client.post("/sources/add", data=change).status_code == 428
 
 
+def test_manual_poll_sending_requires_fresh_password_confirmation(monkeypatch, tmp_path):
+    monkeypatch.setitem(app.config, "TESTING", False)
+    monkeypatch.setattr(config, "HUB_ENV", "development")
+    monkeypatch.setattr(config, "DASHBOARD_ADMIN_PASSWORD", "test-admin-password-123")
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "poll-reauth.sqlite3")
+    db.init()
+    influencer_id = db.add_influencer("Poll Security", "poll-security-21")
+    db.add_channel(influencer_id, "telegram", "@poll_security", status="ready")
+
+    client = app.test_client()
+    login_page = client.get("/login")
+    token = _csrf(login_page.get_data(as_text=True))
+    assert client.post(
+        "/login",
+        data={"password": "test-admin-password-123", "_csrf_token": token},
+    ).status_code == 302
+
+    profile_page = client.get(f"/influencer/{influencer_id}")
+    token = _csrf(profile_page.get_data(as_text=True))
+    response = client.post(
+        f"/influencer/{influencer_id}/send-poll",
+        data={
+            "_csrf_token": token,
+            "poll_question": "Which fresh deals do you want next?",
+            "poll_options": "Fashion\nTech",
+            "poll_platforms": "telegram",
+        },
+    )
+    assert response.status_code == 428
+    assert db.list_recent_polls(influencer_id) == []
+
+
 def test_login_requires_csrf_and_authenticates_with_safe_redirect(monkeypatch, tmp_path):
     monkeypatch.setitem(app.config, "TESTING", False)
     monkeypatch.setattr(config, "DASHBOARD_ADMIN_PASSWORD", "test-admin-password-123")

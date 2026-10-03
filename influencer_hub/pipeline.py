@@ -61,6 +61,29 @@ async def apply_whatsapp_safety_pacing(session_key: str) -> None:
         await asyncio.sleep(delay)
 
 
+async def dispatch_poll(channel: dict, question: str, options: list[str],
+                        allow_multiple: bool = False) -> dict:
+    """Send a native poll to a Telegram destination or WhatsApp group.
+
+    WhatsApp Channels/newsletters are intentionally unsupported until native
+    poll delivery there is verified in the pinned Baileys integration.
+    """
+    platform = str(channel.get("poll_platform") or channel.get("platform") or "").lower()
+    identifier = str(channel.get("identifier") or "").strip()
+    if platform == "telegram":
+        await telegram_ops.post_poll_to_channel(
+            identifier, question, options, allow_multiple=allow_multiple
+        )
+        return {"ok": True}
+    if platform in {"whatsapp", "whatsapp_group"} and identifier.lower().endswith("@g.us"):
+        key = channel.get("wa_session_key") or WA_SESSION_KEY(channel["influencer_id"])
+        await apply_whatsapp_safety_pacing(str(key))
+        return await whatsapp_client.send_poll(
+            str(key), identifier, question, options, allow_multiple=allow_multiple
+        )
+    raise ValueError("Polls are supported only in Telegram channels and WhatsApp groups")
+
+
 async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str:
     """Post `text` to one channel. Returns a status string.
 

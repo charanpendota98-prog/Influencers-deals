@@ -27,13 +27,14 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, url_for, session
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for, session
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
-    config, db, hypd_shortlinks, lehlah_shortlinks, puller, telegram_ops, whatsapp_client,
+    config, db, hypd_shortlinks, lehlah_shortlinks, polls, puller,
+    telegram_ops, whatsapp_client,
 )  # noqa: E402
 
 app = Flask(__name__)
@@ -58,7 +59,7 @@ REAUTH_REQUIRED_ENDPOINTS = frozenset({
     "bulk_import", "delete_channel", "toggle_influencer_active",
     "toggle_channel_status", "onboard", "set_flags", "onboard_tg",
     "onboard_wa", "create_tg", "pair_wa", "create_group",
-    "wa_connect_chat", "create_newsletter", "send_test_message",
+    "wa_connect_chat", "create_newsletter", "send_test_message", "send_poll",
 })
 
 DEFAULT_SOURCE_CATALOG = [
@@ -1645,6 +1646,12 @@ def influencer_detail(inf_id):
     channels = db.list_channels(inf_id)
     wa_sessions = db.list_wa_sessions(inf_id)
     stats = db.post_stats(inf_id)
+    poll_targets = polls.eligible_poll_targets(inf, channels)
+    poll_target_counts = {
+        platform: sum(target.get("poll_platform") == platform for target in poll_targets)
+        for platform in ("telegram", "whatsapp")
+    }
+    poll_history = db.list_recent_polls(inf_id)
     wa_key = WA_SESSION_KEY(inf_id)
 
     # Check live WhatsApp session status & fetch groups/channels
@@ -1674,6 +1681,8 @@ def influencer_detail(inf_id):
         "influencer.html", inf=inf, channels=channels,
         wa_sessions=wa_sessions, stats=stats, wa_key=wa_key,
         wa_hub_url=config.WA_HUB_URL, wa_status_info=wa_status_info,
+        poll_targets=poll_targets, poll_target_counts=poll_target_counts,
+        poll_history=poll_history,
         demo_approval=demo_approval, demo_broadcast=demo_broadcast,
         current_hypd_store=_effective_hypd_store_id(),
         current_ek_pubid=_effective_earnkaro_publisher_id(),
@@ -1681,6 +1690,72 @@ def influencer_detail(inf_id):
             db.get_global_setting("earnkaro_api_key") or config.EARNKARO_API_KEY
         ),
     )
+
+
+@app.route("/influencer/<int:inf_id>/send-poll", methods=["POST"])
+def send_poll(inf_id):
+    """Explicitly dispatch one globally unique poll to selected ready targets."""
+    influencer = db.get_influencer(inf_id)
+    if not influencer:
+        flash("Influencer profile was not found.", "error")
+        return redirect(url_for("index"))
+
+    try:
+        question, options, normalized_question = polls.validate_poll(
+            request.form.get("poll_question", ""),
+            request.form.get("poll_options", "").splitlines(),
+        )
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+    selected_platforms = set(request.form.getlist("poll_platforms")) & {"telegram", "whatsapp"}
+    if not selected_platforms:
+        flash("Select Telegram and/or WhatsApp Groups as poll destinations.", "error")
+        return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+    targets = [
+        target for target in polls.eligible_poll_targets(
+            influencer, db.list_channels(inf_id)
+        )
+        if target["poll_platform"] in selected_platforms
+    ]
+    if not targets:
+        flash(
+            "No ready poll destinations are available for that platform right now. "
+            "The profile must be active, the channel enabled, and its posting window open.",
+            "error",
+        )
+        return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+    try:
+        result = polls.enqueue_poll(
+            inf_id,
+            question,
+            options,
+            normalized_question,
+            request.form.get("allow_multiple") == "1",
+            targets,
+        )
+    except Exception as exc:
+        print(f"Poll queueing failed for influencer {inf_id}: {exc}")
+        flash("Poll could not be queued. Check service logs before trying again.", "error")
+        return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+    if result.get("duplicate"):
+        flash(
+            "This question (or a high-confidence near-duplicate) has already been used. "
+            "Choose a genuinely fresh question; no poll was queued.",
+            "warning",
+        )
+        return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+    flash(
+        f"Unique poll queued for {result.get('queued_count', 0)} destination(s). "
+        "The background worker will deliver it; check Recent poll history for status.",
+        "success",
+    )
+    return redirect(url_for("influencer_detail", inf_id=inf_id))
 
 
 @app.route("/influencer/<int:inf_id>/create-tg", methods=["POST"])
