@@ -2,7 +2,8 @@
 
 The worker owns one asyncio loop and one isolated Telethon session. It reads
 already-joined dialogs, persists per-dialog message cursors, retries failed
-deliveries without advancing past them, and backs off on unexpected failures.
+deal deliveries without advancing past them, drains the durable manual-poll
+queue independently, and backs off on unexpected failures.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import random
 import signal
 from collections import defaultdict
 
-from . import config, db, pipeline, puller, scheduler
+from . import config, db, pipeline, polls, puller, scheduler
 
 logger = logging.getLogger("influencer_hub.worker")
 
@@ -45,6 +46,30 @@ async def _heartbeat_loop(stop_event: asyncio.Event) -> None:
             logger.warning("Could not refresh worker heartbeat", exc_info=True)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _poll_dispatch_loop(stop_event: asyncio.Event) -> None:
+    """Drain the durable poll queue independently of the source-ingestion loop."""
+    while not stop_event.is_set():
+        delay = 5
+        try:
+            stats = await polls.process_pending_polls(limit=1)
+            if stats["processed"]:
+                logger.info(
+                    "Poll queue: processed=%s posted=%s failed=%s skipped=%s",
+                    stats["processed"], stats["posted"],
+                    stats["failed"], stats["skipped"],
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Poll queue processing failed; it will be checked again")
+            delay = 10
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=delay)
         except asyncio.TimeoutError:
             pass
 
@@ -101,6 +126,7 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     db.init()
     _record_heartbeat("starting")
     heartbeat_task = asyncio.create_task(_heartbeat_loop(stop_event))
+    poll_dispatch_task = asyncio.create_task(_poll_dispatch_loop(stop_event))
     scheduler.start_scheduler()
     poll_seconds = max(5, int(config.DEAL_WORKER_POLL_INTERVAL))
     max_backoff = max(poll_seconds, int(config.DEAL_WORKER_MAX_BACKOFF))
@@ -143,7 +169,12 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
                 pass
     finally:
         stop_event.set()
+        poll_dispatch_task.cancel()
         heartbeat_task.cancel()
+        try:
+            await poll_dispatch_task
+        except asyncio.CancelledError:
+            pass
         try:
             await heartbeat_task
         except asyncio.CancelledError:

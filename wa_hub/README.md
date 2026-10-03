@@ -24,6 +24,7 @@ On boot it auto-resumes any previously paired sessions from `./auth/<key>/`.
 | GET | `/sessions/:key/qr` | latest QR as a PNG data URL (null if connected) |
 | GET | `/sessions/:key/qr/stream` | SSE: live QR + status |
 | POST | `/sessions/:key/send` | `{to, text}` |
+| POST | `/sessions/:key/poll` | `{to, question, options, allow_multiple}` → native WhatsApp poll in a group only |
 | POST | `/sessions/:key/group` | `{subject, participant}` → creates a group the influencer owns |
 | POST | `/sessions/:key/newsletter` | `{name, description}` → creates an official Channel |
 | POST | `/sessions/:key/resolve-newsletter` | resolve a `whatsapp.com/channel/...` invite to its `@newsletter` JID |
@@ -50,7 +51,16 @@ default (`WA_HUB_HOST` can override this only for an intentional private setup).
 - WhatsApp Channels are not exposed by Meta's official Cloud API. Baileys is an
   unofficial WhatsApp-Web integration, so this Channel path is best-effort and
   may break when WhatsApp changes its protocol. The deal pipeline sends text
-  with links; do not assume media posts work for newsletters.
+  with links; do not assume media posts work for newsletters. Native poll
+  delivery is currently restricted to WhatsApp groups; newsletters are excluded
+  because poll support is not verified there.
+- Poll creation is an explicit admin action, not an automatic/AI scheduler.
+  The dashboard queues sends durably; the existing Python worker delivers at
+  most one destination per cycle, using the same conservative WhatsApp pacing
+  as deal messages. A normalized global question history blocks exact plus
+  high-confidence near-duplicate questions across profiles, and each delivery
+  is claimed before network I/O to avoid blindly retrying a possibly accepted
+  poll.
 - A WhatsApp group invite link resolves metadata but does not silently join the
   group. The paired account must already be a member with posting permission
   before the test succeeds.

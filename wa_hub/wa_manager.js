@@ -213,6 +213,33 @@ export class Hub {
     return { ok: true, id: res?.key?.id }
   }
 
+  async sendPoll(key, to, question, options, allowMultiple = false) {
+    const s = this.sessions.get(key)
+    if (!s?.sock) throw new Error('session not connected: ' + key)
+    if (typeof to !== 'string' || !to.endsWith('@g.us')) {
+      throw new Error('WhatsApp polls are supported only in groups, not Channels or direct chats')
+    }
+
+    const cleanQuestion = String(question || '').trim()
+    const cleanOptions = Array.isArray(options)
+      ? options.map(option => String(option || '').trim()).filter(Boolean)
+      : []
+    if (!cleanQuestion || cleanQuestion.length > 255) throw new Error('invalid poll question')
+    if (cleanOptions.length < 2 || cleanOptions.length > 10) throw new Error('polls require 2 to 10 options')
+    if (cleanOptions.some(option => option.length > 100)) throw new Error('poll options must be 100 characters or fewer')
+    const optionKeys = cleanOptions.map(option => option.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim())
+    if (new Set(optionKeys).size !== optionKeys.length) throw new Error('poll options must be unique')
+
+    const res = await s.sock.sendMessage(to, {
+      poll: {
+        name: cleanQuestion,
+        values: cleanOptions,
+        selectableCount: allowMultiple === true ? cleanOptions.length : 1,
+      },
+    })
+    return { ok: true, id: res?.key?.id }
+  }
+
   async createGroup(key, subject, participant) {
     const s = this.sessions.get(key)
     if (!s?.sock) throw new Error('session not connected: ' + key)

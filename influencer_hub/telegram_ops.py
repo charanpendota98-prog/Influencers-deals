@@ -228,6 +228,48 @@ async def post_to_channel(identifier: str, text: str, media_path: str | None = N
         await client.send_message(entity, text, buttons=buttons)
 
 
+async def post_poll_to_channel(identifier: str, question: str, options: list[str],
+                              allow_multiple: bool = False):
+    """Publish a native, anonymous Telegram poll through the authorized account."""
+    if not 2 <= len(options) <= 10:
+        raise ValueError("Telegram polls require between 2 and 10 options")
+    if not str(question or "").strip():
+        raise ValueError("Telegram poll question is required")
+
+    from telethon import functions, helpers, types
+
+    client = _client()
+    if not client.is_connected():
+        await client.connect()
+    entity_selector = identifier
+    if isinstance(identifier, str) and identifier.lstrip("-").isdigit():
+        entity_selector = int(identifier)
+    entity = await client.get_input_entity(entity_selector)
+
+    answers = [
+        types.PollAnswer(
+            text=types.TextWithEntities(text=str(option), entities=[]),
+            option=bytes([index]),
+        )
+        for index, option in enumerate(options)
+    ]
+    poll = types.Poll(
+        id=helpers.generate_random_long(),
+        question=types.TextWithEntities(text=str(question), entities=[]),
+        answers=answers,
+        hash=0,
+        public_voters=False,
+        multiple_choice=bool(allow_multiple),
+        quiz=False,
+    )
+    return await client(functions.messages.SendMediaRequest(
+        peer=entity,
+        media=types.InputMediaPoll(poll=poll),
+        message="",
+        random_id=helpers.generate_random_long(),
+    ))
+
+
 async def disconnect() -> None:
     """Disconnect the Telethon client owned by the current event loop."""
     global _TG_CLIENT

@@ -14,6 +14,12 @@ class FakeSocket {
     this.user = { id: '919876543210@s.whatsapp.net' }
     this.logoutCalls = 0
     this.endCalls = 0
+    this.sendCalls = []
+  }
+
+  async sendMessage(to, payload) {
+    this.sendCalls.push({ to, payload })
+    return { key: { id: `message-${this.sendCalls.length}` } }
   }
 
   emitUpdate(update) {
@@ -129,6 +135,44 @@ test('saved session identity resumes after Hub restart and status is re-read fro
   restarted.sockets[0].emitUpdate({ connection: 'open' })
   assert.equal(restored.status, 'connected')
   assert.equal(restored.phone, '919876543210')
+})
+
+test('native WhatsApp polls validate options and are restricted to groups', async (t) => {
+  const fixture = makeFixture(t)
+  const { hub, sockets } = fixture
+  await hub.start('inf-polls-wa', { influencer_id: 7, label: 'wa' })
+
+  const first = await hub.sendPoll(
+    'inf-polls-wa', '120363001@g.us', 'Which category should we feature?',
+    ['Fashion', 'Electronics'], false,
+  )
+  assert.deepEqual(first, { ok: true, id: 'message-1' })
+  assert.deepEqual(sockets[0].sendCalls[0], {
+    to: '120363001@g.us',
+    payload: {
+      poll: {
+        name: 'Which category should we feature?',
+        values: ['Fashion', 'Electronics'],
+        selectableCount: 1,
+      },
+    },
+  })
+
+  await hub.sendPoll(
+    'inf-polls-wa', '120363001@g.us', 'Pick every topic you like',
+    ['Fashion', 'Phones', 'Home'], true,
+  )
+  assert.equal(sockets[0].sendCalls[1].payload.poll.selectableCount, 3)
+
+  await assert.rejects(
+    hub.sendPoll('inf-polls-wa', '123@newsletter', 'Question?', ['A', 'B']),
+    /only in groups/,
+  )
+  await assert.rejects(
+    hub.sendPoll('inf-polls-wa', '120363001@g.us', 'Question?', ['Yes', 'yes!']),
+    /must be unique/,
+  )
+  assert.equal(sockets[0].sendCalls.length, 2)
 })
 
 test('logged-out sessions clear credentials and can be explicitly paired again', async (t) => {

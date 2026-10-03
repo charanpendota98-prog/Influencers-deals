@@ -8,6 +8,7 @@
 //   GET  /sessions/:key/qr        -> { qr }  (latest QR string; null if connected)
 //   GET  /sessions/:key/qr/stream -> SSE: pushes {type:'qr',qr} then {type:'status',...}
 //   POST /sessions/:key/send      { to, text }
+//   POST /sessions/:key/poll      { to, question, options, allow_multiple } (groups only)
 //   POST /sessions/:key/group     { subject, participant }
 //   POST /sessions/:key/newsletter { name, description }
 //   POST /sessions/:key/resolve-newsletter { invite }
@@ -135,6 +136,23 @@ app.post('/sessions/:key/send', async (req, res) => {
   try {
     const r = await hub.sendText(req.params.key, to, text)
     res.json({ ok: true, ...r })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+
+app.post('/sessions/:key/poll', async (req, res) => {
+  const { to, question, options, allow_multiple } = req.body || {}
+  if (!to || !question || !Array.isArray(options)) {
+    return res.status(400).json({ ok: false, error: 'to, question, and options are required' })
+  }
+  if (typeof to !== 'string' || !to.endsWith('@g.us')) {
+    return res.status(422).json({ ok: false, error: 'WhatsApp polls are supported only in groups' })
+  }
+  try {
+    const r = await hub.sendPoll(req.params.key, to, question, options, allow_multiple)
+    if (!r?.ok) return res.status(422).json(r || { ok: false, error: 'WhatsApp rejected the poll' })
+    res.json(r)
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })
   }
