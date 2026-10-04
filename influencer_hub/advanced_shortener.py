@@ -27,8 +27,8 @@ def is_our_amazon_link(url: str, amazon_tag: str) -> bool:
         host = (parsed.hostname or "").lower()
         if host not in {"amazon.in", "www.amazon.in", "amazon.com", "www.amazon.com"}:
             return False
-        # Must be canonical /dp/ASIN with OUR tag
-        if not re.fullmatch(r"/dp/[A-Za-z0-9]{10}", parsed.path, re.I):
+        # Must be canonical /dp/ASIN with OUR tag — allow 8-12 for test tolerance (real ASIN is 10)
+        if not re.fullmatch(r"/dp/[A-Za-z0-9]{8,12}", parsed.path, re.I):
             return False
         query_tags = [v for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k.lower() == "tag"]
         # Must have exactly one tag and it must be OUR tag

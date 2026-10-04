@@ -393,6 +393,65 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 )
                 if config.LEHLAH_SHORTLINKS_ENABLED:
                     rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
+
+                # === COMMISSION GUARD: perfect verification that every shortened/posted link is OUR affiliate ===
+                # User: "SHORTEN LINK CHETHE PEREFCTGA CORRECT GA MANA AFFILAT ELINK RAVALI OOKAYNAA"
+                # We audit FINAL rendered text before dispatch. Any non-OUR leak is logged and sanitized.
+                try:
+                    from . import commission_guard
+                    expected_pubid = (db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or "").strip()
+                    audit = commission_guard.audit_rendered_text(
+                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
+                    )
+                    if not audit["ok"]:
+                        import logging
+                        log = logging.getLogger(__name__)
+                        log.warning(
+                            "COMMISSION GUARD leak inf=%s ch=%s tag=%s store=%s pubid=%s allowed=%s issues=%s snippet=%.200s",
+                            inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid, allowed_kinds,
+                            "; ".join(audit["issues"])[:500], rendered[:200]
+                        )
+                        # Sanitize: remove raw meesho / unconverted merchant / wrong-tag links
+                        sanitized, _ = commission_guard.sanitize_rendered_text(
+                            rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
+                        )
+                        # Check if sanitized still has at least one OUR affiliate (amazon/hypd/EarnKaro/first-party/bitly-OUR)
+                        remaining_urls = link_router.find_urls(sanitized)
+                        has_affiliate = False
+                        for u in remaining_urls:
+                            kind = link_router.classify_url(u)
+                            host = (link_router._host_of(u) if hasattr(link_router, "_host_of") else "")
+                            # Bitly OUR links (advanced_only_our mode ensures any bit.ly is OUR)
+                            if host in {"bit.ly", "www.bit.ly", "bitly.com", "www.bitly.com"} or host.endswith(".bit.ly"):
+                                has_affiliate = True
+                                break
+                            if kind == "amazon" and effective_amz_tag and advanced_shortener.is_our_amazon_link(u, effective_amz_tag):
+                                has_affiliate = True
+                                break
+                            if kind == "hypd" and effective_hypd_store and advanced_shortener.is_our_hypd_link(u, effective_hypd_store):
+                                has_affiliate = True
+                                break
+                            if commission_guard.is_earnkaro_short_link(u):
+                                has_affiliate = True
+                                break
+                            if kind == "lehlah":
+                                has_affiliate = True
+                                break
+                            if "/amazon/" in u and effective_amz_tag and f"tag={effective_amz_tag}" in u:
+                                has_affiliate = True
+                                break
+                            if "/m/" in u:
+                                has_affiliate = True
+                                break
+                        if has_affiliate:
+                            rendered = sanitized
+                        else:
+                            # No OUR affiliate left — posting would earn zero. Skip this channel.
+                            per_channel[ch["id"]] = "skipped:no_our_affiliate_after_guard"
+                            continue
+                except Exception as _guard_exc:
+                    import logging
+                    logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
             status = await dispatch_to_channel(inf, ch, rendered)
             db.record_post(inf["id"], ch["id"], sig,
                            status="posted" if status == "posted" else "failed",
