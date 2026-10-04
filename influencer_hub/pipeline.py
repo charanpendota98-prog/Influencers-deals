@@ -334,45 +334,63 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             shortened_map = {}
 
             if effective_bitly_key and role != "approval":
-                # Render base version to identify final URLs that will appear
-                base_rendered = link_router.render_for_influencer(
-                    render_text, effective_amz_tag, channel_ek_map, role=role, strip_amazon=strip_amz,
-                    clean_promos=True, hypd_store_id=effective_hypd_store
-                )
-                # Amazon, HYPD, and existing LehLah affiliate URLs never go
-                # through generic Bitly. Their first-party routes are applied later.
-                # EarnKaro shorteners (ekaro.in, fktr.in, etc.) are already short and must stay as-is.
-                from urllib.parse import urlparse as _bt_urlparse
-                _ek_shortener_hosts = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "myntr.it"}
-                def _is_earnkaro_short(url: str) -> bool:
-                    try:
-                        h = (_bt_urlparse(url).hostname or "").lower()
-                        return h in _ek_shortener_hosts or (h.startswith("www.") and h[4:] in _ek_shortener_hosts)
-                    except Exception:
-                        return False
-                final_urls = [
-                    url for url in link_router.find_urls(base_rendered)
-                    if link_router.classify_url(url) not in {"amazon", "hypd", "meesho", "lehlah"}
-                    and not _is_earnkaro_short(url)
-                ]
-                # PERFECT CHECK: Ensure Amazon product links are never Bitly-shortened
-                # Only shorten if multiple links or excessively long URL (>65 chars)
-                should_shorten = (len(final_urls) >= 2) or any(len(url) > 65 for url in final_urls)
-                if should_shorten:
-                    shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
+                # Check if ADVANCED ONLY-OUR-LINKS mode is enabled (user requested "ONLY MANA LINK KI")
+                # When enabled, generic merchant Bitly is DISABLED; only OUR Amazon/HYPD via advanced shortener will be shortened
+                try:
+                    _db_only_our = str(db.get_global_setting("advanced_only_our_links", "")).strip().lower()
+                    if _db_only_our:
+                        _only_our_enabled = _db_only_our in {"1", "true", "yes", "on"}
+                    else:
+                        _only_our_enabled = bool(config.ADVANCED_ONLY_OUR_LINKS)
+                except Exception:
+                    _only_our_enabled = bool(config.ADVANCED_ONLY_OUR_LINKS)
+
+                if _only_our_enabled:
+                    # ADVANCED MODE: Skip generic merchant Bitly, ONLY OUR links via advanced shortener later
+                    shortened_map = {}
+                else:
+                    # Classic mode: Bitly for long merchant links (Flipkart etc. not yet converted)
+                    # Render base version to identify final URLs that will appear
+                    base_rendered = link_router.render_for_influencer(
+                        render_text, effective_amz_tag, channel_ek_map, role=role, strip_amazon=strip_amz,
+                        clean_promos=True, hypd_store_id=effective_hypd_store
+                    )
+                    # Amazon, HYPD, and existing LehLah affiliate URLs never go
+                    # through generic Bitly. Their first-party routes are applied later.
+                    # EarnKaro shorteners (ekaro.in, fktr.in, etc.) are already short and must stay as-is.
+                    from urllib.parse import urlparse as _bt_urlparse
+                    _ek_shortener_hosts = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "myntr.it"}
+                    def _is_earnkaro_short(url: str) -> bool:
+                        try:
+                            h = (_bt_urlparse(url).hostname or "").lower()
+                            return h in _ek_shortener_hosts or (h.startswith("www.") and h[4:] in _ek_shortener_hosts)
+                        except Exception:
+                            return False
+                    final_urls = [
+                        url for url in link_router.find_urls(base_rendered)
+                        if link_router.classify_url(url) not in {"amazon", "hypd", "meesho", "lehlah"}
+                        and not _is_earnkaro_short(url)
+                    ]
+                    # PERFECT CHECK: Ensure Amazon product links are never Bitly-shortened via generic path
+                    # Only shorten if multiple links or excessively long URL (>65 chars)
+                    should_shorten = (len(final_urls) >= 2) or any(len(url) > 65 for url in final_urls)
+                    if should_shorten:
+                        shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
 
             rendered = link_router.render_for_influencer(
                 render_text, effective_amz_tag, channel_ek_map, shortened_links=shortened_map,
                 role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store
             )
-            # Optional first-party redirects require an operator-owned HTTPS
-            # hostname. Approval channels remain on native Amazon URLs. HYPD
-            # links are shortened only after conversion to the chosen store ID.
-            # LehLah links remain untouched unless the operator explicitly
-            # enables short links after account approval.
+            # ADVANCED SHORTENER: ONLY OUR affiliate links are shortened
+            # - HYPD links with OUR store ID (93944) -> first-party /m/<code> or Bitly fallback
+            # - Amazon links with OUR tag (e.g. mytag-21) -> first-party /amazon/<code>?tag= or Bitly fallback
+            # Generic merchant links (Flipkart etc.) are already handled via EarnKaro's ekaro.in, no extra Bitly needed
+            # This advanced system ensures ONLY MANA LINK KI MATHARME short avtundi, vere vallavi kaadu
             if role != "approval":
-                rendered = amazon_shortlinks.shorten_amazon_links(rendered)
-                rendered = hypd_shortlinks.shorten_hypd_links(rendered)
+                from . import advanced_shortener
+                rendered = await advanced_shortener.shorten_our_links_advanced(
+                    rendered, effective_amz_tag, effective_hypd_store, bitly_token=effective_bitly_key
+                )
                 if config.LEHLAH_SHORTLINKS_ENABLED:
                     rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
             status = await dispatch_to_channel(inf, ch, rendered)

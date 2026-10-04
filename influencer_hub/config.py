@@ -152,6 +152,20 @@ BITLY_GLOBAL_INFLUENCER_IDS = {
     if value.strip()
 }
 
+# ----- Advanced shortener for ONLY OUR affiliate links (HYPD + Amazon) -----
+# When enabled, ONLY links with OUR store ID / OUR Amazon tag are shortened
+# via first-party (if base URL configured) or Bitly fallback. This is the
+# ADVANCED system the user requested: "ONLY MANA LINK KI MATHARME"
+ADVANCED_SHORTENER_ENABLED = _bool("ADVANCED_SHORTENER_ENABLED", True)
+AMAZON_ADVANCED_SHORTENER_ENABLED = _bool("AMAZON_ADVANCED_SHORTENER_ENABLED", True)
+HYPD_ADVANCED_SHORTENER_ENABLED = _bool("HYPD_ADVANCED_SHORTENER_ENABLED", True)
+# Bitly fallback for OUR links when first-party base URL not configured
+# Default False for backward compat with existing tests; user can enable via vault
+ADVANCED_BITLY_FALLBACK_ENABLED = _bool("ADVANCED_BITLY_FALLBACK_ENABLED", False)
+# When True, generic merchant Bitly (for long Flipkart etc.) is disabled;
+# ONLY OUR affiliate links (Amazon/HYPD/EarnKaro) are shortened. User requested "ONLY MANA LINK KI"
+ADVANCED_ONLY_OUR_LINKS = _bool("ADVANCED_ONLY_OUR_LINKS", False)
+
 # ----- Dashboard security -----
 # No default admin password is shipped. The dashboard fails closed until a
 # password is set in the private environment. ADMIN_DELETE_PASSWORD may be
