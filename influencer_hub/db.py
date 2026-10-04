@@ -1666,6 +1666,54 @@ def already_posted_content_hash(platform: str, identifier: str, content_hash: st
         con.close()
 
 
+def is_near_duplicate_in_window(platform: str, identifier: str, deal_text: str, hours: int = 12, threshold: float = 0.60) -> bool:
+    """Advanced near-duplicate check for 56x spam prevention.
+    Checks if same product (65% title word overlap + same price) was posted to same physical channel in last N hours.
+    """
+    plat = str(platform or "").strip().lower()
+    ident = str(identifier or "").strip().lower()
+    if not ident or not deal_text:
+        return False
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT p.deal_text FROM posts p JOIN channels c ON p.channel_id=c.id " "WHERE lower(trim(c.platform))=? AND lower(trim(c.identifier))=? AND p.status='posted' AND p.posted_at >= ?",
+            (plat, ident, cutoff)).fetchall()
+        try:
+            from .link_router import titles_are_near_duplicate
+        except Exception:
+            return False
+        for r in rows:
+            prev = str(r["deal_text"] or "")
+            if not prev:
+                continue
+            if titles_are_near_duplicate(prev, deal_text, threshold=threshold):
+                return True
+        return False
+    finally:
+        con.close()
+
+
+def get_recent_post_count_for_identifier(platform: str, identifier: str, hours: int = 1) -> int:
+    """Rate limit helper: count posts to same physical channel in last N hours."""
+    plat = str(platform or "").strip().lower()
+    ident = str(identifier or "").strip().lower()
+    if not ident:
+        return 0
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT COUNT(*) as c FROM posts p JOIN channels c2 ON p.channel_id=c2.id " "WHERE lower(trim(c2.platform))=? AND lower(trim(c2.identifier))=? AND p.status='posted' AND p.posted_at >= ?",
+            (plat, ident, cutoff)).fetchone()
+        return int(row["c"]) if row else 0
+    finally:
+        con.close()
+
+
 def post_stats(influencer_id: Optional[int] = None) -> dict:
     con = _connect()
     try:

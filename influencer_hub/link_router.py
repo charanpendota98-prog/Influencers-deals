@@ -1278,3 +1278,79 @@ def deal_signature(text: str) -> str:
         clean_urls = sorted(set(clean_urls))
         raw = "|".join(clean_urls) + "#" + "|".join(norm_prices[:2])
     return hashlib.sha1(raw.lower().encode("utf-8")).hexdigest()[:16]
+
+
+def get_title_tokens(text: str) -> set[str]:
+    """Extract normalized title tokens for near-duplicate detection.
+    Used for catching 4-5-56x duplicates where same product has slightly different wording
+    (e.g. 'NIRLON Non-Stick 3-Piece' vs 'NIRLON Non Stick 3 Piece - Red Black')
+    Returns set of lowercased words without price/short codes.
+    """
+    try:
+        cleaned = clean_source_post(text)
+    except Exception:
+        cleaned = text
+    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+    title_parts: list[str] = []
+    for ln in lines:
+        low = ln.lower()
+        if "buy now" in low or "deal time" in low or "http" in low:
+            continue
+        if re.fullmatch(r"[\W\s]*", ln) or len(ln) < 5:
+            continue
+        title_parts.append(ln)
+        if len(title_parts) >= 2:
+            break
+    if not title_parts and lines:
+        first = re.sub(r"https?://\S+", "", lines[0]).strip()
+        if first:
+            title_parts = [first]
+    title_raw = " ".join(title_parts)[:150]
+    # Remove price, numbers that are likely timestamps, and extra
+    title_raw = re.sub(r"(?:₹|rs\.?|inr)\s*[\d,\.]+", " ", title_raw, flags=re.I)
+    title_raw = re.sub(r"@\s*[\d,\.]+", " ", title_raw)
+    title_raw = re.sub(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\s*ist\b", " ", title_raw, flags=re.I)  # Deal Time
+    title_raw = re.sub(r"[^\w\s]", " ", title_raw.lower())
+    title_raw = re.sub(r"\s+", " ", title_raw).strip()
+    # Remove very common stop words that don't help identify product
+    stop = {"the", "a", "an", "and", "or", "for", "with", "at", "in", "on", "of", "deal", "price", "buy", "now", "more", "new"}
+    # Keep tokens >=2 chars to retain important specs like '3' is now kept as '3' is important for '3-piece'
+    # But filter out single letters and pure numbers that are timestamps
+    tokens = set()
+    for w in title_raw.split():
+        if w in stop:
+            continue
+        if len(w) < 2:
+            continue
+        # Keep numbers like '3' if part of product spec (e.g., 3-piece), but not standalone timestamps
+        tokens.add(w)
+    return tokens
+
+
+def titles_are_near_duplicate(text1: str, text2: str, threshold: float = 0.65) -> bool:
+    """Check if two deals have near-duplicate titles (Jaccard similarity).
+    Catches 56x duplicates where same product posted with slight title variations
+    but same core keywords (e.g. 70% word overlap).
+    """
+    try:
+        t1 = get_title_tokens(text1)
+        t2 = get_title_tokens(text2)
+        if not t1 or not t2:
+            return False
+        # Also require same price to avoid false positives for different products same brand
+        p1 = re.findall(r"(?:₹|rs\.?|inr)\s?([\d,]{2,})", text1, re.I)
+        p2 = re.findall(r"(?:₹|rs\.?|inr)\s?([\d,]{2,})", text2, re.I)
+        n1 = {x.replace(",", "").strip() for x in p1 if x.strip()}
+        n2 = {x.replace(",", "").strip() for x in p2 if x.strip()}
+        price_match = bool(n1 & n2) if n1 and n2 else True  # if no price, don't require match
+        if not price_match:
+            return False
+        inter = len(t1 & t2)
+        union = len(t1 | t2)
+        if union == 0:
+            return False
+        jaccard = inter / union
+        return jaccard >= threshold
+    except Exception:
+        return False
+

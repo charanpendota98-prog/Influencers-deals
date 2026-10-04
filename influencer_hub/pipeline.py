@@ -512,6 +512,27 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             except Exception:
                 content_hash = ""
                 phys_content_key = None
+            # 8d. NEAR-DUPLICATE FUZZY CHECK — catches 4-5-56x where same product has slightly different title wording
+            # Uses 65% token overlap + same price, checks last 12h. This is the deep-think advanced fix for severe spam.
+            try:
+                if db.is_near_duplicate_in_window(str(ch.get("platform","")), str(ch.get("identifier","")), rendered, hours=12, threshold=0.60):
+                    per_channel[ch["id"]] = "skipped:near_duplicate_12h"
+                    continue
+            except Exception:
+                pass
+            # 8e. RATE LIMITER — ultimate safety net against any bug causing 56 posts
+            # Even if dedup somehow fails, this throttles to max 20/hour and 5/10min per physical channel. No more spam.
+            try:
+                # Check hourly limit
+                if db.get_recent_post_count_for_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), hours=1) >= 20:
+                    per_channel[ch["id"]] = "skipped:rate_limit_20_per_hour"
+                    continue
+                # Check 10-minute burst limit (0.17h ≈ 10min)
+                if db.get_recent_post_count_for_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), hours=0.17) >= 5:
+                    per_channel[ch["id"]] = "skipped:rate_limit_5_per_10min"
+                    continue
+            except Exception:
+                pass
             status = await dispatch_to_channel(inf, ch, rendered)
             # Mark physical channel + sig and content as seen for this run (prevents same-batch duplicates to same @channel)
             try:
