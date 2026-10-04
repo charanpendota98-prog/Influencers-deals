@@ -29,6 +29,24 @@ from . import (
     whatsapp_client,
 )
 
+def _content_hash_for_dedup(text: str) -> str:
+    """Hash of cleaned title+price for catching duplicates where sig differs slightly but rendered product is identical.
+    Used for NIRLON / Levis duplicates where same title+price but different amzn.to codes gave different sigs before fix.
+    Now also serves as second-layer guard: even if sig somehow differs, identical rendered product is not posted twice to same physical channel within 24h.
+    """
+    import hashlib as _hashlib
+    import re as _re
+    try:
+        cleaned = link_router.clean_source_post(text)
+    except Exception:
+        cleaned = text
+    # Remove URLs, normalize spaces, lower
+    no_urls = _re.sub(r"https?://\S+", "", cleaned)
+    norm = _re.sub(r"\s+", " ", no_urls).strip().lower()
+    # Keep first 120 chars core (title + price)
+    core = norm[:150]
+    return _hashlib.sha1(core.encode("utf-8")).hexdigest()[:16]
+
 WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
 ACTIVE_CHANNEL_STATUSES = {"ready", "active"}
 
@@ -194,6 +212,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
     Returns {influencer_id: {channel_id: status}}.
     """
     sig = link_router.deal_signature(deal_text)
+    # In-memory dedup for this single dispatch batch: prevents same deal posting twice to same physical channel
+    # when multiple influencers share same Telegram @identifier or when same deal appears from multiple sources in one pull batch.
+    seen_physical_in_this_run: set[tuple[str, str, str]] = set()
+    seen_content_in_this_run: set[tuple[str, str, str]] = set()
     # Lazily convert only when at least one destination explicitly allows
     # EarnKaro. The same deal mapping is then reused across those destinations.
     ek_map_cache: dict[str, str] | None = None
@@ -316,6 +338,19 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             if db.already_posted(inf["id"], ch["id"], sig):
                 per_channel[ch["id"]] = "skipped"
                 continue
+            # 8b. GLOBAL physical channel dedup: same deal already posted to same Telegram/WhatsApp identifier by ANY influencer?
+            # This stops duplicates when multiple influencers are configured to post to same @loots_channel (screenshot case).
+            try:
+                if db.already_posted_to_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), sig):
+                    per_channel[ch["id"]] = "skipped:global_identifier_dedup"
+                    continue
+                # In-memory cross-influencer dedup for this run (race-safe for same batch)
+                phys_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), sig)
+                if phys_key in seen_physical_in_this_run:
+                    per_channel[ch["id"]] = "skipped:run_batch_dedup"
+                    continue
+            except Exception:
+                pass
 
             if allow_ek:
                 if ek_map_cache is None:
@@ -463,7 +498,29 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 except Exception as _guard_exc:
                     import logging
                     logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
+            # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
+            # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
+            try:
+                content_hash = _content_hash_for_dedup(rendered)
+                phys_content_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), content_hash)
+                if phys_content_key in seen_content_in_this_run:
+                    per_channel[ch["id"]] = "skipped:content_dedup_in_run"
+                    continue
+                if db.already_posted_content_hash(str(ch.get("platform","")), str(ch.get("identifier","")), content_hash, hours=24):
+                    per_channel[ch["id"]] = "skipped:content_dedup_24h"
+                    continue
+            except Exception:
+                content_hash = ""
+                phys_content_key = None
             status = await dispatch_to_channel(inf, ch, rendered)
+            # Mark physical channel + sig and content as seen for this run (prevents same-batch duplicates to same @channel)
+            try:
+                phys_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), sig)
+                seen_physical_in_this_run.add(phys_key)
+                if 'phys_content_key' in locals() and phys_content_key:
+                    seen_content_in_this_run.add(phys_content_key)
+            except Exception:
+                pass
             db.record_post(inf["id"], ch["id"], sig,
                            status="posted" if status == "posted" else "failed",
                            error="" if status == "posted" else status,

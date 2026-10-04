@@ -1209,17 +1209,72 @@ def deal_signature(text: str) -> str:
         raw = "ajio_code:" + ":".join(a.lower() for a in ajio_codes)
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
-    # 6. Non-Amazon / general clean canonical URLs
-    clean_urls = []
+    # 6. Fallback: robust fingerprint for duplicates across sources
+    #    Short codes like amzn.to/XXXX are per-source unique for SAME product (ASIN hidden),
+    #    so using full URL path would create different sigs for same product -> duplicates.
+    #    Use cleaned title + price + stable merchant domains (shortener paths stripped).
+    cleaned_for_sig = clean_source_post(text)
+    lines = [ln.strip() for ln in cleaned_for_sig.splitlines() if ln.strip()]
+    title_parts: list[str] = []
+    for ln in lines:
+        low = ln.lower()
+        if "buy now" in low or "deal time" in low or "http" in low:
+            continue
+        if re.fullmatch(r"[\W\s]*", ln) or len(ln) < 8:
+            continue
+        title_parts.append(ln)
+        if len(title_parts) >= 2:
+            break
+    if not title_parts and lines:
+        first = re.sub(r"https?://\S+", "", lines[0]).strip()
+        if first:
+            title_parts = [first]
+    title_raw = " ".join(title_parts)[:120]
+    # Remove price fragments from title so Rs.1999 vs ₹1999 don't create different sigs for same product
+    title_raw = re.sub(r"(?:₹|rs\.?|inr)\s*[\d,\.]+", " ", title_raw, flags=re.I)
+    title_raw = re.sub(r"@\s*[\d,\.]+", " ", title_raw)
+    title_norm = re.sub(r"[^\w\s]", " ", title_raw.lower())
+    title_norm = re.sub(r"\s+", " ", title_norm).strip()
+    title_words = title_norm.split()
+    title_key = " ".join(title_words[:8]) if title_words else title_norm[:50]
+    prices = re.findall(r"(?:₹|rs\.?|inr)\s?([\d,]{2,})", text, re.I)
+    norm_prices = sorted(set(p.replace(",", "").strip() for p in prices if p.strip()))
+    price_key = norm_prices[0] if norm_prices else ""
+    shortener_hosts = {"amzn.to", "amzn.in", "bit.ly", "bitly.com", "tinyurl.com", "shorturl.at", "t.me", "telegram.me", "chat.whatsapp.com"}
+    stable_domains: list[str] = []
     for u in find_urls(text):
         try:
-            p = urlparse(u)
-            clean = f"{p.netloc.lower()}{p.path.rstrip('/')}"
-            clean_urls.append(clean)
+            host = (_host_of(u) or "").lower()
+            if host.startswith("www."):
+                host = host[4:]
+            if host in shortener_hosts or host.endswith(".amzn.to") or host.endswith(".amzn.in"):
+                stable_domains.append(host)
+            else:
+                if host:
+                    stable_domains.append(host)
+                else:
+                    p2 = urlparse(u)
+                    clean = f"{p2.netloc.lower()}{p2.path.rstrip('/')}"
+                    stable_domains.append(clean.lower())
         except Exception:
-            clean_urls.append(u.lower())
-    clean_urls = sorted(set(clean_urls))
-
-    prices = re.findall(r"(?:₹|rs\.?|inr)\s?([\d,]{2,})", text, re.I)
-    raw = "|".join(clean_urls) + "#" + "|".join(prices[:2])
+            stable_domains.append(u.lower().split("/")[2] if "//" in u else u.lower())
+    stable_domains = sorted(set(stable_domains))
+    domain_key = ",".join(stable_domains[:3])
+    if title_key and len(title_key) >= 4:
+        raw = f"title:{title_key}#price:{price_key}#dom:{domain_key}"
+    else:
+        clean_urls = []
+        for u in find_urls(text):
+            try:
+                p2 = urlparse(u)
+                host = (_host_of(u) or "").lower()
+                if host in shortener_hosts:
+                    clean = host
+                else:
+                    clean = f"{p2.netloc.lower()}{p2.path.rstrip('/')}"
+                clean_urls.append(clean)
+            except Exception:
+                clean_urls.append(u.lower())
+        clean_urls = sorted(set(clean_urls))
+        raw = "|".join(clean_urls) + "#" + "|".join(norm_prices[:2])
     return hashlib.sha1(raw.lower().encode("utf-8")).hexdigest()[:16]

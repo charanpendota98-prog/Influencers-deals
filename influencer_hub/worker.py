@@ -84,6 +84,9 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
             grouped[source_key].append(record)
 
     handled = retried = 0
+    # Batch-level dedup: same product appearing from multiple source channels in same pull (e.g. NIRLON posted in 2 source groups)
+    # Without this, pipeline would be called twice and rely solely on DB dedup which can race; early skip + cursor advance prevents screenshot duplicates at 11:27
+    seen_sigs_this_batch: set[str] = set()
     for source_key, messages in grouped.items():
         messages.sort(key=lambda item: int(item.get("message_id") or 0))
         for record in messages:
@@ -93,6 +96,19 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                 continue
 
             text = str(record.get("text") or "").strip()
+            # Early batch dedup: if same product already handled in this pull cycle from another source, skip but advance cursor
+            if text:
+                try:
+                    from .link_router import deal_signature as _sig_for_batch
+                    _sig = _sig_for_batch(text)
+                    if _sig in seen_sigs_this_batch:
+                        logger.info("Batch dedup: skipping duplicate deal from source %s message %s sig %s", source_key, message_id, _sig[:8])
+                        db.set_worker_offset(source_key, message_id)
+                        handled += 1
+                        continue
+                    seen_sigs_this_batch.add(_sig)
+                except Exception:
+                    pass
             if text:
                 deal = {"text": text, "source": str(record.get("source") or "")}
                 try:

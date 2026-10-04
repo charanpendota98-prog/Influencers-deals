@@ -1604,6 +1604,68 @@ def already_posted(influencer_id: int, channel_id: int, deal_sig: str) -> bool:
         con.close()
 
 
+def already_posted_to_identifier(platform: str, identifier: str, deal_sig: str) -> bool:
+    """Global dedup: has this deal_sig already been posted to same physical channel (platform+identifier) by ANY influencer?
+    Prevents duplicates when multiple influencers are configured to post to same Telegram channel (e.g. @loots_channel).
+    Screenshot showed same NIRLON / Levis product posted twice at 11:27 to same loots channel = this case.
+    """
+    plat = str(platform or "").strip().lower()
+    ident = str(identifier or "").strip().lower()
+    if not ident or not deal_sig:
+        return False
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT 1 FROM posts p JOIN channels c ON p.channel_id=c.id " "WHERE lower(trim(c.platform))= ? AND lower(trim(c.identifier))= ? AND p.deal_sig=? AND p.status='posted' LIMIT 1",
+
+            (plat, ident, deal_sig)).fetchone()
+        return row is not None
+    finally:
+        con.close()
+
+
+def already_posted_content_hash(platform: str, identifier: str, content_hash: str, hours: int = 24) -> bool:
+    """Check if same rendered content hash was posted to same physical channel recently (24h).
+    Catches duplicates where sig differs slightly but final rendered product title+price is identical.
+    """
+    plat = str(platform or "").strip().lower()
+    ident = str(identifier or "").strip().lower()
+    if not ident or not content_hash:
+        return False
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        # Use deal_text hash stored implicitly via deal_sig? We store deal_text, so check posts with same hash of deal_text title+price
+        # For efficiency, check posts where deal_text contains same hash substring? Instead check posts with same content_hash stored as deal_sig prefix?
+        # We use a LIKE on deal_sig for content hash? Better: compute hash from posts.deal_text on fly for recent posts only (24h = few rows)
+        rows = con.execute(
+            "SELECT p.deal_text FROM posts p JOIN channels c ON p.channel_id=c.id " "WHERE lower(trim(c.platform))=? AND lower(trim(c.identifier))=? AND p.status='posted' AND p.posted_at >= ?",
+
+            (plat, ident, cutoff)).fetchall()
+        for r in rows:
+            txt = str(r["deal_text"] or "")
+            if not txt:
+                continue
+            # Compute content hash same way as pipeline does for current rendered text
+            import hashlib, re as _re
+            # Normalize: clean, lower, remove urls, keep title+price
+            try:
+                from .link_router import clean_source_post as _clean
+                cleaned = _clean(txt)
+            except Exception:
+                cleaned = txt
+            cleaned_norm = _re.sub(r"https?://\S+", "", cleaned).lower()
+            cleaned_norm = _re.sub(r"\s+", " ", cleaned_norm).strip()
+            # Take title + price for hash
+            h = hashlib.sha1(cleaned_norm.encode("utf-8")).hexdigest()[:16]
+            if h == content_hash:
+                return True
+        return False
+    finally:
+        con.close()
+
+
 def post_stats(influencer_id: Optional[int] = None) -> dict:
     con = _connect()
     try:
