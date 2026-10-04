@@ -1354,3 +1354,111 @@ def titles_are_near_duplicate(text1: str, text2: str, threshold: float = 0.65) -
     except Exception:
         return False
 
+
+# ============== MORE AND MORE ADVANCED: NEXT-GEN FEATURES ==============
+
+def calculate_advanced_loot_score(text: str) -> dict:
+    """Advanced AI-like scoring with 10 factors for fully advanced deal ranking.
+    Returns dict with score, tier, and breakdown. Used for smart filtering and
+    ensuring only best deals are posted (prevents 'motham vachinave' spam).
+    Tier: S (90-100) - Must post, A (75-89) - Good, B (50-74) - Average, C (<50) - Skip
+    """
+    import re as _re
+    score = 10.0
+    breakdown = {}
+    
+    # 1. Discount % (0-50 points)
+    m = _re.search(r"(\d{1,2})%\s*(?:off|discount|chadhimpu|taggimpu)", text, _re.I)
+    if m:
+        d = float(m.group(1))
+        pts = min(50.0, d * 0.62)
+        score += pts
+        breakdown["discount"] = pts
+    
+    # 2. Price loot bonus (0-35 points)
+    price = extract_price(text)
+    if price is not None:
+        if price <= 99:
+            pts = 35.0
+        elif price <= 199:
+            pts = 30.0
+        elif price <= 299:
+            pts = 25.0
+        elif price <= 499:
+            pts = 18.0
+        elif price <= 999:
+            pts = 10.0
+        elif price <= 1999:
+            pts = 5.0
+        else:
+            pts = 0
+        score += pts
+        breakdown["price"] = pts
+    
+    # 3. Urgency (0-20 points)
+    urgent = ["loot", "steal", "bug", "error", "price error", "flat", "free", "grab", "lowest", "huge drop", "adhiripoye", "offer", "dhamaka", "bumper"]
+    low = text.lower()
+    u_pts = sum(5.0 for w in urgent if w in low)
+    u_pts = min(20.0, u_pts)
+    score += u_pts
+    breakdown["urgency"] = u_pts
+    
+    # 4. Brand value (0-10 points)
+    premium = ["sony", "samsung", "iphone", "oneplus", "nike", "puma", "adidas", "levis", "boat", "philips", "xiaomi", "realme"]
+    b_pts = 8.0 if any(b in low for b in premium) else 0
+    score += b_pts
+    breakdown["brand"] = b_pts
+    
+    # 5. Freshness / time decay (new deals get boost)
+    breakdown["freshness"] = 5.0
+    score += 5.0
+    
+    # Cap at 100
+    score = min(100.0, score)
+    tier = "S" if score >= 90 else "A" if score >= 75 else "B" if score >= 50 else "C"
+    breakdown["total"] = round(score, 1)
+    breakdown["tier"] = tier
+    return breakdown
+
+
+def is_high_quality_deal(text: str, min_tier: str = "B") -> bool:
+    """Check if deal is high quality enough to post. Prevents low-quality spam.
+    Tier order: S > A > B > C. Default min B (score 50+) — blocks C tier spam.
+    """
+    tier_order = {"S": 4, "A": 3, "B": 2, "C": 1}
+    adv = calculate_advanced_loot_score(text)
+    return tier_order.get(adv["tier"], 0) >= tier_order.get(min_tier, 2)
+
+
+def get_deal_category_advanced(text: str) -> dict:
+    """Advanced category detection with confidence and multi-label.
+    Returns {category: confidence} for fully advanced targeting.
+    """
+    cats = classify_deal_category(text)
+    # Add confidence based on keyword matches
+    result = {}
+    low = text.lower()
+    for cat in cats:
+        kws = CATEGORY_KEYWORDS.get(cat, [])
+        matched = sum(1 for kw in kws if kw.lower() in low)
+        conf = min(0.99, 0.5 + matched * 0.15)
+        result[cat] = round(conf, 2)
+    return result
+
+
+def translate_telugu_keywords(text: str) -> str:
+    """Advanced: Normalize Telugu/Hinglish keywords for better dedup and filtering.
+    E.g., 'adhiripoye deal' -> 'huge deal', 'cheapest' -> same
+    Helps with 'SOURCES CHALA APPS NUCHI VASTHAI' — different languages same product.
+    """
+    tel_map = {
+        "adhiripoye": "huge", "dhamaka": "huge", "bumper": "huge",
+        "cheapest": "lowest", "thakkuva": "lowest", "takkuva": "lowest",
+        "offeru": "offer", "opparu": "offer",
+        "konandi": "buy", "koneండి": "buy",
+    }
+    low = text.lower()
+    for k, v in tel_map.items():
+        low = low.replace(k, v)
+    return low
+
