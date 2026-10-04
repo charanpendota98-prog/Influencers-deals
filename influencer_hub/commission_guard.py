@@ -18,11 +18,12 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qsl, urlparse
 
-from . import config, link_router
+from . import link_router
 from .advanced_shortener import is_our_amazon_link, is_our_hypd_link
 
 # EarnKaro shortener hosts (copied from earnkaro.py to avoid aiohttp import)
 _EARNKARO_SHORT_HOSTS = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "myntr.it"}
+
 
 def _host_of(url: str) -> str:
     try:
@@ -241,7 +242,6 @@ def audit_rendered_text(
     # Merchant/Meesho raw URLs are "soft" leaks: they would earn zero if posted, but fallback is intentional for deal retention
     # We log them as issues but don't treat as hard failure, to avoid breaking existing deal flow (tests expect fallback)
     # User can enable strict mode via dashboard if they want to drop zero-commission merchant/meesho deals
-    ok = amazon_ok and hypd_ok
     strict_ok = len([d for d in details if not d["ok"] and d["kind"] in {"amazon", "hypd"}]) == 0
 
     return {
@@ -269,7 +269,13 @@ def sanitize_rendered_text(
     If audit is ok, returns original text.
     Otherwise, removes the leaked URLs (replaces with "") and returns cleaned text.
     """
-    audit = audit_rendered_text(rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map, allowed_kinds)
+    audit = audit_rendered_text(
+        rendered,
+        effective_amz_tag,
+        effective_hypd_store,
+        expected_pubid,
+        bitly_map,
+        allowed_kinds)
     if audit["ok"]:
         return rendered, audit
 
@@ -281,7 +287,6 @@ def sanitize_rendered_text(
             if "not OUR" in detail["reason"] or "without effective" in detail["reason"]:
                 sanitized = sanitized.replace(leaked_url, "")
     # Clean up double spaces / empty lines left behind
-    import re
     sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
     sanitized = re.sub(r"[ ]{2,}", " ", sanitized).strip()
     return sanitized, audit
