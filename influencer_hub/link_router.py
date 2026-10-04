@@ -456,6 +456,76 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
     return out
 
 
+async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None) -> str:
+    """Async version that also tries network expansion for standalone amzn.to.
+
+    First does the heuristic (ASIN from same deal). If no ASIN is found and
+    the text contains only amzn.to/amzn.in shorts, try to resolve one via
+    HTTP HEAD (best effort, 5s timeout). If network fails or no ASIN, fall
+    back to tag-append (still better than nothing, but commission may be at risk).
+    """
+    # Fast heuristic first (sync, no network)
+    heuristic = expand_amazon_shorts_in_text(text, tag)
+    if heuristic != text:
+        return heuristic
+
+    # No ASIN in same deal, but we have amzn.to shorts — try network
+    if not tag or "amzn.to" not in text and "amzn.in" not in text:
+        return text
+
+    urls = find_urls(text)
+    shorts = [u for u in urls if _host_of(u) in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}]
+    if not shorts:
+        return text
+
+    # Try to resolve the first short via network (production VM has internet)
+    try:
+        import aiohttp  # type: ignore
+
+        effective_tag = str(tag or "").strip()
+        for short_url in shorts:
+            try:
+                timeout = aiohttp.ClientTimeout(total=5.0)
+                headers = {"User-Agent": "Mozilla/5.0"}
+                async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                    async with session.get(short_url, allow_redirects=True) as resp:
+                        final_url = str(resp.url)
+                        # Try to extract ASIN from final URL
+                        try:
+                            parsed_final = urlparse(final_url)
+                        except Exception:
+                            continue
+                        asin = _amazon_asin(parsed_final)
+                        if asin:
+                            # Build canonical with OUR tag
+                            q = dict(parse_qsl(parsed_final.query, keep_blank_values=True))
+                            safe = {}
+                            for k in ("th", "psc"):
+                                if k in q and q[k].isdigit():
+                                    safe[k] = q[k]
+                            canonical_q = list(safe.items())
+                            canonical_q.append(("tag", effective_tag))
+                            canonical = urlunparse(
+                                ("https", "www.amazon.in", f"/dp/{asin}", "", urlencode(canonical_q), "")
+                            )
+                            # Replace all shorts with this canonical (best we can do)
+                            out = text
+                            for s in shorts:
+                                if s in out:
+                                    out = out.replace(s, canonical)
+                                else:
+                                    base = s.split("?")[0]
+                                    if base in out:
+                                        out = out.replace(base, canonical)
+                            return out
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return text
+
+
 def deduplicate_urls_in_text(text: str) -> str:
     """Remove duplicate URL occurrences, keeping the first."""
     seen: set[str] = set()

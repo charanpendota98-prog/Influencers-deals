@@ -306,8 +306,11 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             # Amazon link with ASIN, replace the short with the canonical OUR link (heuristic, no network)
             # This ensures https://amzn.to/4dnF9lU?tag=mama086-21 (old code) becomes
             # https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=mama086-21 and then gets shortened correctly
+            # For standalone shorts, also try network expansion (production VM)
             if "amzn.to" in render_text or "amzn.in" in render_text:
-                render_text = link_router.expand_amazon_shorts_in_text(render_text, effective_amz_tag)
+                render_text = await link_router.expand_amazon_shorts_in_text_async(
+                    render_text, effective_amz_tag
+                )
 
             # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
             if db.already_posted(inf["id"], ch["id"], sig):
