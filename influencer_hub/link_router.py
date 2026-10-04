@@ -380,6 +380,113 @@ def apply_amazon_tag(url: str, tag: str | None = None) -> str:
     return compact_amazon_product_link(url, tag or config.AMAZON_ASSOCIATE_TAG)
 
 
+def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
+    """Heuristic to fix amzn.to/amzn.in short links that encode an old tag.
+
+    Amazon's short codes (amzn.to/XXXX) are generated via SiteStripe and already
+    contain the creator's tag inside the code. Appending ?tag=OURTAG does NOT
+    override the embedded tag, so commission would still go to the old tag.
+    The only commission-safe fix without a network round-trip is:
+    - If the same deal text also contains a long Amazon link with an ASIN,
+      replace every amzn.to/amzn.in short with the canonical long link for that
+      ASIN + OUR tag (keeping th/psc from the long link if present).
+    - If no ASIN is available in the text, fall back to tag-append (best effort)
+      but the caller should be aware that commission may still be at risk.
+
+    This handles the user's case:
+      amzn.to/4dnF9lU?tag=mama086-21  (short, old tag inside)
+      + https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=dv12399-21 (long, ASIN B0D9P2M1PB)
+      → both become https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=mama086-21
+    and then the advanced shortener can shorten that canonical OUR link.
+    """
+    if not text or not tag:
+        return text
+    effective_tag = str(tag or "").strip()
+    if not effective_tag:
+        return text
+
+    urls = find_urls(text)
+    # Collect all ASINs and their th/psc from long links in the same text
+    asins_with_params: list[tuple[str, dict[str, str]]] = []
+    for u in urls:
+        host = _host_of(u)
+        if host in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}:
+            continue
+        try:
+            parsed = urlparse(u)
+        except Exception:
+            continue
+        asin = _amazon_asin(parsed)
+        if asin:
+            # Extract th/psc from this long link to preserve for short replacement
+            q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            safe = {}
+            for k in ("th", "psc"):
+                if k in q and q[k].isdigit():
+                    safe[k] = q[k]
+            asins_with_params.append((asin, safe))
+
+    if not asins_with_params:
+        return text
+
+    # Use the most common ASIN (first) for all shorts in this deal
+    # If multiple different ASINs, we still use the first – the post likely has one product with two Link forms
+    primary_asin, primary_params = asins_with_params[0]
+    # Deduplicate: if the text already contains a long link with this ASIN, we will replace shorts with that canonical
+    # After replacement, the rendered text may have duplicate canonical URLs (short + long both become same)
+    # The pipeline will deduplicate after advanced shortening
+
+    out = text
+    for u in urls:
+        host = _host_of(u)
+        if host not in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}:
+            continue
+        # Build canonical for this short using the primary ASIN + OUR tag + th/psc
+        canonical_q = list(primary_params.items())
+        canonical_q.append(("tag", effective_tag))
+        canonical = urlunparse(("https", "www.amazon.in", f"/dp/{primary_asin}", "", urlencode(canonical_q), ""))
+        # Replace the exact short URL occurrence (including any existing ?tag= query)
+        if u in out:
+            out = out.replace(u, canonical)
+        else:
+            base_short = u.split("?")[0]
+            if base_short in out:
+                out = re.sub(re.escape(base_short) + r"(\?[^\\s]*)?", canonical, out)
+
+    return out
+
+
+def deduplicate_urls_in_text(text: str) -> str:
+    """Remove duplicate URL occurrences, keeping the first."""
+    seen: set[str] = set()
+    out_parts: list[str] = []
+    last = 0
+    for m in URL_RE.finditer(text):
+        raw = m.group(0)
+        clean = raw
+        while clean and clean[-1] in ".,;!?:'\"":
+            clean = clean[:-1]
+        if clean in seen:
+            out_parts.append(text[last:m.start()])
+            last = m.end()
+        else:
+            seen.add(clean)
+            out_parts.append(text[last:m.end()])
+            last = m.end()
+    out_parts.append(text[last:])
+    result = "".join(out_parts)
+    result = re.sub(r"[ ]{2,}", " ", result)
+    result = re.sub(r"\n\s*\n\s*\n", "\n\n", result)
+    lines = result.splitlines()
+    cleaned_lines: list[str] = []
+    for line in lines:
+        if line.strip() == "" and len(cleaned_lines) > 0 and cleaned_lines[-1] == "":
+            continue
+        cleaned_lines.append(line.rstrip())
+    result = "\n".join(cleaned_lines).strip()
+    return re.sub(r"\n{3,}", "\n\n", result).strip()
+
+
 def filter_disallowed_affiliate_links(text: str, allowed_kinds: set[str]) -> str:
     """Remove links disabled by merchant settings without discarding allowed deals.
 

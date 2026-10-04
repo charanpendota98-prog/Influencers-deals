@@ -302,6 +302,12 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 per_channel[ch["id"]] = "skipped"
                 continue
             render_text = link_router.filter_disallowed_affiliate_links(deal_text, allowed_kinds)
+            # Fix amzn.to/amzn.in short links that encode old tags: if the deal also has a long
+            # Amazon link with ASIN, replace the short with the canonical OUR link (heuristic, no network)
+            # This ensures https://amzn.to/4dnF9lU?tag=mama086-21 (old code) becomes
+            # https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=mama086-21 and then gets shortened correctly
+            if "amzn.to" in render_text or "amzn.in" in render_text:
+                render_text = link_router.expand_amazon_shorts_in_text(render_text, effective_amz_tag)
 
             # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
             if db.already_posted(inf["id"], ch["id"], sig):
@@ -393,6 +399,8 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 )
                 if config.LEHLAH_SHORTLINKS_ENABLED:
                     rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
+                # Deduplicate identical short URLs (e.g., amzn.to + long link both became same bit.ly)
+                rendered = link_router.deduplicate_urls_in_text(rendered)
 
                 # === COMMISSION GUARD: perfect verification that every shortened/posted link is OUR affiliate ===
                 # User: "SHORTEN LINK CHETHE PEREFCTGA CORRECT GA MANA AFFILAT ELINK RAVALI OOKAYNAA"
