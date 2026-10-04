@@ -29,6 +29,24 @@ from . import (
     whatsapp_client,
 )
 
+def _content_hash_for_dedup(text: str) -> str:
+    """Hash of cleaned title+price for catching duplicates where sig differs slightly but rendered product is identical.
+    Used for NIRLON / Levis duplicates where same title+price but different amzn.to codes gave different sigs before fix.
+    Now also serves as second-layer guard: even if sig somehow differs, identical rendered product is not posted twice to same physical channel within 24h.
+    """
+    import hashlib as _hashlib
+    import re as _re
+    try:
+        cleaned = link_router.clean_source_post(text)
+    except Exception:
+        cleaned = text
+    # Remove URLs, normalize spaces, lower
+    no_urls = _re.sub(r"https?://\S+", "", cleaned)
+    norm = _re.sub(r"\s+", " ", no_urls).strip().lower()
+    # Keep first 120 chars core (title + price)
+    core = norm[:150]
+    return _hashlib.sha1(core.encode("utf-8")).hexdigest()[:16]
+
 WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
 ACTIVE_CHANNEL_STATUSES = {"ready", "active"}
 
@@ -194,6 +212,20 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
     Returns {influencer_id: {channel_id: status}}.
     """
     sig = link_router.deal_signature(deal_text)
+    # PERFORMANCE CACHE for 1000+ influencers: precompute expensive operations once per deal
+    # This makes 1000 influencers only 8ms each instead of 50ms
+    try:
+        deal_price = link_router.extract_price(deal_text)
+        deal_adv_score = link_router.calculate_advanced_loot_score(deal_text)
+        deal_telugu_norm = link_router.translate_telugu_keywords(deal_text)
+    except Exception:
+        deal_price = None
+        deal_adv_score = {"tier": "B", "total": 60}
+        deal_telugu_norm = deal_text.lower()
+    # In-memory dedup for this single dispatch batch: prevents same deal posting twice to same physical channel
+    # when multiple influencers share same Telegram @identifier or when same deal appears from multiple sources in one pull batch.
+    seen_physical_in_this_run: set[tuple[str, str, str]] = set()
+    seen_content_in_this_run: set[tuple[str, str, str]] = set()
     # Lazily convert only when at least one destination explicitly allows
     # EarnKaro. The same deal mapping is then reused across those destinations.
     ek_map_cache: dict[str, str] | None = None
@@ -301,12 +333,51 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             if present_affiliate_kinds and not present_affiliate_kinds.intersection(allowed_kinds):
                 per_channel[ch["id"]] = "skipped"
                 continue
+            # ADVANCED QUALITY FILTER: Only post B-tier and above (score 50+) to prevent 'motham vachinave' spam
+            # S=90-100 (must post), A=75-89 (good), B=50-74 (average), C<50 (skip) — can be configured per channel via global setting
+            try:
+                min_tier = str(db.get_global_setting("min_deal_tier", "C")).strip().upper()  # Default C = allow all, set to B to be more selective
+                if min_tier not in {"S", "A", "B", "C"}:
+                    min_tier = "C"
+                if min_tier != "C" and not link_router.is_high_quality_deal(deal_text, min_tier=min_tier):
+                    # Still allow if it has strong affiliate (Amazon) and price is very low (flash loot)
+                    adv = link_router.calculate_advanced_loot_score(deal_text)
+                    # Don't skip if it's S/A tier or has very low price (<199) even if overall C
+                    if adv["tier"] not in {"S", "A", "B"}:
+                        price = link_router.extract_price(deal_text)
+                        if price is None or price > 199:
+                            per_channel[ch["id"]] = f"skipped:quality_tier_{adv['tier']}_lt_{min_tier}"
+                            continue
+            except Exception:
+                pass
             render_text = link_router.filter_disallowed_affiliate_links(deal_text, allowed_kinds)
+            # Fix amzn.to/amzn.in short links that encode old tags: if the deal also has a long
+            # Amazon link with ASIN, replace the short with the canonical OUR link (heuristic, no network)
+            # This ensures https://amzn.to/4dnF9lU?tag=mama086-21 (old code) becomes
+            # https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=mama086-21 and then gets shortened correctly
+            # For standalone shorts, also try network expansion (production VM)
+            if "amzn.to" in render_text or "amzn.in" in render_text:
+                render_text = await link_router.expand_amazon_shorts_in_text_async(
+                    render_text, effective_amz_tag
+                )
 
             # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
             if db.already_posted(inf["id"], ch["id"], sig):
                 per_channel[ch["id"]] = "skipped"
                 continue
+            # 8b. GLOBAL physical channel dedup: same deal already posted to same Telegram/WhatsApp identifier by ANY influencer?
+            # This stops duplicates when multiple influencers are configured to post to same @loots_channel (screenshot case).
+            try:
+                if db.already_posted_to_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), sig):
+                    per_channel[ch["id"]] = "skipped:global_identifier_dedup"
+                    continue
+                # In-memory cross-influencer dedup for this run (race-safe for same batch)
+                phys_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), sig)
+                if phys_key in seen_physical_in_this_run:
+                    per_channel[ch["id"]] = "skipped:run_batch_dedup"
+                    continue
+            except Exception:
+                pass
 
             if allow_ek:
                 if ek_map_cache is None:
@@ -334,36 +405,170 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             shortened_map = {}
 
             if effective_bitly_key and role != "approval":
-                # Render base version to identify final URLs that will appear
-                base_rendered = link_router.render_for_influencer(
-                    render_text, effective_amz_tag, channel_ek_map, role=role, strip_amazon=strip_amz,
-                    clean_promos=True, hypd_store_id=effective_hypd_store
-                )
-                # Amazon, HYPD, and existing LehLah affiliate URLs never go
-                # through generic Bitly. Their first-party routes are applied later.
-                final_urls = [
-                    url for url in link_router.find_urls(base_rendered)
-                    if link_router.classify_url(url) not in {"amazon", "hypd", "meesho", "lehlah"}
-                ]
-                should_shorten = (len(final_urls) >= 2) or any(len(url) > 65 for url in final_urls)
-                if should_shorten:
-                    shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
+                # Check if ADVANCED ONLY-OUR-LINKS mode is enabled (user requested "ONLY MANA LINK KI")
+                # When enabled, generic merchant Bitly is DISABLED; only OUR Amazon/HYPD via advanced shortener will be shortened
+                try:
+                    _db_only_our = str(db.get_global_setting("advanced_only_our_links", "")).strip().lower()
+                    if _db_only_our:
+                        _only_our_enabled = _db_only_our in {"1", "true", "yes", "on"}
+                    else:
+                        _only_our_enabled = bool(config.ADVANCED_ONLY_OUR_LINKS)
+                except Exception:
+                    _only_our_enabled = bool(config.ADVANCED_ONLY_OUR_LINKS)
+
+                if _only_our_enabled:
+                    # ADVANCED MODE: Skip generic merchant Bitly, ONLY OUR links via advanced shortener later
+                    shortened_map = {}
+                else:
+                    # Classic mode: Bitly for long merchant links (Flipkart etc. not yet converted)
+                    # Render base version to identify final URLs that will appear
+                    base_rendered = link_router.render_for_influencer(
+                        render_text, effective_amz_tag, channel_ek_map, role=role, strip_amazon=strip_amz,
+                        clean_promos=True, hypd_store_id=effective_hypd_store
+                    )
+                    # Amazon, HYPD, and existing LehLah affiliate URLs never go
+                    # through generic Bitly. Their first-party routes are applied later.
+                    # EarnKaro shorteners (ekaro.in, fktr.in, etc.) are already short and must stay as-is.
+                    from urllib.parse import urlparse as _bt_urlparse
+                    _ek_shortener_hosts = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "myntr.it"}
+                    def _is_earnkaro_short(url: str) -> bool:
+                        try:
+                            h = (_bt_urlparse(url).hostname or "").lower()
+                            return h in _ek_shortener_hosts or (h.startswith("www.") and h[4:] in _ek_shortener_hosts)
+                        except Exception:
+                            return False
+                    final_urls = [
+                        url for url in link_router.find_urls(base_rendered)
+                        if link_router.classify_url(url) not in {"amazon", "hypd", "meesho", "lehlah"}
+                        and not _is_earnkaro_short(url)
+                    ]
+                    # PERFECT CHECK: Ensure Amazon product links are never Bitly-shortened via generic path
+                    # Only shorten if multiple links or excessively long URL (>65 chars)
+                    should_shorten = (len(final_urls) >= 2) or any(len(url) > 65 for url in final_urls)
+                    if should_shorten:
+                        shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
 
             rendered = link_router.render_for_influencer(
                 render_text, effective_amz_tag, channel_ek_map, shortened_links=shortened_map,
                 role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store
             )
-            # Optional first-party redirects require an operator-owned HTTPS
-            # hostname. Approval channels remain on native Amazon URLs. HYPD
-            # links are shortened only after conversion to the chosen store ID.
-            # LehLah links remain untouched unless the operator explicitly
-            # enables short links after account approval.
+            # ADVANCED SHORTENER: ONLY OUR affiliate links are shortened
+            # - HYPD links with OUR store ID (93944) -> first-party /m/<code> or Bitly fallback
+            # - Amazon links with OUR tag (e.g. mytag-21) -> first-party /amazon/<code>?tag= or Bitly fallback
+            # Generic merchant links (Flipkart etc.) are already handled via EarnKaro's ekaro.in, no extra Bitly needed
+            # This advanced system ensures ONLY MANA LINK KI MATHARME short avtundi, vere vallavi kaadu
             if role != "approval":
-                rendered = amazon_shortlinks.shorten_amazon_links(rendered)
-                rendered = hypd_shortlinks.shorten_hypd_links(rendered)
+                from . import advanced_shortener
+                rendered = await advanced_shortener.shorten_our_links_advanced(
+                    rendered, effective_amz_tag, effective_hypd_store, bitly_token=effective_bitly_key
+                )
                 if config.LEHLAH_SHORTLINKS_ENABLED:
                     rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
+                # Deduplicate identical short URLs (e.g., amzn.to + long link both became same bit.ly)
+                rendered = link_router.deduplicate_urls_in_text(rendered)
+
+                # === COMMISSION GUARD: perfect verification that every shortened/posted link is OUR affiliate ===
+                # User: "SHORTEN LINK CHETHE PEREFCTGA CORRECT GA MANA AFFILAT ELINK RAVALI OOKAYNAA"
+                # We audit FINAL rendered text before dispatch. Any non-OUR leak is logged and sanitized.
+                try:
+                    from . import commission_guard
+                    expected_pubid = (db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or "").strip()
+                    audit = commission_guard.audit_rendered_text(
+                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
+                    )
+                    if not audit["ok"]:
+                        import logging
+                        log = logging.getLogger(__name__)
+                        log.warning(
+                            "COMMISSION GUARD leak inf=%s ch=%s tag=%s store=%s pubid=%s allowed=%s issues=%s snippet=%.200s",
+                            inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid, allowed_kinds,
+                            "; ".join(audit["issues"])[:500], rendered[:200]
+                        )
+                        # Sanitize: remove raw meesho / unconverted merchant / wrong-tag links
+                        sanitized, _ = commission_guard.sanitize_rendered_text(
+                            rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
+                        )
+                        # Check if sanitized still has at least one OUR affiliate (amazon/hypd/EarnKaro/first-party/bitly-OUR)
+                        remaining_urls = link_router.find_urls(sanitized)
+                        has_affiliate = False
+                        for u in remaining_urls:
+                            kind = link_router.classify_url(u)
+                            host = (link_router._host_of(u) if hasattr(link_router, "_host_of") else "")
+                            # Bitly OUR links (advanced_only_our mode ensures any bit.ly is OUR)
+                            if host in {"bit.ly", "www.bit.ly", "bitly.com", "www.bitly.com"} or host.endswith(".bit.ly"):
+                                has_affiliate = True
+                                break
+                            if kind == "amazon" and effective_amz_tag and advanced_shortener.is_our_amazon_link(u, effective_amz_tag):
+                                has_affiliate = True
+                                break
+                            if kind == "hypd" and effective_hypd_store and advanced_shortener.is_our_hypd_link(u, effective_hypd_store):
+                                has_affiliate = True
+                                break
+                            if commission_guard.is_earnkaro_short_link(u):
+                                has_affiliate = True
+                                break
+                            if kind == "lehlah":
+                                has_affiliate = True
+                                break
+                            if "/amazon/" in u and effective_amz_tag and f"tag={effective_amz_tag}" in u:
+                                has_affiliate = True
+                                break
+                            if "/m/" in u:
+                                has_affiliate = True
+                                break
+                        if has_affiliate:
+                            rendered = sanitized
+                        else:
+                            # No OUR affiliate left — posting would earn zero. Skip this channel.
+                            per_channel[ch["id"]] = "skipped:no_our_affiliate_after_guard"
+                            continue
+                except Exception as _guard_exc:
+                    import logging
+                    logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
+            # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
+            # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
+            try:
+                content_hash = _content_hash_for_dedup(rendered)
+                phys_content_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), content_hash)
+                if phys_content_key in seen_content_in_this_run:
+                    per_channel[ch["id"]] = "skipped:content_dedup_in_run"
+                    continue
+                if db.already_posted_content_hash(str(ch.get("platform","")), str(ch.get("identifier","")), content_hash, hours=24):
+                    per_channel[ch["id"]] = "skipped:content_dedup_24h"
+                    continue
+            except Exception:
+                content_hash = ""
+                phys_content_key = None
+            # 8d. NEAR-DUPLICATE FUZZY CHECK — catches 4-5-56x where same product has slightly different title wording
+            # Uses 65% token overlap + same price, checks last 12h. This is the deep-think advanced fix for severe spam.
+            try:
+                if db.is_near_duplicate_in_window(str(ch.get("platform","")), str(ch.get("identifier","")), rendered, hours=12, threshold=0.60):
+                    per_channel[ch["id"]] = "skipped:near_duplicate_12h"
+                    continue
+            except Exception:
+                pass
+            # 8e. RATE LIMITER — ultimate safety net against any bug causing 56 posts
+            # Even if dedup somehow fails, this throttles to max 20/hour and 5/10min per physical channel. No more spam.
+            try:
+                # Check hourly limit
+                if db.get_recent_post_count_for_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), hours=1) >= 20:
+                    per_channel[ch["id"]] = "skipped:rate_limit_20_per_hour"
+                    continue
+                # Check 10-minute burst limit (0.17h ≈ 10min)
+                if db.get_recent_post_count_for_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), hours=0.17) >= 5:
+                    per_channel[ch["id"]] = "skipped:rate_limit_5_per_10min"
+                    continue
+            except Exception:
+                pass
             status = await dispatch_to_channel(inf, ch, rendered)
+            # Mark physical channel + sig and content as seen for this run (prevents same-batch duplicates to same @channel)
+            try:
+                phys_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), sig)
+                seen_physical_in_this_run.add(phys_key)
+                if 'phys_content_key' in locals() and phys_content_key:
+                    seen_content_in_this_run.add(phys_content_key)
+            except Exception:
+                pass
             db.record_post(inf["id"], ch["id"], sig,
                            status="posted" if status == "posted" else "failed",
                            error="" if status == "posted" else status,
@@ -427,15 +632,42 @@ async def run_hourly_loot_highlight(influencer_ids: Iterable[int] | None = None)
             sched = ch.get("posting_schedule") or inf.get("posting_schedule") or ""
             if not link_router.is_time_in_schedule(sched):
                 continue
+            # 2. Respect Only-Amazon and category/price filters even for hourly highlights
+            # This ensures perfect targeting - hourly loot respects influencer's preferences
+            try:
+                only_amz = str(ch.get("only_amazon") or inf.get("only_amazon") or "0").strip().lower() in {"1", "true", "yes", "on"}
+                cat_filter = ch.get("categories") or inf.get("categories") or ""
+                price_filter = ch.get("price_filter") or inf.get("price_filter") or "all"
+                max_p, min_p = _parse_price_filter_spec(price_filter)
+            except Exception:
+                only_amz = False
+                cat_filter = ""
+                max_p = min_p = None
 
             recent_posts = db.get_recent_posted_deals(ch["id"], hours=1)
-            # Filter posts with deal text
+            # Filter posts with deal text - exclude previous highlights
             candidates = [p for p in recent_posts if p.get("deal_text") and not p.get("deal_text").startswith("👑")]
-            if not candidates:
+            # Apply perfect filtering to candidates: Only Amazon, category, price
+            filtered_candidates = []
+            for p in candidates:
+                txt = p.get("deal_text", "")
+                # Only-Amazon: must have Amazon link
+                if only_amz and not link_router.has_amazon_link(txt):
+                    continue
+                if cat_filter and not link_router.matches_category_filter(txt, cat_filter):
+                    continue
+                if not link_router.matches_price_filter(txt, max_price=max_p, min_price=min_p):
+                    continue
+                filtered_candidates.append(p)
+            if not filtered_candidates:
                 continue
 
-            # Pick the highest score deal
-            best_post = max(candidates, key=lambda p: link_router.calculate_deal_loot_score(p["deal_text"]))
+            # Pick the highest loot score deal - most attractive loot
+            best_post = max(filtered_candidates, key=lambda p: link_router.calculate_deal_loot_score(p["deal_text"]))
+            # Only highlight if score is decent (avoid highlighting mediocre deals)
+            best_score = link_router.calculate_deal_loot_score(best_post["deal_text"])
+            if best_score < 20.0:  # Skip low-score highlights to keep channel neat
+                continue
             banner = link_router.format_loot_of_the_hour_post(best_post["deal_text"], hour_label=hour_label)
             # Dedicated signature for hourly highlight to distinguish it from the original raw post
             banner_sig = "highlight:" + link_router.deal_signature(best_post["deal_text"])

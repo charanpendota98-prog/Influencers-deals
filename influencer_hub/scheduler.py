@@ -33,8 +33,17 @@ async def _scheduler_loop():
             current_hour = now_ist.hour
             current_minute = now_ist.minute
 
-            # Trigger hourly highlight around the top of the hour (minute 0-2) once per hour
-            if current_hour != last_hourly_check and current_minute <= 2:
+            # HOURLY LOOT: Only run if explicitly enabled via global setting.
+            # User requested "HOUR THE DEAL ILA AVVADU" - so hourly highlights are OFF by default
+            # and must be enabled via dashboard global setting hourly_loot_enabled=1.
+            # This prevents spam and ensures neat, controlled posting.
+            try:
+                hourly_enabled = str(db.get_global_setting("hourly_loot_enabled", "0")).strip().lower() in {"1", "true", "yes", "on"}
+            except Exception:
+                hourly_enabled = False
+
+            # Trigger hourly highlight around the top of the hour (minute 0-2) once per hour IF enabled
+            if hourly_enabled and current_hour != last_hourly_check and current_minute <= 2:
                 print(f"[scheduler] Triggering hourly loot highlight for hour {current_hour}:00 IST")
                 try:
                     await pipeline.run_hourly_loot_highlight()

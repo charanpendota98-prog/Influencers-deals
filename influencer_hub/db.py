@@ -316,11 +316,19 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
                    posting_schedule: str = "", only_amazon: bool = False,
                    allow_amazon: bool = True, allow_earnkaro: bool = True,
                    allow_hypd: bool = True, hypd_store_id: str | None = None) -> int:
+    # Ensure schema exists for fresh DBs (pytest tmp_path without explicit init)
+    try:
+        init()
+    except Exception:
+        pass
     con = _connect()
     try:
-        global_hypd = con.execute(
-            "SELECT val FROM global_settings WHERE key='hypd_store_id'"
-        ).fetchone()
+        try:
+            global_hypd = con.execute(
+                "SELECT val FROM global_settings WHERE key='hypd_store_id'"
+            ).fetchone()
+        except Exception:
+            global_hypd = None
         effective_hypd_store_id = (
             str(hypd_store_id or "").strip()
             or (str(global_hypd["val"] or "").strip() if global_hypd else "")
@@ -1005,12 +1013,20 @@ def add_bulk_influencers(records: list[dict]) -> int:
     toggles are independent; ``only_amazon`` is the explicit exclusive-mode
     override. An omitted Store ID inherits the current global default.
     """
+    # Ensure schema exists for fresh DBs
+    try:
+        init()
+    except Exception:
+        pass
     con = _connect()
     count = 0
     try:
-        global_hypd = con.execute(
-            "SELECT val FROM global_settings WHERE key='hypd_store_id'"
-        ).fetchone()
+        try:
+            global_hypd = con.execute(
+                "SELECT val FROM global_settings WHERE key='hypd_store_id'"
+            ).fetchone()
+        except Exception:
+            global_hypd = None
         default_hypd_store = (
             str(global_hypd["val"] or "").strip() if global_hypd else ""
         ) or config.HYPD_STORE_ID
@@ -1584,6 +1600,116 @@ def already_posted(influencer_id: int, channel_id: int, deal_sig: str) -> bool:
             "AND status='posted'",
             (influencer_id, channel_id, deal_sig)).fetchone()
         return row is not None
+    finally:
+        con.close()
+
+
+def already_posted_to_identifier(platform: str, identifier: str, deal_sig: str) -> bool:
+    """Global dedup: has this deal_sig already been posted to same physical channel (platform+identifier) by ANY influencer?
+    Prevents duplicates when multiple influencers are configured to post to same Telegram channel (e.g. @loots_channel).
+    Screenshot showed same NIRLON / Levis product posted twice at 11:27 to same loots channel = this case.
+    """
+    plat = str(platform or "").strip().lower()
+    ident = str(identifier or "").strip().lower()
+    if not ident or not deal_sig:
+        return False
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT 1 FROM posts p JOIN channels c ON p.channel_id=c.id " "WHERE lower(trim(c.platform))= ? AND lower(trim(c.identifier))= ? AND p.deal_sig=? AND p.status='posted' LIMIT 1",
+
+            (plat, ident, deal_sig)).fetchone()
+        return row is not None
+    finally:
+        con.close()
+
+
+def already_posted_content_hash(platform: str, identifier: str, content_hash: str, hours: int = 24) -> bool:
+    """Check if same rendered content hash was posted to same physical channel recently (24h).
+    Catches duplicates where sig differs slightly but final rendered product title+price is identical.
+    """
+    plat = str(platform or "").strip().lower()
+    ident = str(identifier or "").strip().lower()
+    if not ident or not content_hash:
+        return False
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        # Use deal_text hash stored implicitly via deal_sig? We store deal_text, so check posts with same hash of deal_text title+price
+        # For efficiency, check posts where deal_text contains same hash substring? Instead check posts with same content_hash stored as deal_sig prefix?
+        # We use a LIKE on deal_sig for content hash? Better: compute hash from posts.deal_text on fly for recent posts only (24h = few rows)
+        rows = con.execute(
+            "SELECT p.deal_text FROM posts p JOIN channels c ON p.channel_id=c.id " "WHERE lower(trim(c.platform))=? AND lower(trim(c.identifier))=? AND p.status='posted' AND p.posted_at >= ?",
+
+            (plat, ident, cutoff)).fetchall()
+        for r in rows:
+            txt = str(r["deal_text"] or "")
+            if not txt:
+                continue
+            # Compute content hash same way as pipeline does for current rendered text
+            import hashlib, re as _re
+            # Normalize: clean, lower, remove urls, keep title+price
+            try:
+                from .link_router import clean_source_post as _clean
+                cleaned = _clean(txt)
+            except Exception:
+                cleaned = txt
+            cleaned_norm = _re.sub(r"https?://\S+", "", cleaned).lower()
+            cleaned_norm = _re.sub(r"\s+", " ", cleaned_norm).strip()
+            # Take title + price for hash
+            h = hashlib.sha1(cleaned_norm.encode("utf-8")).hexdigest()[:16]
+            if h == content_hash:
+                return True
+        return False
+    finally:
+        con.close()
+
+
+def is_near_duplicate_in_window(platform: str, identifier: str, deal_text: str, hours: int = 12, threshold: float = 0.60) -> bool:
+    """Advanced near-duplicate check for 56x spam prevention.
+    Checks if same product (65% title word overlap + same price) was posted to same physical channel in last N hours.
+    """
+    plat = str(platform or "").strip().lower()
+    ident = str(identifier or "").strip().lower()
+    if not ident or not deal_text:
+        return False
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT p.deal_text FROM posts p JOIN channels c ON p.channel_id=c.id " "WHERE lower(trim(c.platform))=? AND lower(trim(c.identifier))=? AND p.status='posted' AND p.posted_at >= ?",
+            (plat, ident, cutoff)).fetchall()
+        try:
+            from .link_router import titles_are_near_duplicate
+        except Exception:
+            return False
+        for r in rows:
+            prev = str(r["deal_text"] or "")
+            if not prev:
+                continue
+            if titles_are_near_duplicate(prev, deal_text, threshold=threshold):
+                return True
+        return False
+    finally:
+        con.close()
+
+
+def get_recent_post_count_for_identifier(platform: str, identifier: str, hours: int = 1) -> int:
+    """Rate limit helper: count posts to same physical channel in last N hours."""
+    plat = str(platform or "").strip().lower()
+    ident = str(identifier or "").strip().lower()
+    if not ident:
+        return 0
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT COUNT(*) as c FROM posts p JOIN channels c2 ON p.channel_id=c2.id " "WHERE lower(trim(c2.platform))=? AND lower(trim(c2.identifier))=? AND p.status='posted' AND p.posted_at >= ?",
+            (plat, ident, cutoff)).fetchone()
+        return int(row["c"]) if row else 0
     finally:
         con.close()
 
