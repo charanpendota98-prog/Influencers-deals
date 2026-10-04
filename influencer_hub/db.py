@@ -316,11 +316,19 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
                    posting_schedule: str = "", only_amazon: bool = False,
                    allow_amazon: bool = True, allow_earnkaro: bool = True,
                    allow_hypd: bool = True, hypd_store_id: str | None = None) -> int:
+    # Ensure schema exists for fresh DBs (pytest tmp_path without explicit init)
+    try:
+        init()
+    except Exception:
+        pass
     con = _connect()
     try:
-        global_hypd = con.execute(
-            "SELECT val FROM global_settings WHERE key='hypd_store_id'"
-        ).fetchone()
+        try:
+            global_hypd = con.execute(
+                "SELECT val FROM global_settings WHERE key='hypd_store_id'"
+            ).fetchone()
+        except Exception:
+            global_hypd = None
         effective_hypd_store_id = (
             str(hypd_store_id or "").strip()
             or (str(global_hypd["val"] or "").strip() if global_hypd else "")
@@ -1005,12 +1013,20 @@ def add_bulk_influencers(records: list[dict]) -> int:
     toggles are independent; ``only_amazon`` is the explicit exclusive-mode
     override. An omitted Store ID inherits the current global default.
     """
+    # Ensure schema exists for fresh DBs
+    try:
+        init()
+    except Exception:
+        pass
     con = _connect()
     count = 0
     try:
-        global_hypd = con.execute(
-            "SELECT val FROM global_settings WHERE key='hypd_store_id'"
-        ).fetchone()
+        try:
+            global_hypd = con.execute(
+                "SELECT val FROM global_settings WHERE key='hypd_store_id'"
+            ).fetchone()
+        except Exception:
+            global_hypd = None
         default_hypd_store = (
             str(global_hypd["val"] or "").strip() if global_hypd else ""
         ) or config.HYPD_STORE_ID

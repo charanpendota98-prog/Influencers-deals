@@ -341,10 +341,22 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 )
                 # Amazon, HYPD, and existing LehLah affiliate URLs never go
                 # through generic Bitly. Their first-party routes are applied later.
+                # EarnKaro shorteners (ekaro.in, fktr.in, etc.) are already short and must stay as-is.
+                from urllib.parse import urlparse as _bt_urlparse
+                _ek_shortener_hosts = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "myntr.it"}
+                def _is_earnkaro_short(url: str) -> bool:
+                    try:
+                        h = (_bt_urlparse(url).hostname or "").lower()
+                        return h in _ek_shortener_hosts or (h.startswith("www.") and h[4:] in _ek_shortener_hosts)
+                    except Exception:
+                        return False
                 final_urls = [
                     url for url in link_router.find_urls(base_rendered)
                     if link_router.classify_url(url) not in {"amazon", "hypd", "meesho", "lehlah"}
+                    and not _is_earnkaro_short(url)
                 ]
+                # PERFECT CHECK: Ensure Amazon product links are never Bitly-shortened
+                # Only shorten if multiple links or excessively long URL (>65 chars)
                 should_shorten = (len(final_urls) >= 2) or any(len(url) > 65 for url in final_urls)
                 if should_shorten:
                     shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
@@ -427,15 +439,42 @@ async def run_hourly_loot_highlight(influencer_ids: Iterable[int] | None = None)
             sched = ch.get("posting_schedule") or inf.get("posting_schedule") or ""
             if not link_router.is_time_in_schedule(sched):
                 continue
+            # 2. Respect Only-Amazon and category/price filters even for hourly highlights
+            # This ensures perfect targeting - hourly loot respects influencer's preferences
+            try:
+                only_amz = str(ch.get("only_amazon") or inf.get("only_amazon") or "0").strip().lower() in {"1", "true", "yes", "on"}
+                cat_filter = ch.get("categories") or inf.get("categories") or ""
+                price_filter = ch.get("price_filter") or inf.get("price_filter") or "all"
+                max_p, min_p = _parse_price_filter_spec(price_filter)
+            except Exception:
+                only_amz = False
+                cat_filter = ""
+                max_p = min_p = None
 
             recent_posts = db.get_recent_posted_deals(ch["id"], hours=1)
-            # Filter posts with deal text
+            # Filter posts with deal text - exclude previous highlights
             candidates = [p for p in recent_posts if p.get("deal_text") and not p.get("deal_text").startswith("👑")]
-            if not candidates:
+            # Apply perfect filtering to candidates: Only Amazon, category, price
+            filtered_candidates = []
+            for p in candidates:
+                txt = p.get("deal_text", "")
+                # Only-Amazon: must have Amazon link
+                if only_amz and not link_router.has_amazon_link(txt):
+                    continue
+                if cat_filter and not link_router.matches_category_filter(txt, cat_filter):
+                    continue
+                if not link_router.matches_price_filter(txt, max_price=max_p, min_price=min_p):
+                    continue
+                filtered_candidates.append(p)
+            if not filtered_candidates:
                 continue
 
-            # Pick the highest score deal
-            best_post = max(candidates, key=lambda p: link_router.calculate_deal_loot_score(p["deal_text"]))
+            # Pick the highest loot score deal - most attractive loot
+            best_post = max(filtered_candidates, key=lambda p: link_router.calculate_deal_loot_score(p["deal_text"]))
+            # Only highlight if score is decent (avoid highlighting mediocre deals)
+            best_score = link_router.calculate_deal_loot_score(best_post["deal_text"])
+            if best_score < 20.0:  # Skip low-score highlights to keep channel neat
+                continue
             banner = link_router.format_loot_of_the_hour_post(best_post["deal_text"], hour_label=hour_label)
             # Dedicated signature for hourly highlight to distinguish it from the original raw post
             banner_sig = "highlight:" + link_router.deal_signature(best_post["deal_text"])
