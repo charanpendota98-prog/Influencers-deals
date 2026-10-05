@@ -174,6 +174,24 @@ _ADMIN_DELETE_PASSWORD = _env("ADMIN_DELETE_PASSWORD")
 DASHBOARD_ADMIN_PASSWORD = _env("DASHBOARD_ADMIN_PASSWORD") or _ADMIN_DELETE_PASSWORD
 ADMIN_DELETE_PASSWORD = _ADMIN_DELETE_PASSWORD or DASHBOARD_ADMIN_PASSWORD
 DASHBOARD_SECRET_KEY = _env("DASHBOARD_SECRET_KEY")
+# Every Gunicorn worker must sign session cookies with the SAME key. When
+# DASHBOARD_SECRET_KEY is unset, a generated key is persisted to this private
+# file so a session created by one worker is not rejected by the next one
+# (which shows up as endless redirects to /login and 400 CSRF failures).
+DASHBOARD_SECRET_KEY_FILE = Path(
+    _env("DASHBOARD_SECRET_KEY_FILE", str(BASE_DIR / ".dashboard_secret_key"))
+)
+# Sensitive setup changes (adding/saving/deleting channels, …) ask for the
+# admin password ONCE and then stay unlocked for this many seconds of work.
+# The window is idle-based: every confirmed change renews it, so an active
+# operator is never interrupted, while an idle dashboard locks itself again.
+DASHBOARD_SETUP_UNLOCK_SECONDS = _int("DASHBOARD_SETUP_UNLOCK_SECONDS", 1800)
+# Bind the unlock to the IP that confirmed it, so a stolen cookie cannot be
+# replayed from another machine. Disable only behind a fixed-IP tunnel.
+DASHBOARD_SETUP_UNLOCK_BIND_IP = _bool("DASHBOARD_SETUP_UNLOCK_BIND_IP", True)
+# Trust X-Forwarded-* from one reverse proxy hop (HTTPS termination). Leave
+# off for direct-to-port access so a client cannot spoof "https".
+DASHBOARD_TRUST_PROXY = _bool("DASHBOARD_TRUST_PROXY", False)
 HUB_ENV = _env("HUB_ENV", "development").lower()
 DASHBOARD_COOKIE_SECURE = _bool(
     "DASHBOARD_COOKIE_SECURE", default=HUB_ENV == "production"

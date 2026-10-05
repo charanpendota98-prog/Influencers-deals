@@ -71,6 +71,14 @@
       {% for category, message in messages %}
         <div role="status" style="padding:10px 12px; border-radius:8px; border:1px solid {{ '#10b981' if category == 'success' else ('#f59e0b' if category == 'warning' else '#ef4444') }}; background:{{ '#052e25' if category == 'success' else ('#422006' if category == 'warning' else '#450a0a') }}; color:{{ '#a7f3d0' if category == 'success' else ('#fde68a' if category == 'warning' else '#fecaca') }};">
           {{ message }}
+          {% if category == 'success' and undo_channel %}
+            <form method="post" action="{{ url_for('undo_channel_delete') }}" style="display:inline; margin-left:8px;">
+              <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+              <button type="submit" style="background:#1d4ed8; color:#fff; border:none; padding:4px 10px; border-radius:6px; font-size:12px; font-weight:700; cursor:pointer;">
+                ↩️ Undo removal
+              </button>
+            </form>
+          {% endif %}
         </div>
       {% endfor %}
     </div>
@@ -405,7 +413,8 @@
           </td>
 
         <td>
-          <form method="post" action="{{ url_for('delete_channel', channel_id=c.id) }}" style="display:inline;" onsubmit="return confirm('Remove this channel?');" data-require-reauth>
+          <form method="post" action="{{ url_for('delete_channel', channel_id=c.id) }}" style="display:inline;"
+                data-confirm="Remove the {{ c.platform }} destination {{ c.identifier }}? Deal posts to it stop immediately. You can undo the removal right after." data-require-reauth>
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
             <input type="hidden" name="inf_id" value="{{ inf.id }}" />
             <button type="submit" style="background: none; border: none; color: #ef4444; cursor: pointer; text-decoration: underline; font-size: 12px;">Remove</button>
@@ -426,6 +435,13 @@
     </div>
     <p class="hint" style="font-size:13px; color:#94a3b8; margin-bottom:14px; line-height:1.5;">
       Extra Telegram destinations can be saved here. For WhatsApp, choose Group or Channel and provide its invite URL/JID; it is saved Pending until an explicit test post succeeds. Channel posting needs this connected number to be an admin.
+    </p>
+    <p class="hint" style="font-size:12px; margin-bottom:12px;">
+      {% if setup_unlocked %}
+        🔓 <b style="color:#6ee7b7;">Setup unlocked</b> — add, save and delete channels freely for another {{ setup_unlock_minutes }} minute(s); the password is not asked again until it locks.
+      {% else %}
+        🔒 <b style="color:#fde68a;">One password confirmation opens this up.</b> Enter the admin password once on the next Connect / Save / Remove and every other channel change goes through without asking again.
+      {% endif %}
     </p>
     <form method="post" action="{{ url_for('add_manual_channel', inf_id=inf.id) }}" class="row" data-require-reauth>
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />

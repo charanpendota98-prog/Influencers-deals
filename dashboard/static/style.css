@@ -447,6 +447,63 @@ button:active, .btn:active {
   font-size: 12px;
 }
 .nav-logout:hover { background: #334155; }
+.nav-lock-form { margin: 0; }
+.nav-lock {
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nav-lock.is-unlocked {
+  border: 1px solid #10b981;
+  background: rgba(6, 78, 59, 0.85);
+  color: #a7f3d0;
+}
+.nav-lock.is-unlocked:hover { background: #065f46; }
+.nav-lock.is-locked {
+  border: 1px solid #f59e0b;
+  background: rgba(66, 32, 6, 0.85);
+  color: #fde68a;
+}
+.nav-lock.is-locked:hover { background: #713f12; }
+.insecure-banner {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  background: #422006;
+  color: #fde68a;
+  font-size: 13px;
+}
+.restored-form {
+  outline: 2px solid #38bdf8;
+  outline-offset: 6px;
+  border-radius: 8px;
+}
+.unlock-banner {
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  background: #422006;
+  color: #fde68a;
+}
+.unlock-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+.unlock-form input[type="password"] {
+  flex: 1 1 200px;
+  margin: 0;
+  background: #0b1120;
+  border: 1px solid #b45309;
+  color: #fde68a;
+}
 
 /* Keep native form controls usable on desktop and touch devices. */
 input[type="checkbox"],
@@ -542,6 +599,7 @@ button[aria-disabled="true"] {
   .app-nav { flex-wrap: nowrap; gap: 2px; }
   .app-nav > a { padding: 6px 7px; font-size: 11px; }
   .nav-logout { min-height: 36px; padding: 5px 8px; font-size: 11px; }
+  .nav-lock { min-height: 36px; padding: 5px 8px; font-size: 10px; }
   .nav-security-label { padding: 5px 8px; font-size: 10px; }
   .auth-shell { min-height: calc(80vh - 60px); padding: 10px 2px; }
   .auth-card { border-radius: 15px; }

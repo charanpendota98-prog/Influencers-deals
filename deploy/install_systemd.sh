@@ -36,5 +36,7 @@ Units are installed but not started. Before enabling them:
   1. Configure the private .env (including a strong dashboard password,
      persistent DASHBOARD_SECRET_KEY, and HUB_ENV=production).
   2. Back up and verify the database and existing service state.
-  3. Configure HTTPS reverse proxy/DNS; the dashboard listens on 127.0.0.1:5000.
+  3. The dashboard listens on 0.0.0.0:5000 so it answers on the VM's IP.
+     Restrict port 5000 in the cloud security list + ufw, or put an HTTPS
+     reverse proxy in front of it (then set DASHBOARD_TRUST_PROXY=1).
 EOF
