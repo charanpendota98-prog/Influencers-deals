@@ -1,0 +1,30 @@
+{# Shared "what gets posted" table. Expects a `preview` dict from _routing_preview(). #}
+<p class="routing-summary"><strong>{{ preview.summary }}</strong></p>
+{% if preview.strict %}
+  <p class="routing-note">🔥 Strict mode is on: only Amazon deals are posted, with this creator's tag.</p>
+{% endif %}
+<table class="routing-table">
+  <thead>
+    <tr>
+      <th>Link found in a source deal</th>
+      <th>What your channel posts</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in preview.rows %}
+      <tr class="routing-row is-{{ row.state }}">
+        <td>
+          <strong>{{ row.label }}</strong>
+          <code>{{ row.sample }}</code>
+        </td>
+        <td>
+          {% if row.result %}<code class="routing-result">{{ row.result }}</code>{% endif %}
+          <span class="routing-note">{{ row.note }}</span>
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if preview.earnkaro_on and not preview.earnkaro_ready %}
+  <p class="routing-note is-warn">💰 EarnKaro is on but its API key is missing. Add it in <a class="text-link" href="{{ url_for('secret_vault_tab') }}">Vault &amp; Sources</a> to convert Flipkart/Myntra/Ajio links.</p>
+{% endif %}

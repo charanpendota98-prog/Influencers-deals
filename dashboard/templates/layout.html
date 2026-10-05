@@ -17,6 +17,7 @@
     {% if dashboard_authenticated %}
       <nav class="app-nav" aria-label="Main navigation">
         <a href="{{ url_for('index') }}">📊 Dashboard</a>
+        <a href="{{ url_for('easy_setup') }}">⚡ Easy</a>
         <a href="{{ url_for('setup') }}">⚙️ Setup</a>
         <a href="{{ url_for('secret_vault_tab') }}">🔒 Vault &amp; Sources</a>
         <a href="{{ url_for('vm') }}">💻 Health</a>
@@ -81,8 +82,12 @@
         <span class="dock-icon" aria-hidden="true">📊</span>
         <span class="dock-label">Dashboard</span>
       </a>
-      <a href="{{ url_for('setup') }}" class="dock-item dock-add-btn">
-        <span class="dock-add-icon" aria-hidden="true">⚙️</span>
+      <a href="{{ url_for('easy_setup') }}" class="dock-item dock-add-btn">
+        <span class="dock-add-icon" aria-hidden="true">⚡</span>
+        <span class="dock-label">Easy</span>
+      </a>
+      <a href="{{ url_for('setup') }}" class="dock-item">
+        <span class="dock-icon" aria-hidden="true">⚙️</span>
         <span class="dock-label">Setup</span>
       </a>
       <a href="{{ url_for('secret_vault_tab') }}" class="dock-item">

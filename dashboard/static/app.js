@@ -300,6 +300,79 @@
   }
 })();
 
+// Easy Setup: the routing table follows the switches as they are toggled, so
+// the operator sees the outcome before saving anything.
+(function () {
+  const form = document.getElementById('easy-setup-form');
+  const target = document.getElementById('routing-preview');
+  if (!form || !target) return;
+
+  let inflight = null;
+
+  function buildQuery() {
+    const data = new FormData(form);
+    const params = new URLSearchParams();
+    ['amazon_tag', 'hypd_store_id', 'inf_id'].forEach((name) => {
+      const value = String(data.get(name) || '').trim();
+      if (value) params.set(name, value);
+    });
+    ['allow_amazon', 'allow_earnkaro', 'allow_hypd', 'only_amazon'].forEach((name) => {
+      params.set(name, form.querySelector(`[name="${name}"]`)?.checked ? '1' : '0');
+    });
+    return params.toString();
+  }
+
+  async function refresh() {
+    if (inflight) return;
+    inflight = true;
+    try {
+      const response = await fetch(`/api/routing-preview?${buildQuery()}`, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok && payload.ok && payload.preview) {
+        target.innerHTML = renderPreview(payload.preview);
+      }
+    } catch (_error) {
+      // Keep the server-rendered table when the hub is unreachable.
+    } finally {
+      inflight = false;
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (character) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]
+    ));
+  }
+
+  function renderPreview(preview) {
+    const rows = preview.rows.map((row) => `
+      <tr class="routing-row is-${escapeHtml(row.state)}">
+        <td><strong>${escapeHtml(row.label)}</strong><code>${escapeHtml(row.sample)}</code></td>
+        <td>${row.result ? `<code class="routing-result">${escapeHtml(row.result)}</code>` : ''}
+          <span class="routing-note">${escapeHtml(row.note)}</span></td>
+      </tr>`).join('');
+    return `
+      <p class="routing-summary"><strong>${escapeHtml(preview.summary)}</strong></p>
+      ${preview.strict ? '<p class="routing-note">🔥 Strict mode is on: only Amazon deals are posted, with this creator\'s tag.</p>' : ''}
+      <table class="routing-table">
+        <thead><tr><th>Link found in a source deal</th><th>What your channel posts</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${preview.earnkaro_on && !preview.earnkaro_ready
+        ? '<p class="routing-note is-warn">💰 EarnKaro is on but its API key is missing. Add it in Vault &amp; Sources to convert Flipkart/Myntra/Ajio links.</p>'
+        : ''}`;
+  }
+
+  form.querySelectorAll('[data-preview-input]').forEach((field) => {
+    field.addEventListener('change', refresh);
+    field.addEventListener('input', refresh);
+  });
+})();
+
 // Runs bounded, read-only source-to-service checks from the Setup Center.
 (function () {
   const button = document.getElementById('run-live-setup-checks');

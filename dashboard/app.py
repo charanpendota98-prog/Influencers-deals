@@ -34,8 +34,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
-    config, db, hypd_shortlinks, lehlah_shortlinks, polls, puller,
-    telegram_ops, whatsapp_client,
+    config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
+    puller, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
 def _running_under_pytest() -> bool:
@@ -106,7 +106,7 @@ REAUTH_REQUIRED_ENDPOINTS = frozenset({
     "seed_default_sources", "add_deal_source", "delete_deal_source",
     "toggle_deal_source", "update_global_settings", "quick_add",
     "update_profile", "update_channel_route", "add_manual_channel",
-    "bulk_import", "delete_channel", "undo_channel_delete",
+    "bulk_import", "delete_channel", "undo_channel_delete", "easy_setup",
     "toggle_influencer_active",
     "toggle_channel_status", "onboard", "set_flags", "onboard_tg",
     "onboard_wa", "create_tg", "pair_wa", "create_group",
@@ -1568,6 +1568,134 @@ def update_channel_route(channel_id):
     return redirect(url_for("influencer_detail", inf_id=owner_id))
 
 
+# --------------------------------------------------------------------------
+# Easy setup: the three network switches, in plain language
+# --------------------------------------------------------------------------
+# "Amazon ante only Amazon, EarnKaro on cheste verevi, HYPD on cheste Meesho".
+ROUTING_SWITCHES = (
+    {
+        "name": "allow_amazon",
+        "emoji": "📦",
+        "label": "Amazon",
+        "meaning": "Amazon links get this creator's Associates tag. Nothing else touches them.",
+    },
+    {
+        "name": "allow_earnkaro",
+        "emoji": "💰",
+        "label": "EarnKaro",
+        "meaning": "Flipkart, Shopsy, Myntra, Ajio, Nykaa, Croma, TataCliq… become EarnKaro links.",
+    },
+    {
+        "name": "allow_hypd",
+        "emoji": "🛍️",
+        "label": "HYPD (Meesho)",
+        "meaning": "Meesho deals: HYPD affiliate links are retagged to this creator's store.",
+    },
+)
+ROUTING_SAMPLES = (
+    ("Amazon deal", "https://www.amazon.in/dp/B0D9P2M1PB?th=1", "amazon"),
+    ("Flipkart / Shopsy deal", "https://www.flipkart.com/sample-deal/p/itmEXAMPLE", "merchant"),
+    ("Myntra / Ajio deal", "https://www.myntra.com/sample-deal/1234567", "merchant"),
+    ("Meesho deal", "https://www.meesho.com/sample-deal/p/xyz123", "meesho"),
+    ("HYPD affiliate link", "https://hypd.store/93944/afflink/SAMPLETOKEN", "hypd"),
+    ("Plain info link", "https://example.com/deal-news", "other"),
+)
+
+
+def _earnkaro_ready() -> bool:
+    return bool(db.get_global_setting("earnkaro_api_key", "") or config.EARNKARO_API_KEY)
+
+
+def _routing_preview(
+    *,
+    amazon_tag: str,
+    allow_amazon: bool,
+    allow_earnkaro: bool,
+    allow_hypd: bool,
+    only_amazon: bool = False,
+    hypd_store_id: str = "",
+    channel_role: str = "broadcast",
+) -> dict:
+    """Explain, in one table, exactly what happens to each kind of link.
+
+    Pure and offline: it mirrors the pipeline's routing rules so the operator
+    can see the outcome before a single deal is posted.
+    """
+    strict = bool(only_amazon) or channel_role == "approval"
+    amazon_on = True if strict else bool(allow_amazon)
+    ek_on = False if strict else bool(allow_earnkaro)
+    hypd_on = False if strict else bool(allow_hypd)
+    tag = str(amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG
+    store = str(hypd_store_id or "").strip() or _effective_hypd_store_id()
+    ek_ready = _earnkaro_ready()
+
+    rows: list[dict] = []
+    for label, sample, kind in ROUTING_SAMPLES:
+        row = {"label": label, "sample": sample, "kind": kind, "result": "", "state": "ok", "note": ""}
+        if kind == "amazon":
+            if amazon_on:
+                row["result"] = link_router.apply_amazon_tag(sample, tag)
+                row["note"] = f"Posted with this creator's tag ({tag}). Never shortened away from Amazon."
+            else:
+                row["state"] = "off"
+                row["note"] = "Amazon is OFF — this link is removed from the post."
+        elif kind == "merchant":
+            if not ek_on:
+                row["state"] = "off"
+                row["note"] = "EarnKaro is OFF — non-Amazon merchant links are removed from the post."
+            elif ek_ready:
+                row["result"] = sample
+                row["note"] = "Converted to this creator's EarnKaro link at send time."
+            else:
+                row["state"] = "warn"
+                row["result"] = sample
+                row["note"] = (
+                    "EarnKaro is ON but its API key is missing — the original link is kept. "
+                    "Add the key in Vault & Sources to start earning."
+                )
+        elif kind == "meesho":
+            if hypd_on:
+                row["state"] = "warn"
+                row["result"] = sample
+                row["note"] = (
+                    "HYPD owns Meesho. HYPD affiliate links (hypd.store/…/afflink/…) are retagged "
+                    f"to store {store}; a raw Meesho link cannot be converted yet, so it is posted as-is."
+                )
+            else:
+                row["state"] = "off"
+                row["note"] = "HYPD (Meesho) is OFF — Meesho links are removed from the post."
+        elif kind == "hypd":
+            if hypd_on:
+                row["result"] = link_router.convert_hypd_store_link(sample, store)
+                row["note"] = f"Retagged to this creator's HYPD store {store}."
+            else:
+                row["state"] = "off"
+                row["note"] = "HYPD (Meesho) is OFF — this link is removed from the post."
+        else:
+            row["result"] = sample
+            row["note"] = "Informational links are never changed or dropped."
+        rows.append(row)
+
+    summary = " · ".join(
+        part for part in (
+            f"Amazon → tag {tag}" if amazon_on else "Amazon off",
+            "Other merchants → EarnKaro" if ek_on else "Other merchants off",
+            f"Meesho → HYPD store {store}" if hypd_on else "Meesho off",
+        )
+    )
+    return {
+        "rows": rows,
+        "summary": summary,
+        "strict": strict,
+        "amazon_on": amazon_on,
+        "earnkaro_on": ek_on,
+        "hypd_on": hypd_on,
+        "earnkaro_ready": ek_ready,
+        "amazon_tag": tag,
+        "hypd_store_id": store,
+    }
+
+
 CHANNEL_PLATFORMS = frozenset({"telegram", "whatsapp_group", "whatsapp_channel"})
 CHANNEL_ROLES = frozenset({"approval", "broadcast", "whatsapp"})
 PRICE_FILTER_CHOICES = frozenset({"", "all", "under_99", "under_199", "under_499", "under_999"})
@@ -1736,6 +1864,206 @@ def add_manual_channel(inf_id):
         ))
 
     return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+
+def _easy_setup_defaults() -> dict:
+    return {
+        "name": "",
+        "amazon_tag": config.AMAZON_ASSOCIATE_TAG,
+        "approval": "",
+        "main": "",
+        "whatsapp": "",
+        "allow_amazon": True,
+        "allow_earnkaro": True,
+        "allow_hypd": True,
+        "only_amazon": False,
+        "hypd_store_id": _effective_hypd_store_id(),
+    }
+
+
+def _easy_setup_form_values() -> dict:
+    """Read the easy-setup form, defaulting every switch sensibly."""
+    values = _easy_setup_defaults()
+    values.update({
+        "name": request.form.get("name", "").strip(),
+        "amazon_tag": request.form.get("amazon_tag", "").strip() or config.AMAZON_ASSOCIATE_TAG,
+        "approval": request.form.get("approval_channel", "").strip(),
+        "main": request.form.get("main_channel", "").strip(),
+        "whatsapp": request.form.get("whatsapp_channel", "").strip(),
+        "allow_amazon": bool(_form_flag("allow_amazon", default=False)),
+        "allow_earnkaro": bool(_form_flag("allow_earnkaro", default=False)),
+        "allow_hypd": bool(_form_flag("allow_hypd", default=False)),
+        "only_amazon": bool(_form_flag("only_amazon", default=False)),
+        "hypd_store_id": (
+            request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
+        ),
+    })
+    return values
+
+
+def _routing_arguments(values: dict) -> dict:
+    """Only the routing keys, so the form values can be forwarded safely."""
+    return {
+        "amazon_tag": values["amazon_tag"],
+        "allow_amazon": values["allow_amazon"],
+        "allow_earnkaro": values["allow_earnkaro"],
+        "allow_hypd": values["allow_hypd"],
+        "only_amazon": values["only_amazon"],
+        "hypd_store_id": values["hypd_store_id"],
+    }
+
+
+@app.route("/easy-setup", methods=["GET", "POST"])
+def easy_setup():
+    """One screen: creator + approval channel + main channel + 3 switches."""
+    sources = db.list_sources(active_only=False)
+    active_sources = sum(1 for source in sources if source.get("active"))
+    values = _easy_setup_defaults()
+    result: dict | None = session.pop("_easy_setup_result", None)
+    errors: list[str] = []
+
+    if request.method == "POST":
+        values = _easy_setup_form_values()
+        if not values["name"]:
+            errors.append("Enter the creator's name.")
+        if not values["main"] and not values["approval"]:
+            errors.append("Enter at least the main channel (and ideally the approval channel).")
+
+        approval_ident, main_ident = "", ""
+        if values["approval"]:
+            approval_ident = clean_identifier(values["approval"])
+            ok, error = _valid_telegram_identifier(approval_ident)
+            if not ok:
+                errors.append(f"Approval channel: {error}")
+        if values["main"]:
+            main_ident = clean_identifier(values["main"])
+            ok, error = _valid_telegram_identifier(main_ident)
+            if not ok:
+                errors.append(f"Main channel: {error}")
+        if not errors and values["approval"] and values["main"] and approval_ident == main_ident:
+            errors.append("Approval and main channels must be two different channels.")
+
+        if not errors:
+            applied = _apply_easy_setup(values, approval_ident, main_ident)
+            session["_easy_setup_result"] = applied
+            flash(
+                f"✅ {applied['name']} is set up and posting. "
+                f"Amazon → {values['amazon_tag']}"
+                + (", other merchants → EarnKaro" if values["allow_earnkaro"] else "")
+                + (f", Meesho → HYPD store {values['hypd_store_id']}" if values["allow_hypd"] else ""),
+                "success",
+            )
+            return redirect(url_for("easy_setup", done=applied["inf_id"]))
+
+    preview = _routing_preview(**_routing_arguments(values))
+    return render_template(
+        "easy_setup.html",
+        values=values,
+        preview=preview,
+        result=result,
+        errors=errors,
+        switches=ROUTING_SWITCHES,
+        source_count=len(sources),
+        active_source_count=active_sources,
+    )
+
+
+def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dict:
+    """Create or update one creator with both channels and the chosen routes."""
+    name = values["name"]
+    existing = next(
+        (profile for profile in db.list_influencers()
+         if str(profile.get("name") or "").strip().lower() == name.lower()),
+        None,
+    )
+    settings = {
+        "only_amazon": values["only_amazon"],
+        "allow_amazon": values["allow_amazon"],
+        "allow_earnkaro": values["allow_earnkaro"],
+        "allow_hypd": values["allow_hypd"],
+        "hypd_store_id": values["hypd_store_id"],
+        "active": True,
+    }
+    if existing:
+        inf_id = int(existing["id"])
+        db.update_influencer(inf_id, name=name, amazon_tag=values["amazon_tag"], **settings)
+        action = "updated"
+    else:
+        inf_id = db.add_influencer(
+            name, values["amazon_tag"], allow_amazon=values["allow_amazon"],
+            allow_earnkaro=values["allow_earnkaro"], allow_hypd=values["allow_hypd"],
+            only_amazon=values["only_amazon"], hypd_store_id=values["hypd_store_id"],
+        )
+        action = "created"
+    db.set_influencer_active(inf_id, True)
+
+    channels = db.list_channels(inf_id)
+    created, updated = [], []
+
+    def _upsert(identifier: str, role: str) -> None:
+        if not identifier:
+            return
+        match = next(
+            (channel for channel in db.list_channels(inf_id)
+             if channel.get("platform") == "telegram"
+             and str(channel.get("identifier") or "").strip().lower() == identifier.lower()),
+            None,
+        )
+        if match:
+            db.update_channel_details(
+                match["id"], identifier=identifier, role=role, status="ready",
+                allow_amazon=values["allow_amazon"],
+                allow_earnkaro=values["allow_earnkaro"],
+                allow_hypd=values["allow_hypd"],
+                hypd_store_id=values["hypd_store_id"],
+            )
+            updated.append(identifier)
+        else:
+            db.add_channel(
+                inf_id, "telegram", identifier, status="ready", role=role,
+                allow_amazon=values["allow_amazon"],
+                allow_earnkaro=values["allow_earnkaro"],
+                allow_hypd=values["allow_hypd"],
+                hypd_store_id=values["hypd_store_id"],
+            )
+            created.append(identifier)
+
+    _upsert(approval_ident, "approval")
+    _upsert(main_ident, "broadcast")
+
+    sources = db.list_sources(active_only=False)
+    return {
+        "action": action,
+        "inf_id": inf_id,
+        "name": name,
+        "created": created,
+        "updated": updated,
+        "existing_channels": len(channels),
+        "active_sources": sum(1 for source in sources if source.get("active")),
+    }
+
+
+@app.route("/api/routing-preview")
+def routing_preview_api():
+    """Live routing table for the current easy-setup form values."""
+    values = _easy_setup_defaults()
+    values.update({
+        "amazon_tag": request.args.get("amazon_tag", "").strip() or config.AMAZON_ASSOCIATE_TAG,
+        "allow_amazon": str(request.args.get("allow_amazon", "1")).lower() in {"1", "true", "on"},
+        "allow_earnkaro": str(request.args.get("allow_earnkaro", "1")).lower() in {"1", "true", "on"},
+        "allow_hypd": str(request.args.get("allow_hypd", "1")).lower() in {"1", "true", "on"},
+        "only_amazon": str(request.args.get("only_amazon", "0")).lower() in {"1", "true", "on"},
+        "hypd_store_id": request.args.get("hypd_store_id", "").strip() or _effective_hypd_store_id(),
+    })
+    inf_id = request.args.get("inf_id", "").strip()
+    if inf_id.isdigit():
+        profile = db.get_influencer(int(inf_id))
+        if profile:
+            values["amazon_tag"] = str(profile.get("amazon_tag") or values["amazon_tag"])
+            values["hypd_store_id"] = (
+                str(profile.get("hypd_store_id") or "").strip() or values["hypd_store_id"]
+            )
+    return jsonify({"ok": True, "preview": _routing_preview(**_routing_arguments(values))})
 
 
 @app.route("/bulk-import", methods=["POST"])
@@ -2058,6 +2386,14 @@ def influencer_detail(inf_id):
     demo_approval = link_router.render_for_influencer(demo_sample, inf["amazon_tag"], role="approval")
     demo_broadcast = link_router.render_for_influencer(demo_sample, inf["amazon_tag"], role="broadcast")
 
+    routing_arguments = dict(
+        amazon_tag=inf.get("amazon_tag") or config.AMAZON_ASSOCIATE_TAG,
+        allow_amazon=bool(inf.get("allow_amazon", 1)),
+        allow_earnkaro=bool(inf.get("allow_earnkaro", 1)),
+        allow_hypd=bool(inf.get("allow_hypd", 1)),
+        only_amazon=bool(inf.get("only_amazon", 0)),
+        hypd_store_id=str(inf.get("hypd_store_id") or "").strip() or _effective_hypd_store_id(),
+    )
     return render_template(
         "influencer.html", inf=inf, channels=channels,
         wa_sessions=wa_sessions, stats=stats, wa_key=wa_key,
@@ -2065,6 +2401,8 @@ def influencer_detail(inf_id):
         poll_targets=poll_targets, poll_target_counts=poll_target_counts,
         poll_history=poll_history,
         demo_approval=demo_approval, demo_broadcast=demo_broadcast,
+        routing_broadcast=_routing_preview(**routing_arguments),
+        routing_approval=_routing_preview(**routing_arguments, channel_role="approval"),
         current_hypd_store=_effective_hypd_store_id(),
         current_ek_pubid=_effective_earnkaro_publisher_id(),
         earnkaro_configured=bool(

@@ -7,7 +7,10 @@
     <h1>📊 Dashboard</h1>
     <p class="hint">Delivery, source, and system status at a glance. Creator and integration setup is kept in the separate Setup Center.</p>
   </div>
-  <a class="btn btn-primary" href="{{ url_for('setup') }}">⚙️ Open Setup Center</a>
+  <div style="display:flex; gap:10px; flex-wrap:wrap;">
+    <a class="btn btn-primary" href="{{ url_for('easy_setup') }}">⚡ Easy Setup</a>
+    <a class="btn btn-secondary" href="{{ url_for('setup') }}">⚙️ Open Setup Center</a>
+  </div>
 </section>
 
 {% if source_count == 0 %}

@@ -106,6 +106,23 @@
   </div>
 </section>
 
+<section class="card" style="border:1px solid #1e3a8a; padding:14px; margin-top:14px;">
+  <h2 style="margin:0 0 4px; font-size:15px; color:#e2e8f0;">🧭 What gets posted, link by link</h2>
+  <p class="hint" style="margin-top:0;">Amazon → only this creator's Amazon tag · EarnKaro → Flipkart/Myntra/Ajio and other merchants · HYPD → Meesho.</p>
+
+  <div class="routing-tabs">
+    <details open>
+      <summary><b>📢 Main / broadcast channels</b> <span class="hint">{{ routing_broadcast.summary }}</span></summary>
+      {% with preview = routing_broadcast %}{% include "_routing_preview.html" %}{% endwith %}
+    </details>
+    <details>
+      <summary><b>🛡️ Approval channels</b> <span class="hint">{{ routing_approval.summary }}</span></summary>
+      {% with preview = routing_approval %}{% include "_routing_preview.html" %}{% endwith %}
+    </details>
+  </div>
+  <p class="hint">Want to change this fast? Use <a class="text-link" href="{{ url_for('easy_setup') }}">⚡ Easy Setup</a> — same name, new channels or switches, no duplicate creator.</p>
+</section>
+
 <!-- INFLUENCER PROFILE EDIT FORM -->
 <section class="card" style="border: 1px solid #4338ca; background: #13172c;">
   <div style="display:flex; justify-content:space-between; align-items:center;">

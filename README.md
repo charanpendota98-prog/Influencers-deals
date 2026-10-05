@@ -275,6 +275,36 @@ For a small, trusted set of devices, use Tailscale Serve rather than a public IP
 
 Tailscale Serve is tailnet-only; Funnel is public internet exposure. See [Tailscale Serve docs](https://tailscale.com/docs/reference/tailscale-cli/serve). To remove the HTTPS handler, run `sudo tailscale serve --https=443 off`.
 
+### ⚡ Easy Setup — one screen, most easy
+
+Open **⚡ Easy** in the header (or `/easy-setup`). One form sets up a creator end
+to end, and the same rule the switches promise is the rule the pipeline follows:
+
+**Amazon → only Amazon · EarnKaro → the other merchants · HYPD → Meesho.**
+
+1. **Creator** — name + that creator's own Amazon Associate tag.
+2. **Channels** — 🛡️ *approval* channel and 📢 *main* channel. Paste an existing
+   `@username` or a `t.me/…` link. Nothing is created or joined here — the hub
+   only posts to channels the connected account can already post in.
+3. **Three switches** (all on by default, they can run together):
+   * 📦 **Amazon** — Amazon links get that creator's tag. Nothing else touches them.
+   * 💰 **EarnKaro** — Flipkart, Shopsy, Myntra, Ajio, Nykaa, Croma, TataCliq…
+     become EarnKaro links (needs the EarnKaro key in **Vault & Sources**).
+   * 🛍️ **HYPD (Meesho)** — HYPD affiliate links (`hypd.store/…/afflink/…`) are
+     retagged to that creator's store. A raw `meesho.com` link cannot be minted
+     into an affiliate link yet, so it is posted as-is.
+   * 🔥 **Only Amazon (strict)** — post Amazon deals only; the other two are off.
+4. **Save & start posting** — both channels are saved `ready`, the creator is
+   activated, and the page shows exactly what each kind of link becomes.
+
+The routing table is live: flip a switch and see the outcome before saving.
+Approval channels always render Amazon-only native links with the
+`#ad (paid link)` disclosure; main channels post every network you switched on.
+Running Easy Setup again with an existing creator name **updates** that creator
+instead of creating a duplicate. Deals keep coming from the shared source list —
+if none are configured yet, Easy Setup offers the recommended loot catalog in one
+click, and every creator you add starts receiving them automatically.
+
 ## Onboarding an influencer (production)
 
 1. `add-influencer "Ravi" --tag <creator-tag>` to save the influencer's own Associate tag. Omitting `--tag` uses configured `mama086-21` only as a fallback.

@@ -755,3 +755,111 @@ button[aria-disabled="true"] {
   .source-pool-row form { flex: 1; }
   .source-pool-row button { width: 100%; }
 }
+
+/* ---------- Easy Setup ---------- */
+.easy-form { display: grid; gap: 16px; margin-top: 18px; }
+.easy-card {
+  background: #0d1322;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 16px;
+}
+.easy-card > h2 { margin: 0 0 12px; font-size: 16px; color: #e2e8f0; }
+.easy-field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.easy-field { display: grid; gap: 5px; margin-top: 10px; }
+.easy-field > span { font-size: 12px; font-weight: 700; color: #cbd5e1; }
+.easy-field small { color: #94a3b8; font-size: 11px; line-height: 1.4; }
+.easy-switches { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.easy-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: #0b1120;
+  cursor: pointer;
+}
+.easy-switch:hover { border-color: #38bdf8; }
+.easy-switch input { margin-top: 3px; }
+.easy-switch-body { display: grid; gap: 3px; }
+.easy-switch-body strong { color: #e2e8f0; font-size: 14px; }
+.easy-switch-body small { color: #94a3b8; font-size: 11px; line-height: 1.4; }
+.easy-strict {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px dashed #b45309;
+  border-radius: 10px;
+  background: rgba(66, 32, 6, 0.5);
+  color: #fde68a;
+  font-size: 13px;
+}
+.easy-advanced { margin-top: 12px; }
+.easy-advanced > summary { cursor: pointer; color: #94a3b8; font-size: 12px; }
+.easy-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.easy-result {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid #10b981;
+  border-radius: 12px;
+  background: #052e25;
+  color: #a7f3d0;
+}
+.easy-result > h2 { margin: 0 0 12px; font-size: 17px; }
+.easy-result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.easy-result-grid > div {
+  background: rgba(6, 78, 59, 0.6);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 2px;
+}
+.easy-result-grid span { font-size: 11px; color: #6ee7b7; }
+.easy-result-list { margin: 12px 0 14px; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+.easy-result-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.flash-stack { display: grid; gap: 8px; margin-top: 14px; }
+.flash { padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+.flash-error { border: 1px solid #ef4444; background: #450a0a; color: #fecaca; }
+
+/* ---------- Routing preview table ---------- */
+.routing-summary {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #0b1120;
+  border: 1px solid #1e3a8a;
+  color: #bfdbfe;
+  font-size: 13px;
+}
+.routing-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+.routing-table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+  border-bottom: 1px solid #1e293b;
+  padding: 6px 8px;
+}
+.routing-table td { padding: 10px 8px; border-bottom: 1px solid #131c2e; vertical-align: top; }
+.routing-table code { display: block; font-size: 11px; color: #7dd3fc; word-break: break-all; }
+.routing-result { color: #86efac !important; }
+.routing-note { display: block; font-size: 11px; color: #94a3b8; margin-top: 4px; line-height: 1.5; }
+.routing-note.is-warn { color: #fde68a; margin-top: 10px; }
+.routing-row.is-off td { opacity: 0.75; }
+.routing-row.is-off .routing-result { display: none; }
+.routing-row.is-warn .routing-result { color: #fde68a !important; }
+.routing-tabs { display: grid; gap: 10px; margin-top: 10px; }
+.routing-tabs > details {
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #0b1120;
+}
+.routing-tabs > details > summary { cursor: pointer; font-size: 13px; }
+@media (max-width: 640px) {
+  .routing-table th, .routing-table td { padding: 8px 4px; font-size: 11px; }
+}
