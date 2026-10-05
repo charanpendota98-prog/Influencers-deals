@@ -118,6 +118,13 @@ MEESHO_SHORT_LINK_BASE_URL = _env("MEESHO_SHORT_LINK_BASE_URL", "").rstrip("/")
 # LehLah short redirects stay disabled until your account is approved and an
 # operator explicitly enables this setting.
 LEHLAH_SHORTLINKS_ENABLED = _bool("LEHLAH_SHORTLINKS_ENABLED", False)
+# HYPD cannot turn a raw meesho.com product URL into an affiliate link, so that
+# deal would post for free. With this fallback the raw link is sent to EarnKaro
+# instead (conversion is verified like any other merchant link).
+MEESHO_EARNKARO_FALLBACK = _bool("MEESHO_EARNKARO_FALLBACK", True)
+# Hold back deals whose links would all post without our attribution. Volume vs
+# earnings trade-off, so the operator decides; the Money Radar recommends it.
+ONLY_EARNING_DEALS = _bool("ONLY_EARNING_DEALS", False)
 
 # ----- EarnKaro (optional configured network for eligible non-Amazon links) -----
 EARNKARO_API_KEY = _env("EARNKARO_API_KEY")

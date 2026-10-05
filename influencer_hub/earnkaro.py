@@ -173,10 +173,16 @@ def parse_ek_response(body: str, expected_pubid: str | None = None) -> str | Non
     return result
 
 
-async def convert_one(session: aiohttp.ClientSession, url: str) -> str:
-    # Amazon has its own Associates tag; raw Meesho links belong to HYPD. Keep
-    # direct callers from accidentally sending either category to EarnKaro.
-    if link_router.classify_url(url) != "merchant":
+async def convert_one(session: aiohttp.ClientSession, url: str,
+                      include_meesho: bool = False) -> str:
+    # Amazon has its own Associates tag, so it never goes to EarnKaro. Raw
+    # Meesho normally belongs to HYPD, but HYPD cannot mint an affiliate link
+    # from a raw product URL — when the operator enables the fallback we try
+    # EarnKaro for it instead of posting a link that earns nothing.
+    kind = link_router.classify_url(url)
+    if kind == "meesho" and not include_meesho:
+        return url
+    if kind not in {"merchant", "meesho"}:
         return url
 
     # Dynamically check global settings from DB first (supports secret admin dashboard update)
@@ -243,21 +249,28 @@ async def convert_one(session: aiohttp.ClientSession, url: str) -> str:
     return url
 
 
-async def convert_links(urls: set[str]) -> dict[str, str]:
-    """Convert supported EarnKaro merchants only; Amazon and Meesho stay separate."""
+async def convert_links(urls: set[str], include_meesho: bool = False) -> dict[str, str]:
+    """Convert supported EarnKaro merchants; Amazon stays separate.
+
+    Meesho is included only when ``include_meesho`` is set (the Meesho ->
+    EarnKaro fallback), otherwise it is left to the HYPD route.
+    """
+    allowed = {"merchant", "meesho"} if include_meesho else {"merchant"}
     urls = {
         url for url in urls
-        if url and link_router.classify_url(url) == "merchant"
+        if url and link_router.classify_url(url) in allowed
     }
     if not urls:
         return {}
     async with aiohttp.ClientSession() as session:
-        results = await asyncio.gather(*(convert_one(session, u) for u in urls))
+        results = await asyncio.gather(
+            *(convert_one(session, u, include_meesho=include_meesho) for u in urls)
+        )
     return dict(zip(urls, results))
 
 
-def convert_links_sync(urls: set[str]) -> dict[str, str]:
-    return asyncio.run(convert_links(urls))
+def convert_links_sync(urls: set[str], include_meesho: bool = False) -> dict[str, str]:
+    return asyncio.run(convert_links(urls, include_meesho=include_meesho))
 
 
 async def verify_earnkaro(test_url: str = "https://www.flipkart.com/p/itmEXAMPLE12345") -> dict:

@@ -249,6 +249,7 @@ def migrate() -> None:
             ("custom_button_enabled", "INTEGER NOT NULL DEFAULT 0"),
             ("custom_button_text", "TEXT NOT NULL DEFAULT ''"),
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
+            ("min_deal_tier", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in inf_cols:
                 try:
@@ -279,6 +280,7 @@ def migrate() -> None:
             ("custom_button_enabled", "INTEGER NOT NULL DEFAULT 0"),
             ("custom_button_text", "TEXT NOT NULL DEFAULT ''"),
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
+            ("min_deal_tier", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
                 try:
@@ -306,6 +308,15 @@ def _now() -> str:
 
 # ----------------------------- influencers -----------------------------
 
+DEAL_TIERS = {"S", "A", "B", "C"}
+
+
+def _clean_deal_tier(value: str | None) -> str:
+    """Normalise a quality tier; empty string means "use the global default"."""
+    tier = str(value or "").strip().upper()
+    return tier if tier in DEAL_TIERS else ""
+
+
 def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
                    handle: str = "", notes: str = "",
                    use_dummy_sources: bool = False,
@@ -315,7 +326,8 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
                    bitly_api_key: str = "", categories: str = "",
                    posting_schedule: str = "", only_amazon: bool = False,
                    allow_amazon: bool = True, allow_earnkaro: bool = True,
-                   allow_hypd: bool = True, hypd_store_id: str | None = None) -> int:
+                   allow_hypd: bool = True, hypd_store_id: str | None = None,
+                   min_deal_tier: str = "") -> int:
     # Ensure schema exists for fresh DBs (pytest tmp_path without explicit init)
     try:
         init()
@@ -336,8 +348,8 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
         )
         cur = con.execute(
             "INSERT INTO influencers "
-            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, min_deal_tier) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), handle.strip(), (amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG,
              notes.strip(), 1 if _as_bool(use_dummy_sources) else 0,
              1 if _as_bool(telegram_enabled, default=True) else 0,
@@ -347,7 +359,7 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
              1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0,
              1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0,
              1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
-             effective_hypd_store_id),
+             effective_hypd_store_id, _clean_deal_tier(min_deal_tier)),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -366,7 +378,8 @@ def update_influencer(influencer_id: int, name: str | None = None,
                       custom_button_enabled: bool | None = None,
                       custom_button_text: str | None = None,
                       custom_button_url: str | None = None,
-                      notes: str | None = None, active: bool | None = None) -> None:
+                      notes: str | None = None, active: bool | None = None,
+                      min_deal_tier: str | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -428,6 +441,9 @@ def update_influencer(influencer_id: int, name: str | None = None,
         if notes is not None:
             updates.append("notes=?")
             params.append(notes.strip())
+        if min_deal_tier is not None:
+            updates.append("min_deal_tier=?")
+            params.append(_clean_deal_tier(min_deal_tier))
         if active is not None:
             updates.append("active=?")
             params.append(1 if _as_bool(active) else 0)
@@ -539,7 +555,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 hypd_store_id: str | None = None,
                 custom_button_enabled: bool = False,
                 custom_button_text: str = "",
-                custom_button_url: str = "") -> int:
+                custom_button_url: str = "",
+                min_deal_tier: str = "") -> int:
     con = _connect()
     try:
         profile = con.execute(
@@ -554,8 +571,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
             or config.HYPD_STORE_ID
         )
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url, min_deal_tier) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
              amazon_override_tag.strip(), 1 if _as_bool(strip_amazon, unrestricted=False) else 0, price_filter.strip(), allowed_sources.strip(),
              wa_session_key.strip(), bitly_api_key.strip(), categories.strip(), posting_schedule.strip(),
@@ -564,7 +581,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
              1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0,
              1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
              effective_hypd_store_id,
-             1 if _as_bool(custom_button_enabled) else 0, custom_button_text.strip(), custom_button_url.strip()),
+             1 if _as_bool(custom_button_enabled) else 0, custom_button_text.strip(), custom_button_url.strip(),
+             _clean_deal_tier(min_deal_tier)),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -590,7 +608,8 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            hypd_store_id: str | None = None,
                            custom_button_enabled: bool | None = None,
                            custom_button_text: str | None = None,
-                           custom_button_url: str | None = None) -> None:
+                           custom_button_url: str | None = None,
+                           min_deal_tier: str | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -655,6 +674,9 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if custom_button_url is not None:
             updates.append("custom_button_url=?")
             params.append(custom_button_url.strip())
+        if min_deal_tier is not None:
+            updates.append("min_deal_tier=?")
+            params.append(_clean_deal_tier(min_deal_tier))
         if updates:
             params.append(channel_id)
             con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)
@@ -1588,6 +1610,30 @@ def get_recent_posted_deals(channel_id: int, hours: int = 1) -> list[dict]:
             "ORDER BY id DESC",
             (channel_id, cutoff)).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def recent_posted_texts(days: int = 7, limit: int = 2000) -> list[dict]:
+    """Return the rendered text of recent posted deals for commission auditing."""
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        window = max(1, int(days))
+    except (TypeError, ValueError):
+        window = 7
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=window)
+    ).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT influencer_id, channel_id, deal_text FROM posts "
+            "WHERE status='posted' AND COALESCE(deal_text,'') <> '' AND posted_at >= ? "
+            "ORDER BY id DESC LIMIT ?",
+            (cutoff, int(limit)),
+        ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         con.close()
 

@@ -305,6 +305,43 @@ instead of creating a duplicate. Deals keep coming from the shared source list �
 if none are configured yet, Easy Setup offers the recommended loot catalog in one
 click, and every creator you add starts receiving them automatically.
 
+### 💰 Money Radar — stop posting deals that pay nothing
+
+Routing a link correctly is not the same as earning on it. A post can carry a
+link that pays zero: a raw `meesho.com` URL, an unconverted Flipkart link, or an
+Amazon link tagged for somebody else. **💰 Money** (`/money`) reads the deals we
+actually posted and reports, per creator and per reason, how many links carried
+our attribution and how many leaked.
+
+It counts **attribution, not rupees** — network approval, cookies and
+cancellations are outside what any link inspection can promise, so the page
+never shows an earnings figure.
+
+| State | What it means |
+| --- | --- |
+| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link with our publisher · LehLah · our own `/amazon/` and `/m/` short links |
+| 🔴 Leak | Amazon tagged for someone else (or untagged) · HYPD on another store · EarnKaro for another publisher · raw merchant with no EarnKaro conversion · raw Meesho |
+| ⚪ Neutral | Informational links, and generic short links whose attribution sits behind the redirect |
+
+Two switches turn the findings into money (both password-confirmed like every
+other setup change):
+
+* **Meesho → EarnKaro fallback** *(on by default)* — HYPD owns Meesho but cannot
+  mint an affiliate link from a raw `meesho.com` product URL, so that deal posts
+  for free. With this on, the raw URL goes to EarnKaro, which runs a Meesho
+  programme, and the deal converts instead of leaking. Meesho still never goes
+  through generic Bitly shortening, and the source URL is kept whenever EarnKaro
+  returns nothing.
+* **Only post deals that earn** *(off by default — your call)* — holds back a
+  deal when none of its links would carry our attribution
+  (`skipped:no_commission_link`). It trades volume for earnings, so it starts
+  off and the Radar recommends it only once it has seen free posts.
+
+Per-creator and per-channel **⭐ Minimum Deal Quality** (S/A/B/C, resolved
+channel → creator → global) keeps a channel's attention for the deals worth a
+click. The dashboard home page shows the same 7-day coverage number with a link
+into the full report.
+
 ## Onboarding an influencer (production)
 
 1. `add-influencer "Ravi" --tag <creator-tag>` to save the influencer's own Associate tag. Omitting `--tag` uses configured `mama086-21` only as a fallback.

@@ -155,6 +155,17 @@
       <span class="hint" style="font-size:11px;">Multiple keys supported with automatic failover</span>
     </div>
     <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#a5b4fc;">⭐ Minimum Deal Quality</label>
+      <select name="min_deal_tier" style="width: 100%; font-weight:bold; font-size:13px; padding:6px; background:#111c33; border:1px solid #4f46e5; color:#c7d2fe;">
+        <option value="" {{ 'selected' if not inf.min_deal_tier else '' }}>Inherit global setting</option>
+        <option value="S" {{ 'selected' if inf.min_deal_tier == 'S' else '' }}>S — only the very best deals</option>
+        <option value="A" {{ 'selected' if inf.min_deal_tier == 'A' else '' }}>A — strong deals</option>
+        <option value="B" {{ 'selected' if inf.min_deal_tier == 'B' else '' }}>B — decent deals</option>
+        <option value="C" {{ 'selected' if inf.min_deal_tier == 'C' else '' }}>C — post everything</option>
+      </select>
+      <span class="hint" style="font-size:10px; color:#c7d2fe;">Weaker deals are held back so the channel's attention goes to the ones worth a click. Channels can override this.</span>
+    </div>
+    <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde047;">🛡️ Only Amazon Override</label>
       <select name="only_amazon" style="width: 100%; font-weight:bold; font-size:13px; padding:6px; background:#1e1b4b; border:1px solid #eab308; color:#fef08a;">
         <option value="0" {{ 'selected' if not inf.only_amazon else '' }}>Use selected networks independently</option>
@@ -388,6 +399,13 @@
             <input form="channel-update-{{ c.id }}" name="categories" value="{{ c.categories or '' }}" placeholder="clothing,electronics (All)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Allowed categories" />
             <input form="channel-update-{{ c.id }}" name="posting_schedule" value="{{ c.posting_schedule or '' }}" placeholder="06:00-02:00 (24/7)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Timing schedule" />
             <input form="channel-update-{{ c.id }}" name="allowed_sources" value="{{ c.allowed_sources or '' }}" placeholder="powerloot (All Src)" style="font-size: 10px; padding: 2px 4px; width: 110px; font-family: monospace;" title="Specific deal source for this channel" />
+            <select form="channel-update-{{ c.id }}" name="min_deal_tier" style="font-size: 10px; padding: 2px 4px; width: 110px; margin-top: 3px;" title="Minimum deal quality for this channel">
+              <option value="" {{ 'selected' if not c.min_deal_tier else '' }}>Quality: inherit</option>
+              <option value="S" {{ 'selected' if c.min_deal_tier == 'S' else '' }}>Quality: S</option>
+              <option value="A" {{ 'selected' if c.min_deal_tier == 'A' else '' }}>Quality: A</option>
+              <option value="B" {{ 'selected' if c.min_deal_tier == 'B' else '' }}>Quality: B</option>
+              <option value="C" {{ 'selected' if c.min_deal_tier == 'C' else '' }}>Quality: C</option>
+            </select>
           </td>
           <td>
             <div>

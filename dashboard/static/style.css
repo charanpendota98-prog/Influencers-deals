@@ -863,3 +863,39 @@ button[aria-disabled="true"] {
 @media (max-width: 640px) {
   .routing-table th, .routing-table td { padding: 8px 4px; font-size: 11px; }
 }
+
+/* ---------- Money Radar ---------- */
+.money-days { display: flex; gap: 8px; flex-wrap: wrap; }
+.money-day { padding: 7px 13px; border: 1px solid #334155; border-radius: 999px; color: #cbd5e1; background: #0b1120; font-size: 13px; font-weight: 750; text-decoration: none; }
+.money-day:hover, .money-day:focus-visible { border-color: #60a5fa; color: #fff; }
+.money-day.is-active { border-color: #2563eb; color: #fff; background: #1d4ed8; }
+.money-card { margin-top: 20px; }
+.money-good { color: #34d399; }
+.money-warn { color: #fbbf24; }
+.money-bad { color: #f87171; }
+.money-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 18px; }
+.money-actions, .money-switches { display: grid; gap: 11px; }
+.money-action { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid #334155; border-radius: 13px; background: #0b1120; }
+.money-action.is-high { border-color: #991b1b; background: linear-gradient(145deg, #1a0f14, #0b1120); }
+.money-action.is-medium { border-color: #a16207; }
+.money-action.is-ok { border-color: #047857; }
+.money-action-body, .money-switch-body { display: grid; flex: 1; min-width: 0; gap: 5px; }
+.money-action-body strong, .money-switch-body strong { color: #e2e8f0; font-size: 14px; }
+.money-action-body span, .money-switch-body span { color: #94a3b8; font-size: 12.5px; line-height: 1.55; }
+.money-action-form { margin: 0; }
+.money-action-form button { white-space: nowrap; }
+.money-switch { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid #26354f; border-radius: 13px; background: #0b1120; }
+.money-switch.is-on { border-color: #047857; background: linear-gradient(145deg, #06231c, #0b1120); }
+.money-switch-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.money-switch-state { padding: 3px 9px; border-radius: 999px; color: #cbd5e1; background: #334155; font-size: 10px; font-weight: 850; letter-spacing: .05em; }
+.money-switch.is-on .money-switch-state { color: #a7f3d0; background: #064e3b; }
+.money-table { width: 100%; border-collapse: collapse; }
+.money-table th, .money-table td { padding: 9px 8px; border-bottom: 1px solid #1e293b; text-align: left; font-size: 13px; color: #cbd5e1; vertical-align: top; }
+.money-table th { color: #94a3b8; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
+.money-table tr:last-child td { border-bottom: 0; }
+.money-num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 750; white-space: nowrap; }
+@media (max-width: 640px) {
+  .money-action, .money-switch { flex-direction: column; align-items: stretch; }
+  .money-action-form button { width: 100%; }
+  .money-grid { grid-template-columns: 1fr; }
+}

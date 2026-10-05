@@ -109,6 +109,7 @@ REAUTH_REQUIRED_ENDPOINTS = frozenset({
     "bulk_import", "delete_channel", "undo_channel_delete", "easy_setup",
     "toggle_influencer_active",
     "toggle_channel_status", "onboard", "set_flags", "onboard_tg",
+    "toggle_money_switch",
     "onboard_wa", "create_tg", "pair_wa", "create_group",
     "wa_connect_chat", "create_newsletter", "send_test_message", "send_poll",
 })
@@ -1038,6 +1039,7 @@ def index():
         stats=stats,
         vm=vm,
         insights=insights,
+        money=_money_summary(),
         source_count=len(sources),
         active_source_count=active_sources,
     )
@@ -1072,6 +1074,108 @@ def setup():
         imported=request.args.get("imported", type=int),
         import_error=request.args.get("import_error", ""),
     )
+
+
+# ---------- Money Radar: where commission leaks out of posted deals ----------
+# Each switch is a global setting; the pipeline reads it on every render.
+MONEY_SWITCHES: dict[str, tuple[str, str]] = {
+    "meesho_earnkaro_fallback": (
+        "Meesho → EarnKaro fallback",
+        "HYPD cannot turn a raw meesho.com product URL into an affiliate link, "
+        "so that deal currently posts for free. With this on, those links go to "
+        "EarnKaro, which runs a Meesho programme, instead of leaking.",
+    ),
+    "only_earning_deals": (
+        "Only post deals that earn",
+        "Hold back a deal when none of its links would carry our attribution. "
+        "Fewer posts, but no post goes out that pays nothing.",
+    ),
+}
+
+
+def _money_switch_is_on(key: str, default: bool) -> bool:
+    value = db.get_global_setting(key, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _money_summary() -> dict | None:
+    """Cheap 7-day attribution summary for the dashboard card."""
+    from influencer_hub import money_radar
+
+    try:
+        return money_radar.report(days=7, limit=200)["totals"]
+    except Exception:  # pragma: no cover - the dashboard must still load
+        import logging
+        logging.getLogger(__name__).exception("money summary failed")
+        return None
+
+
+@app.route("/money")
+def money_dashboard():
+    """Report how much of what we posted actually carried our attribution."""
+    from influencer_hub import money_radar
+
+    try:
+        days = int(request.args.get("days", 7))
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 90))
+
+    defaults = {
+        "meesho_earnkaro_fallback": bool(config.MEESHO_EARNKARO_FALLBACK),
+        "only_earning_deals": bool(config.ONLY_EARNING_DEALS),
+    }
+    switches = [
+        {
+            "key": key,
+            "label": label,
+            "detail": detail,
+            "on": _money_switch_is_on(key, defaults[key]),
+            "default_on": defaults[key],
+        }
+        for key, (label, detail) in MONEY_SWITCHES.items()
+    ]
+
+    try:
+        data = money_radar.report(days=days)
+    except Exception:  # pragma: no cover - the page must still open
+        import logging
+        logging.getLogger(__name__).exception("money radar report failed")
+        data = {
+            "days": days,
+            "totals": {"posts": 0, "links": 0, "earning": 0, "leak": 0,
+                       "monetisable": 0, "clean_posts": 0,
+                       "zero_commission_posts": 0, "coverage_pct": 100},
+            "by_reason": [],
+            "creators": [],
+            "suggestions": [],
+        }
+
+    return render_template(
+        "money.html",
+        report=data,
+        days=days,
+        day_options=(1, 7, 30, 90),
+        switches=switches,
+        switched=request.args.get("switched", "").strip(),
+    )
+
+
+@app.route("/money/switch", methods=["POST"])
+def toggle_money_switch():
+    """Flip one Money Radar switch (password-confirmed, like every setup change)."""
+    key = (request.form.get("setting") or "").strip()
+    if key not in MONEY_SWITCHES:
+        flash("That money switch does not exist.", "warning")
+        return redirect(url_for("money_dashboard"))
+
+    wanted = str(request.form.get("value", "")).strip().lower() in {"1", "on", "true", "yes"}
+    db.set_global_setting(key, "on" if wanted else "off")
+    label = MONEY_SWITCHES[key][0]
+    flash(f"{label} turned {'ON' if wanted else 'OFF'}.", "success")
+    return redirect(url_for("money_dashboard", switched=key))
 
 
 @app.route("/api/setup/live-checks", methods=["POST"])
@@ -1447,6 +1551,10 @@ def update_profile(inf_id):
     btn_text = request.form.get("custom_button_text", "").strip()
     btn_url = request.form.get("custom_button_url", "").strip()
 
+    # Deal quality floor: an empty selection inherits the global setting.
+    min_deal_tier = request.form.get("min_deal_tier")
+    min_deal_tier = min_deal_tier.strip() if min_deal_tier is not None else None
+
     db.update_influencer(
         inf_id,
         name=name if name else None,
@@ -1467,6 +1575,7 @@ def update_profile(inf_id):
         custom_button_enabled=btn_enabled,
         custom_button_text=btn_text,
         custom_button_url=btn_url,
+        min_deal_tier=min_deal_tier,
         notes=notes if notes else None,
         active=active,
     )
@@ -1515,6 +1624,10 @@ def update_channel_route(channel_id):
     invite_link = None
     needs_test = False
 
+    # Deal quality floor for this channel; empty inherits the creator's value.
+    channel_min_tier = request.form.get("min_deal_tier")
+    channel_min_tier = channel_min_tier.strip() if channel_min_tier is not None else None
+
     if current_channel.get("platform") in {"whatsapp_group", "whatsapp_channel"}:
         if ident:
             destination, error = _resolve_whatsapp_destination(owner_id, ident)
@@ -1560,6 +1673,7 @@ def update_channel_route(channel_id):
         custom_button_enabled=btn_en,
         custom_button_text=btn_text,
         custom_button_url=btn_url,
+        min_deal_tier=channel_min_tier,
     )
     if needs_test:
         return redirect(url_for(
