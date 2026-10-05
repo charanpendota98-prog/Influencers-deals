@@ -13,6 +13,8 @@ wa_hub/media/
 # Secrets / local env and Telethon authorization material
 .env
 .env.local
+.dashboard_secret_key
+.dashboard_secret_key.*
 *.session
 *.session-journal
 *.session-wal

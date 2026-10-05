@@ -209,18 +209,138 @@ python -c 'import secrets; print(secrets.token_urlsafe(48))'  # Flask session si
 python -c 'import secrets; print(secrets.token_urlsafe(48))'  # WA_HUB_TOKEN; keep it private
 ```
 
-Set `DASHBOARD_ADMIN_PASSWORD` to the first value, `DASHBOARD_SECRET_KEY` to the second, `WA_HUB_TOKEN` to the third, plus `HUB_ENV=production`. The admin password must be at least 16 characters; the signing key must remain stable across restarts and workers. Leave `ADMIN_DELETE_PASSWORD` unset to reuse the dashboard password for destructive confirmations. Production mode enables Secure cookies. The dashboard and WhatsApp hub bind to loopback; the hub refuses production startup without its private token. Never expose ports 5000 or 8088 directly. `/healthz` is the sole unauthenticated health endpoint besides validated first-party affiliate redirects. Do not deploy publicly with missing/weak dashboard credentials.
+Set `DASHBOARD_ADMIN_PASSWORD` to the first value, `DASHBOARD_SECRET_KEY` to the second, `WA_HUB_TOKEN` to the third, plus `HUB_ENV=production`. The admin password must be at least 16 characters; the signing key must remain stable across restarts and workers. Leave `ADMIN_DELETE_PASSWORD` unset to reuse the dashboard password for destructive confirmations. Production mode enables Secure cookies on HTTPS requests (over plain HTTP the flag is dropped so sign-in still works), and the dashboard listens on `0.0.0.0:5000` so it is reachable on the VM IP — keep that port firewalled or fronted by HTTPS. The WhatsApp hub binds to loopback and refuses production startup without its private token. `/healthz` is the sole unauthenticated health endpoint besides validated first-party affiliate redirects. Do not deploy publicly with missing/weak dashboard credentials.
+
+### Setup password: asked once, then remembered
+
+Adding, saving and deleting channels (and every other sensitive setup change)
+is password-protected, but the password is only asked **once at the start of a
+work session**:
+
+1. The first *Connect Channel* / *Save* / *Remove* opens one confirmation dialog.
+2. After the correct password, setup stays **unlocked for 30 minutes of work**
+   (`DASHBOARD_SETUP_UNLOCK_SECONDS`, default `1800`). Every later add, save and
+   delete goes straight through — no second prompt.
+3. The window is idle-based: each confirmed change renews it, so an active
+   operator is never interrupted. It locks itself after 30 idle minutes, on
+   **Sign out**, or when you press **🔓 Unlocked · Lock now** in the header.
+
+If a form is submitted after the window expired, nothing is saved: the page
+returns with your typed values restored and asks for the password once. Channel
+removals keep a one-step **Undo** so a misclick is not permanent. The unlock is
+also bound to the IP that confirmed it (`DASHBOARD_SETUP_UNLOCK_BIND_IP=0` to
+disable behind a fixed-IP tunnel).
+
+Adding a channel validates the destination before saving: a Telegram
+`@username` (4-32 chars), a numeric channel id, or a private `t.me/+…` invite
+link. A duplicate destination for the same creator is updated in place instead
+of creating a second copy, and every result is reported on the page.
+
+### Reaching the dashboard on `http://<vm-ip>:5000`
+
+The systemd unit and `deploy/start_services.sh` bind Gunicorn to
+`0.0.0.0:5000`, so the dashboard answers on the VM's IP. That port must be
+opened twice — in the **OCI/VCN security list ingress rule** (source
+`0.0.0.0/0`, TCP, destination port 5000) *and* in the VM firewall
+(`sudo ufw allow 5000/tcp`) — and it must stay that way only if you accept
+plain HTTP. Preferred alternatives: restrict the ingress rule to your own IP,
+or terminate HTTPS in front of it and set `DASHBOARD_TRUST_PROXY=1`.
+
+```bash
+sudo ss -tlnp | grep 5000          # expect 0.0.0.0:5000 (not 127.0.0.1:5000)
+curl -I http://127.0.0.1:5000      # expect 302 → /login?next=/
+```
+
+Two failure modes look identical in the browser and are worth checking first:
+
+* **`POST /login` returns 400 in the logs** — the session cookie was rejected,
+  usually because each Gunicorn worker was signing sessions with a different
+  key. Set `DASHBOARD_SECRET_KEY` in `.env` (or leave it empty and let the app
+  persist a generated key in `DASHBOARD_SECRET_KEY_FILE`, mode `0600`), then
+  `sudo systemctl restart influencer-dashboard.service`.
+* **Sign-in works but every page bounces back to `/login`** — you are on plain
+  HTTP with `HUB_ENV=production`. The `Secure` cookie flag is now dropped
+  automatically on non-HTTPS requests, but a browser that already stored a
+  Secure cookie must be cleared once (or use HTTPS / `HUB_ENV=development` for
+  LAN-only use).
 
 ### Private phone/laptop access with Tailscale (no purchased domain)
 
 For a small, trusted set of devices, use Tailscale Serve rather than a public IP or Funnel:
 
 1. Install Tailscale on the `influencers` VM and only the chosen phones/laptops. Use separate Tailscale identities; turn on **Device Approval** in the admin console and approve only these devices. If the tailnet contains other devices, add an access policy that denies them access to this server.
-2. Enable MagicDNS and HTTPS certificates in Tailscale's DNS settings. Authenticate the VM, deploy the production dashboard so it answers on `127.0.0.1:5000`, and verify `/healthz` locally.
+2. Enable MagicDNS and HTTPS certificates in Tailscale's DNS settings. Authenticate the VM, deploy the production dashboard so it answers on `127.0.0.1:5000` (`--bind 127.0.0.1:5000` for this private-only setup), and verify `/healthz` locally.
 3. Run `sudo ./deploy/enable_tailscale_serve.sh`. It verifies the dashboard is healthy and loopback-only, checks that the WhatsApp hub is not listening on a public interface, then configures HTTPS Serve to proxy to the dashboard. It never enables Funnel or opens cloud firewall ports.
 4. Open the printed `https://<vm>.<tailnet>.ts.net` URL only from an approved device with Tailscale connected. Verify access from one approved device and denial from an unapproved device. Keep OCI ingress for 5000/8088 closed; with this private setup, no paid domain or public web port is needed.
 
 Tailscale Serve is tailnet-only; Funnel is public internet exposure. See [Tailscale Serve docs](https://tailscale.com/docs/reference/tailscale-cli/serve). To remove the HTTPS handler, run `sudo tailscale serve --https=443 off`.
+
+### ⚡ Easy Setup — one screen, most easy
+
+Open **⚡ Easy** in the header (or `/easy-setup`). One form sets up a creator end
+to end, and the same rule the switches promise is the rule the pipeline follows:
+
+**Amazon → only Amazon · EarnKaro → the other merchants · HYPD → Meesho.**
+
+1. **Creator** — name + that creator's own Amazon Associate tag.
+2. **Channels** — 🛡️ *approval* channel and 📢 *main* channel. Paste an existing
+   `@username` or a `t.me/…` link. Nothing is created or joined here — the hub
+   only posts to channels the connected account can already post in.
+3. **Three switches** (all on by default, they can run together):
+   * 📦 **Amazon** — Amazon links get that creator's tag. Nothing else touches them.
+   * 💰 **EarnKaro** — Flipkart, Shopsy, Myntra, Ajio, Nykaa, Croma, TataCliq…
+     become EarnKaro links (needs the EarnKaro key in **Vault & Sources**).
+   * 🛍️ **HYPD (Meesho)** — HYPD affiliate links (`hypd.store/…/afflink/…`) are
+     retagged to that creator's store. A raw `meesho.com` link cannot be minted
+     into an affiliate link yet, so it is posted as-is.
+   * 🔥 **Only Amazon (strict)** — post Amazon deals only; the other two are off.
+4. **Save & start posting** — both channels are saved `ready`, the creator is
+   activated, and the page shows exactly what each kind of link becomes.
+
+The routing table is live: flip a switch and see the outcome before saving.
+Approval channels always render Amazon-only native links with the
+`#ad (paid link)` disclosure; main channels post every network you switched on.
+Running Easy Setup again with an existing creator name **updates** that creator
+instead of creating a duplicate. Deals keep coming from the shared source list —
+if none are configured yet, Easy Setup offers the recommended loot catalog in one
+click, and every creator you add starts receiving them automatically.
+
+### 💰 Money Radar — stop posting deals that pay nothing
+
+Routing a link correctly is not the same as earning on it. A post can carry a
+link that pays zero: a raw `meesho.com` URL, an unconverted Flipkart link, or an
+Amazon link tagged for somebody else. **💰 Money** (`/money`) reads the deals we
+actually posted and reports, per creator and per reason, how many links carried
+our attribution and how many leaked.
+
+It counts **attribution, not rupees** — network approval, cookies and
+cancellations are outside what any link inspection can promise, so the page
+never shows an earnings figure.
+
+| State | What it means |
+| --- | --- |
+| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link with our publisher · LehLah · our own `/amazon/` and `/m/` short links |
+| 🔴 Leak | Amazon tagged for someone else (or untagged) · HYPD on another store · EarnKaro for another publisher · raw merchant with no EarnKaro conversion · raw Meesho |
+| ⚪ Neutral | Informational links, and generic short links whose attribution sits behind the redirect |
+
+Two switches turn the findings into money (both password-confirmed like every
+other setup change):
+
+* **Meesho → EarnKaro fallback** *(on by default)* — HYPD owns Meesho but cannot
+  mint an affiliate link from a raw `meesho.com` product URL, so that deal posts
+  for free. With this on, the raw URL goes to EarnKaro, which runs a Meesho
+  programme, and the deal converts instead of leaking. Meesho still never goes
+  through generic Bitly shortening, and the source URL is kept whenever EarnKaro
+  returns nothing.
+* **Only post deals that earn** *(off by default — your call)* — holds back a
+  deal when none of its links would carry our attribution
+  (`skipped:no_commission_link`). It trades volume for earnings, so it starts
+  off and the Radar recommends it only once it has seen free posts.
+
+Per-creator and per-channel **⭐ Minimum Deal Quality** (S/A/B/C, resolved
+channel → creator → global) keeps a channel's attention for the deals worth a
+click. The dashboard home page shows the same 7-day coverage number with a link
+into the full report.
 
 ## Onboarding an influencer (production)
 
@@ -237,7 +357,7 @@ Tailscale Serve is tailnet-only; Funnel is public internet exposure. See [Tailsc
    channels. Amazon links use that creator's saved tag; dedup is per
    (influencer, channel, deal).
 
-All of this is also doable from the **dashboard**. For local development only, run `cd dashboard && PYTHONPATH=.. python app.py` (binds `0.0.0.0:5000`; do not expose this development server publicly). Production uses Gunicorn under systemd, bound to loopback behind HTTPS.
+All of this is also doable from the **dashboard**. For local development only, run `cd dashboard && PYTHONPATH=.. python app.py` (binds `0.0.0.0:5000`; do not expose this development server publicly). Production uses Gunicorn under systemd on `0.0.0.0:5000`; keep the port restricted to your own IP, or put HTTPS in front of it.
 
 ### One-shot & self-serve onboarding
 - **Self-serve page:** `/onboard` saves the profile, Amazon tag, and selected

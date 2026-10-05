@@ -16,6 +16,7 @@ import asyncio
 import atexit
 import hmac
 import json
+import os
 import re
 import secrets
 import sys
@@ -25,7 +26,7 @@ import urllib.request
 from collections import defaultdict
 from datetime import timedelta
 from pathlib import Path
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for, session
 
@@ -33,12 +34,47 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
-    config, db, hypd_shortlinks, lehlah_shortlinks, polls, puller,
-    telegram_ops, whatsapp_client,
+    config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
+    puller, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
+def _running_under_pytest() -> bool:
+    """True inside a pytest run, where no key file should ever be written."""
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
+def _resolve_dashboard_secret_key() -> str:
+    """Return one stable session-signing key shared by every Gunicorn worker.
+
+    Without a shared key, worker A signs a session that worker B rejects, so a
+    login page rendered by A always fails its CSRF check on B (HTTP 400) and
+    the operator is bounced back to /login forever. The key is taken from
+    DASHBOARD_SECRET_KEY when set; otherwise a generated key is persisted in a
+    private 0600 file that all workers on this host read.
+    """
+    if config.DASHBOARD_SECRET_KEY:
+        return config.DASHBOARD_SECRET_KEY
+    if _running_under_pytest():
+        return secrets.token_hex(32)
+    path = Path(config.DASHBOARD_SECRET_KEY_FILE)
+    try:
+        if path.exists():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        # No key yet: create one so every worker (and every restart) agrees.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        generated = secrets.token_hex(32)
+        descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(generated)
+        return generated
+    except OSError:
+        return secrets.token_hex(32)
+
+
 app = Flask(__name__)
-app.secret_key = config.DASHBOARD_SECRET_KEY or secrets.token_hex(32)
+app.secret_key = _resolve_dashboard_secret_key()
 app.config.update(
     SESSION_COOKIE_NAME="influencer_hub_session",
     SESSION_COOKIE_HTTPONLY=True,
@@ -47,17 +83,33 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
     MAX_CONTENT_LENGTH=10 * 1024 * 1024,
 )
+if config.DASHBOARD_TRUST_PROXY:
+    # One trusted reverse-proxy hop (HTTPS termination) so request.is_secure
+    # and the client IP stay correct behind nginx/Caddy/Tailscale.
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
 _LOGIN_FAILURES: dict[str, list[float]] = defaultdict(list)
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES = 5
-REAUTH_WINDOW_SECONDS = 90
+# One password confirmation unlocks every sensitive setup change below for a
+# rolling idle window (see config.DASHBOARD_SETUP_UNLOCK_SECONDS). The first
+# change asks for the password; the rest of the session does not ask again
+# until the dashboard has been idle (or is locked manually).
+DEFAULT_SETUP_UNLOCK_SECONDS = 30 * 60
+MIN_SETUP_UNLOCK_SECONDS = 60
+SETUP_UNLOCK_AT_KEY = "_setup_unlock_at"
+SETUP_UNLOCK_IP_KEY = "_setup_unlock_ip"
+UNDO_CHANNEL_KEY = "_undo_channel"
 REAUTH_REQUIRED_ENDPOINTS = frozenset({
     "seed_default_sources", "add_deal_source", "delete_deal_source",
     "toggle_deal_source", "update_global_settings", "quick_add",
     "update_profile", "update_channel_route", "add_manual_channel",
-    "bulk_import", "delete_channel", "toggle_influencer_active",
+    "bulk_import", "delete_channel", "undo_channel_delete", "easy_setup",
+    "toggle_influencer_active",
     "toggle_channel_status", "onboard", "set_flags", "onboard_tg",
+    "toggle_money_switch",
     "onboard_wa", "create_tg", "pair_wa", "create_group",
     "wa_connect_chat", "create_newsletter", "send_test_message", "send_poll",
 })
@@ -359,11 +411,121 @@ def _get_csrf_token() -> str:
     return token
 
 
+# --------------------------------------------------------------------------
+# Setup unlock: one password confirmation, then a rolling idle window.
+# --------------------------------------------------------------------------
+def _setup_unlock_window_seconds() -> int:
+    """Length of the unlock window, configurable and clamped to sane values."""
+    try:
+        configured = int(getattr(config, "DASHBOARD_SETUP_UNLOCK_SECONDS", 0) or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    return max(MIN_SETUP_UNLOCK_SECONDS, configured or DEFAULT_SETUP_UNLOCK_SECONDS)
+
+
+def _client_ip() -> str:
+    return request.remote_addr or "unknown"
+
+
+def _setup_unlock_remaining_seconds() -> int:
+    """Seconds left before the dashboard asks for the password again."""
+    stamp = session.get(SETUP_UNLOCK_AT_KEY)
+    try:
+        stamp = float(stamp)
+    except (TypeError, ValueError):
+        return 0
+    if getattr(config, "DASHBOARD_SETUP_UNLOCK_BIND_IP", True) and (
+        session.get(SETUP_UNLOCK_IP_KEY) != _client_ip()
+    ):
+        return 0
+    remaining = int(stamp + _setup_unlock_window_seconds() - time.time())
+    return remaining if remaining > 0 else 0
+
+
+def _setup_unlocked() -> bool:
+    return _setup_unlock_remaining_seconds() > 0
+
+
+def _grant_setup_unlock() -> None:
+    session[SETUP_UNLOCK_AT_KEY] = time.time()
+    session[SETUP_UNLOCK_IP_KEY] = _client_ip()
+
+
+def _renew_setup_unlock() -> None:
+    """Sliding window: each confirmed change restarts the idle timer."""
+    if _setup_unlocked():
+        session[SETUP_UNLOCK_AT_KEY] = time.time()
+
+
+def _clear_setup_unlock() -> None:
+    session.pop(SETUP_UNLOCK_AT_KEY, None)
+    session.pop(SETUP_UNLOCK_IP_KEY, None)
+
+
+def _expects_json_response() -> bool:
+    """True for fetch()/API callers that must keep receiving JSON, not HTML."""
+    if request.path.startswith("/api/"):
+        return True
+    if (request.headers.get("X-Requested-With") or "").lower() in {"fetch", "xmlhttprequest"}:
+        return True
+    accept = (request.headers.get("Accept") or "").lower()
+    if "text/html" in accept and "application/json" not in accept:
+        return False
+    return True
+
+
+def _local_referrer(*, with_reauth: bool) -> str:
+    """Return the page the browser came from, with or without the lock flag."""
+    referrer = request.referrer or request.form.get("next") or ""
+    if not referrer:
+        return ""
+    parsed = urlparse(referrer)
+    same_host = not parsed.netloc or parsed.netloc == request.host
+    if not (same_host and parsed.path.startswith("/")):
+        return ""
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+             if key != "reauth"]
+    if with_reauth:
+        query.append(("reauth", "1"))
+    return f"{parsed.path}?{urlencode(query)}" if query else parsed.path
+
+
+def _reauth_return_url() -> str:
+    """Send a browser form post back to the page it came from, flagged locked."""
+    return _local_referrer(with_reauth=True) or url_for("index", reauth=1)
+
+
+def _csrf_failure_response():
+    """Reject a bad CSRF token without dumping JSON into an operator's browser."""
+    error = {"ok": False, "error": "csrf_validation_failed"}
+    if request.endpoint == "login":
+        # A lost/expired session on the sign-in screen: hand back a fresh page
+        # instead of a bare 400 so the operator can simply sign in again.
+        return render_template(
+            "login.html",
+            next_url=request.values.get("next", ""),
+            login_error="Your sign-in session expired. Enter the admin password again.",
+        ), 400
+    if not _expects_json_response():
+        flash("Your session expired. Sign in again and repeat the change.", "warning")
+        return redirect(url_for("login", next=_safe_local_redirect(request.path)))
+    return jsonify(error), 400
+
+
 @app.context_processor
 def inject_dashboard_security_context():
+    remaining = _setup_unlock_remaining_seconds() if session.get("dashboard_authenticated") else 0
     return {
         "csrf_token": _get_csrf_token,
         "dashboard_authenticated": bool(session.get("dashboard_authenticated")),
+        "setup_unlocked": remaining > 0,
+        "setup_unlock_remaining": remaining,
+        "setup_unlock_minutes": max(1, remaining // 60),
+        "setup_unlock_window_minutes": _setup_unlock_window_seconds() // 60,
+        "undo_channel": session.get(UNDO_CHANNEL_KEY),
+        "insecure_login": (
+            config.HUB_ENV == "production" and not request.is_secure
+        ),
     }
 
 
@@ -383,6 +545,10 @@ def protect_dashboard_routes():
         "static", "login", "healthz", "amazon_short_link",
         "meesho_hypd_short_link", "lehlah_meesho_short_link",
     }
+    # Only protect the session cookie when the browser can actually use it:
+    # a Secure cookie over plain HTTP is silently dropped, which locks the
+    # operator out of the dashboard entirely.
+    app.config["SESSION_COOKIE_SECURE"] = bool(config.DASHBOARD_COOKIE_SECURE) and request.is_secure
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         expected = str(session.get("_csrf_token") or "")
         supplied = str(
@@ -391,7 +557,7 @@ def protect_dashboard_routes():
             or ""
         )
         if not expected or not supplied or not hmac.compare_digest(expected, supplied):
-            return jsonify({"ok": False, "error": "csrf_validation_failed"}), 400
+            return _csrf_failure_response()
 
     if endpoint in public_endpoints:
         return None
@@ -406,19 +572,24 @@ def protect_dashboard_routes():
         return redirect(url_for("login", next=destination))
 
     if request.method in {"POST", "PUT", "PATCH", "DELETE"} and endpoint in REAUTH_REQUIRED_ENDPOINTS:
-        reauthenticated_at = session.get("_recent_reauth_at")
-        try:
-            reauth_is_fresh = (
-                reauthenticated_at is not None
-                and 0 <= time.time() - float(reauthenticated_at) <= REAUTH_WINDOW_SECONDS
+        # Ask for the password once, then keep the dashboard unlocked for a
+        # rolling idle window so the next add/save/delete does not ask again.
+        if not _setup_unlocked():
+            _clear_setup_unlock()
+            if _expects_json_response():
+                return jsonify({
+                    "ok": False,
+                    "error": "reauthentication_required",
+                    "unlock_url": url_for("reauthenticate_setup_change"),
+                }), 428
+            flash(
+                "Setup changes are locked. Confirm the dashboard password once, "
+                "then every add / save / delete stays unlocked for "
+                f"{_setup_unlock_window_seconds() // 60} minutes.",
+                "warning",
             )
-        except (TypeError, ValueError):
-            reauth_is_fresh = False
-        if not reauth_is_fresh:
-            session.pop("_recent_reauth_at", None)
-            return jsonify({"ok": False, "error": "reauthentication_required"}), 428
-        # The confirmation is one-use: every protected setup action asks again.
-        session.pop("_recent_reauth_at", None)
+            return redirect(_reauth_return_url())
+        _renew_setup_unlock()
     return None
 
 
@@ -439,11 +610,24 @@ def add_security_headers(response):
     return response
 
 
+def _dashboard_secret_key_is_persistent() -> bool:
+    """True when sessions survive a restart (env key or the generated key file)."""
+    if config.DASHBOARD_SECRET_KEY:
+        return True
+    try:
+        return Path(config.DASHBOARD_SECRET_KEY_FILE).exists()
+    except OSError:
+        return False
+
+
 def _dashboard_security_ready() -> bool:
     if not config.DASHBOARD_ADMIN_PASSWORD:
         return False
     if config.HUB_ENV == "production":
-        return bool(config.DASHBOARD_SECRET_KEY) and len(config.DASHBOARD_ADMIN_PASSWORD) >= 16
+        return (
+            _dashboard_secret_key_is_persistent()
+            and len(config.DASHBOARD_ADMIN_PASSWORD) >= 16
+        )
     return True
 
 
@@ -522,11 +706,16 @@ def logout():
 
 @app.route("/reauth", methods=["POST"])
 def reauthenticate_setup_change():
-    """Issue a one-use confirmation for a single sensitive setup action."""
+    """Confirm the admin password once and unlock sensitive setup changes.
+
+    The unlock is a rolling idle window (default 30 minutes): the operator is
+    asked at the start of a work session and not again for every add / save /
+    delete, unless the dashboard goes idle, is locked manually, or signs out.
+    """
     if not session.get("dashboard_authenticated"):
         return jsonify({"ok": False, "error": "authentication_required"}), 401
 
-    client_ip = request.remote_addr or "unknown"
+    client_ip = _client_ip()
     bucket_key = f"reauth:{client_ip}"
     now = time.monotonic()
     recent = [
@@ -539,11 +728,51 @@ def reauthenticate_setup_change():
 
     if not _password_matches(request.form.get("password", ""), config.DASHBOARD_ADMIN_PASSWORD):
         _LOGIN_FAILURES[bucket_key].append(now)
+        if not _expects_json_response():
+            flash("Password did not match. Setup is still locked.", "error")
+            return redirect(_reauth_return_url())
         return jsonify({"ok": False, "error": "password_confirmation_failed"}), 401
 
     _LOGIN_FAILURES.pop(bucket_key, None)
-    session["_recent_reauth_at"] = time.time()
-    return jsonify({"ok": True})
+    _grant_setup_unlock()
+    minutes = _setup_unlock_window_seconds() // 60
+    if not _expects_json_response():
+        # Works without JavaScript: the page reloads unlocked so the operator
+        # can press the original button again.
+        flash(f"Setup unlocked for {minutes} minutes of work.", "success")
+        return redirect(_local_referrer(with_reauth=False) or url_for("index"))
+    return jsonify({
+        "ok": True,
+        "unlocked": True,
+        "window_seconds": _setup_unlock_window_seconds(),
+        "remaining_seconds": _setup_unlock_remaining_seconds(),
+    })
+
+
+@app.route("/reauth/status")
+def setup_unlock_status():
+    """Tell the page whether the setup password will be asked right now."""
+    if not session.get("dashboard_authenticated"):
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    remaining = _setup_unlock_remaining_seconds()
+    return jsonify({
+        "ok": True,
+        "unlocked": remaining > 0,
+        "remaining_seconds": remaining,
+        "window_seconds": _setup_unlock_window_seconds(),
+    })
+
+
+@app.route("/reauth/lock", methods=["POST"])
+def lock_setup_changes():
+    """Lock setup changes immediately so the next change asks again."""
+    if not session.get("dashboard_authenticated"):
+        return jsonify({"ok": False, "error": "authentication_required"}), 401
+    _clear_setup_unlock()
+    if _expects_json_response():
+        return jsonify({"ok": True, "unlocked": False, "remaining_seconds": 0})
+    flash("Locked. The next setup change will ask for the password again.", "success")
+    return redirect(_local_referrer(with_reauth=False) or url_for("index"))
 
 
 @app.route("/amazon/<code>")
@@ -810,6 +1039,7 @@ def index():
         stats=stats,
         vm=vm,
         insights=insights,
+        money=_money_summary(),
         source_count=len(sources),
         active_source_count=active_sources,
     )
@@ -844,6 +1074,108 @@ def setup():
         imported=request.args.get("imported", type=int),
         import_error=request.args.get("import_error", ""),
     )
+
+
+# ---------- Money Radar: where commission leaks out of posted deals ----------
+# Each switch is a global setting; the pipeline reads it on every render.
+MONEY_SWITCHES: dict[str, tuple[str, str]] = {
+    "meesho_earnkaro_fallback": (
+        "Meesho → EarnKaro fallback",
+        "HYPD cannot turn a raw meesho.com product URL into an affiliate link, "
+        "so that deal currently posts for free. With this on, those links go to "
+        "EarnKaro, which runs a Meesho programme, instead of leaking.",
+    ),
+    "only_earning_deals": (
+        "Only post deals that earn",
+        "Hold back a deal when none of its links would carry our attribution. "
+        "Fewer posts, but no post goes out that pays nothing.",
+    ),
+}
+
+
+def _money_switch_is_on(key: str, default: bool) -> bool:
+    value = db.get_global_setting(key, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _money_summary() -> dict | None:
+    """Cheap 7-day attribution summary for the dashboard card."""
+    from influencer_hub import money_radar
+
+    try:
+        return money_radar.report(days=7, limit=200)["totals"]
+    except Exception:  # pragma: no cover - the dashboard must still load
+        import logging
+        logging.getLogger(__name__).exception("money summary failed")
+        return None
+
+
+@app.route("/money")
+def money_dashboard():
+    """Report how much of what we posted actually carried our attribution."""
+    from influencer_hub import money_radar
+
+    try:
+        days = int(request.args.get("days", 7))
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 90))
+
+    defaults = {
+        "meesho_earnkaro_fallback": bool(config.MEESHO_EARNKARO_FALLBACK),
+        "only_earning_deals": bool(config.ONLY_EARNING_DEALS),
+    }
+    switches = [
+        {
+            "key": key,
+            "label": label,
+            "detail": detail,
+            "on": _money_switch_is_on(key, defaults[key]),
+            "default_on": defaults[key],
+        }
+        for key, (label, detail) in MONEY_SWITCHES.items()
+    ]
+
+    try:
+        data = money_radar.report(days=days)
+    except Exception:  # pragma: no cover - the page must still open
+        import logging
+        logging.getLogger(__name__).exception("money radar report failed")
+        data = {
+            "days": days,
+            "totals": {"posts": 0, "links": 0, "earning": 0, "leak": 0,
+                       "monetisable": 0, "clean_posts": 0,
+                       "zero_commission_posts": 0, "coverage_pct": 100},
+            "by_reason": [],
+            "creators": [],
+            "suggestions": [],
+        }
+
+    return render_template(
+        "money.html",
+        report=data,
+        days=days,
+        day_options=(1, 7, 30, 90),
+        switches=switches,
+        switched=request.args.get("switched", "").strip(),
+    )
+
+
+@app.route("/money/switch", methods=["POST"])
+def toggle_money_switch():
+    """Flip one Money Radar switch (password-confirmed, like every setup change)."""
+    key = (request.form.get("setting") or "").strip()
+    if key not in MONEY_SWITCHES:
+        flash("That money switch does not exist.", "warning")
+        return redirect(url_for("money_dashboard"))
+
+    wanted = str(request.form.get("value", "")).strip().lower() in {"1", "on", "true", "yes"}
+    db.set_global_setting(key, "on" if wanted else "off")
+    label = MONEY_SWITCHES[key][0]
+    flash(f"{label} turned {'ON' if wanted else 'OFF'}.", "success")
+    return redirect(url_for("money_dashboard", switched=key))
 
 
 @app.route("/api/setup/live-checks", methods=["POST"])
@@ -1219,6 +1551,10 @@ def update_profile(inf_id):
     btn_text = request.form.get("custom_button_text", "").strip()
     btn_url = request.form.get("custom_button_url", "").strip()
 
+    # Deal quality floor: an empty selection inherits the global setting.
+    min_deal_tier = request.form.get("min_deal_tier")
+    min_deal_tier = min_deal_tier.strip() if min_deal_tier is not None else None
+
     db.update_influencer(
         inf_id,
         name=name if name else None,
@@ -1239,6 +1575,7 @@ def update_profile(inf_id):
         custom_button_enabled=btn_enabled,
         custom_button_text=btn_text,
         custom_button_url=btn_url,
+        min_deal_tier=min_deal_tier,
         notes=notes if notes else None,
         active=active,
     )
@@ -1287,6 +1624,10 @@ def update_channel_route(channel_id):
     invite_link = None
     needs_test = False
 
+    # Deal quality floor for this channel; empty inherits the creator's value.
+    channel_min_tier = request.form.get("min_deal_tier")
+    channel_min_tier = channel_min_tier.strip() if channel_min_tier is not None else None
+
     if current_channel.get("platform") in {"whatsapp_group", "whatsapp_channel"}:
         if ident:
             destination, error = _resolve_whatsapp_destination(owner_id, ident)
@@ -1308,6 +1649,8 @@ def update_channel_route(channel_id):
     elif ident:
         ident = clean_identifier(ident)
 
+    # A pending "undo removal" is stale once this channel is edited by hand.
+    session.pop(UNDO_CHANNEL_KEY, None)
     db.update_channel_details(
         channel_id,
         identifier=ident if ident else None,
@@ -1330,6 +1673,7 @@ def update_channel_route(channel_id):
         custom_button_enabled=btn_en,
         custom_button_text=btn_text,
         custom_button_url=btn_url,
+        min_deal_tier=channel_min_tier,
     )
     if needs_test:
         return redirect(url_for(
@@ -1338,19 +1682,204 @@ def update_channel_route(channel_id):
     return redirect(url_for("influencer_detail", inf_id=owner_id))
 
 
+# --------------------------------------------------------------------------
+# Easy setup: the three network switches, in plain language
+# --------------------------------------------------------------------------
+# "Amazon ante only Amazon, EarnKaro on cheste verevi, HYPD on cheste Meesho".
+ROUTING_SWITCHES = (
+    {
+        "name": "allow_amazon",
+        "emoji": "📦",
+        "label": "Amazon",
+        "meaning": "Amazon links get this creator's Associates tag. Nothing else touches them.",
+    },
+    {
+        "name": "allow_earnkaro",
+        "emoji": "💰",
+        "label": "EarnKaro",
+        "meaning": "Flipkart, Shopsy, Myntra, Ajio, Nykaa, Croma, TataCliq… become EarnKaro links.",
+    },
+    {
+        "name": "allow_hypd",
+        "emoji": "🛍️",
+        "label": "HYPD (Meesho)",
+        "meaning": "Meesho deals: HYPD affiliate links are retagged to this creator's store.",
+    },
+)
+ROUTING_SAMPLES = (
+    ("Amazon deal", "https://www.amazon.in/dp/B0D9P2M1PB?th=1", "amazon"),
+    ("Flipkart / Shopsy deal", "https://www.flipkart.com/sample-deal/p/itmEXAMPLE", "merchant"),
+    ("Myntra / Ajio deal", "https://www.myntra.com/sample-deal/1234567", "merchant"),
+    ("Meesho deal", "https://www.meesho.com/sample-deal/p/xyz123", "meesho"),
+    ("HYPD affiliate link", "https://hypd.store/93944/afflink/SAMPLETOKEN", "hypd"),
+    ("Plain info link", "https://example.com/deal-news", "other"),
+)
+
+
+def _earnkaro_ready() -> bool:
+    return bool(db.get_global_setting("earnkaro_api_key", "") or config.EARNKARO_API_KEY)
+
+
+def _routing_preview(
+    *,
+    amazon_tag: str,
+    allow_amazon: bool,
+    allow_earnkaro: bool,
+    allow_hypd: bool,
+    only_amazon: bool = False,
+    hypd_store_id: str = "",
+    channel_role: str = "broadcast",
+) -> dict:
+    """Explain, in one table, exactly what happens to each kind of link.
+
+    Pure and offline: it mirrors the pipeline's routing rules so the operator
+    can see the outcome before a single deal is posted.
+    """
+    strict = bool(only_amazon) or channel_role == "approval"
+    amazon_on = True if strict else bool(allow_amazon)
+    ek_on = False if strict else bool(allow_earnkaro)
+    hypd_on = False if strict else bool(allow_hypd)
+    tag = str(amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG
+    store = str(hypd_store_id or "").strip() or _effective_hypd_store_id()
+    ek_ready = _earnkaro_ready()
+
+    rows: list[dict] = []
+    for label, sample, kind in ROUTING_SAMPLES:
+        row = {"label": label, "sample": sample, "kind": kind, "result": "", "state": "ok", "note": ""}
+        if kind == "amazon":
+            if amazon_on:
+                row["result"] = link_router.apply_amazon_tag(sample, tag)
+                row["note"] = f"Posted with this creator's tag ({tag}). Never shortened away from Amazon."
+            else:
+                row["state"] = "off"
+                row["note"] = "Amazon is OFF — this link is removed from the post."
+        elif kind == "merchant":
+            if not ek_on:
+                row["state"] = "off"
+                row["note"] = "EarnKaro is OFF — non-Amazon merchant links are removed from the post."
+            elif ek_ready:
+                row["result"] = sample
+                row["note"] = "Converted to this creator's EarnKaro link at send time."
+            else:
+                row["state"] = "warn"
+                row["result"] = sample
+                row["note"] = (
+                    "EarnKaro is ON but its API key is missing — the original link is kept. "
+                    "Add the key in Vault & Sources to start earning."
+                )
+        elif kind == "meesho":
+            if hypd_on:
+                row["state"] = "warn"
+                row["result"] = sample
+                row["note"] = (
+                    "HYPD owns Meesho. HYPD affiliate links (hypd.store/…/afflink/…) are retagged "
+                    f"to store {store}; a raw Meesho link cannot be converted yet, so it is posted as-is."
+                )
+            else:
+                row["state"] = "off"
+                row["note"] = "HYPD (Meesho) is OFF — Meesho links are removed from the post."
+        elif kind == "hypd":
+            if hypd_on:
+                row["result"] = link_router.convert_hypd_store_link(sample, store)
+                row["note"] = f"Retagged to this creator's HYPD store {store}."
+            else:
+                row["state"] = "off"
+                row["note"] = "HYPD (Meesho) is OFF — this link is removed from the post."
+        else:
+            row["result"] = sample
+            row["note"] = "Informational links are never changed or dropped."
+        rows.append(row)
+
+    summary = " · ".join(
+        part for part in (
+            f"Amazon → tag {tag}" if amazon_on else "Amazon off",
+            "Other merchants → EarnKaro" if ek_on else "Other merchants off",
+            f"Meesho → HYPD store {store}" if hypd_on else "Meesho off",
+        )
+    )
+    return {
+        "rows": rows,
+        "summary": summary,
+        "strict": strict,
+        "amazon_on": amazon_on,
+        "earnkaro_on": ek_on,
+        "hypd_on": hypd_on,
+        "earnkaro_ready": ek_ready,
+        "amazon_tag": tag,
+        "hypd_store_id": store,
+    }
+
+
+CHANNEL_PLATFORMS = frozenset({"telegram", "whatsapp_group", "whatsapp_channel"})
+CHANNEL_ROLES = frozenset({"approval", "broadcast", "whatsapp"})
+PRICE_FILTER_CHOICES = frozenset({"", "all", "under_99", "under_199", "under_499", "under_999"})
+_TELEGRAM_USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{4,32}$")
+_TELEGRAM_NUMERIC_RE = re.compile(r"^-?\d{5,20}$")
+_TELEGRAM_INVITE_RE = re.compile(r"^https://t\.me/(\+|joinchat/)[A-Za-z0-9_-]+$", re.I)
+
+
+def _clean_price_filter(raw: str) -> str:
+    """Only accept the budget filters the pipeline actually understands."""
+    value = str(raw or "").strip().lower()
+    return value if value in PRICE_FILTER_CHOICES else ""
+
+
+def _valid_telegram_identifier(value: str) -> tuple[bool, str]:
+    """Reject typos that would silently create an undeliverable channel."""
+    candidate = str(value or "").strip()
+    if (
+        _TELEGRAM_USERNAME_RE.fullmatch(candidate)
+        or _TELEGRAM_NUMERIC_RE.fullmatch(candidate)
+        or _TELEGRAM_INVITE_RE.fullmatch(candidate)
+    ):
+        return True, ""
+    return False, (
+        "Enter a valid Telegram destination: a public @username (4-32 letters, "
+        "numbers or underscores), a numeric channel id, or a private t.me/+… invite link."
+    )
+
+
+def _channel_feedback(inf_id: int, category: str, message: str):
+    """Flash the result of a channel action and return to the creator's page."""
+    flash(message, category)
+    return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+
 @app.route("/influencer/<int:inf_id>/add-manual-channel", methods=["POST"])
 def add_manual_channel(inf_id):
-    platform = request.form.get("platform", "telegram").strip()
+    influencer = db.get_influencer(inf_id)
+    if not influencer:
+        flash("That creator no longer exists.", "warning")
+        return redirect(url_for("index"))
+
+    platform = request.form.get("platform", "telegram").strip().lower()
     raw_ident = request.form.get("identifier", "").strip()
-    role = request.form.get("role", "broadcast").strip()
+    role = (request.form.get("role", "broadcast").strip().lower() or "broadcast")
+    if role not in CHANNEL_ROLES:
+        role = "broadcast"
     invite = request.form.get("invite", "").strip()
     override_tag = request.form.get("amazon_override_tag", "").strip()
-    price_filt = request.form.get("price_filter", "").strip()
-    allowed_src = request.form.get("allowed_sources", "").strip()
+    price_filt = _clean_price_filter(request.form.get("price_filter", ""))
+    allowed_src = request.form.get("allowed_sources", "").strip()[:400]
     wa_key = request.form.get("wa_session_key", "").strip()
     bitly_key = request.form.get("bitly_api_key", "").strip()
     categories = request.form.get("categories", "").strip()
     schedule = request.form.get("posting_schedule", "").strip()
+
+    if platform not in CHANNEL_PLATFORMS:
+        return _channel_feedback(
+            inf_id, "error",
+            "Unsupported destination type. Choose Telegram, WhatsApp Group, or WhatsApp Channel.",
+        )
+    if not raw_ident:
+        return _channel_feedback(
+            inf_id, "error",
+            "Enter the channel username, invite link, or WhatsApp JID before connecting.",
+        )
+    if len(raw_ident) > 256:
+        return _channel_feedback(
+            inf_id, "error", "That destination link is too long. Check the value and try again.",
+        )
     only_amz = bool(_form_flag("only_amazon", default=False))
     strip_amz = bool(_form_flag("strip_amazon", default=False))
     allow_amz = bool(_form_flag("allow_amazon", default=False))
@@ -1360,66 +1889,295 @@ def add_manual_channel(inf_id):
         request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
     )
 
-    if raw_ident:
-        channel_settings = {
-            "amazon_override_tag": override_tag,
-            "strip_amazon": strip_amz,
-            "price_filter": price_filt,
-            "bitly_api_key": bitly_key,
-            "categories": categories,
-            "posting_schedule": schedule,
-            "only_amazon": only_amz,
-            "allow_amazon": allow_amz,
-            "allow_earnkaro": allow_ek,
-            "allow_hypd": allow_hypd,
-            "hypd_store_id": hypd_store_id,
-        }
-        if platform == "telegram":
-            ident = clean_identifier(raw_ident)
-            db.add_channel(
-                inf_id,
-                "telegram",
-                ident,
-                invite_link=invite,
-                status="ready",
+    channel_settings = {
+        "amazon_override_tag": override_tag,
+        "strip_amazon": strip_amz,
+        "price_filter": price_filt,
+        "bitly_api_key": bitly_key,
+        "categories": categories,
+        "posting_schedule": schedule,
+        "only_amazon": only_amz,
+        "allow_amazon": allow_amz,
+        "allow_earnkaro": allow_ek,
+        "allow_hypd": allow_hypd,
+        "hypd_store_id": hypd_store_id,
+    }
+    if platform == "telegram":
+        ident = clean_identifier(raw_ident)
+        valid, error = _valid_telegram_identifier(ident)
+        if not valid:
+            return _channel_feedback(inf_id, "error", error)
+        duplicate = next(
+            (channel for channel in db.list_channels(inf_id)
+             if channel.get("platform") == "telegram"
+             and str(channel.get("identifier") or "").strip().lower() == ident.lower()),
+            None,
+        )
+        if duplicate:
+            db.update_channel_details(
+                duplicate["id"],
+                identifier=ident,
                 role=role,
-                allowed_sources=allowed_src,
-                wa_session_key=wa_key,
+                allowed_sources=allowed_src or duplicate.get("allowed_sources") or "",
+                wa_session_key=wa_key or duplicate.get("wa_session_key") or "",
                 **channel_settings,
             )
-        elif platform in {"whatsapp_group", "whatsapp_channel"}:
-            destination, error = _resolve_whatsapp_destination(inf_id, raw_ident)
-            if not destination:
-                return redirect(url_for(
-                    "influencer_detail", inf_id=inf_id,
-                    wa_link_status="failed", wa_link_error=error,
-                ))
-            if destination["platform"] != platform:
-                return redirect(url_for(
-                    "influencer_detail", inf_id=inf_id,
-                    wa_link_status="failed",
-                    wa_link_error="The selected WhatsApp type does not match the supplied link or JID.",
-                ))
-            if invite and not destination.get("invite_link"):
-                destination["invite_link"] = invite
-            _save_whatsapp_destination(
-                inf_id,
-                destination,
-                role="whatsapp",
-                allowed_sources=allowed_src,
-                wa_session_key=wa_key,
-                channel_settings=channel_settings,
+            return _channel_feedback(
+                inf_id, "warning",
+                f"{ident} is already connected to {influencer['name']}. "
+                "Its settings were updated instead of adding a duplicate.",
             )
-            return redirect(url_for(
-                "influencer_detail", inf_id=inf_id, wa_link_status="pending"
-            ))
-        else:
+        session.pop(UNDO_CHANNEL_KEY, None)
+        db.add_channel(
+            inf_id,
+            "telegram",
+            ident,
+            invite_link=invite,
+            status="ready",
+            role=role,
+            allowed_sources=allowed_src,
+            wa_session_key=wa_key,
+            **channel_settings,
+        )
+        return _channel_feedback(
+            inf_id, "success",
+            f"✅ {ident} connected to {influencer['name']} as a "
+            f"{'approval' if role == 'approval' else 'broadcast'} channel.",
+        )
+    elif platform in {"whatsapp_group", "whatsapp_channel"}:
+        destination, error = _resolve_whatsapp_destination(inf_id, raw_ident)
+        if not destination:
             return redirect(url_for(
                 "influencer_detail", inf_id=inf_id,
-                wa_link_status="failed", wa_link_error="Unsupported destination type.",
+                wa_link_status="failed", wa_link_error=error,
             ))
+        if destination["platform"] != platform:
+            return redirect(url_for(
+                "influencer_detail", inf_id=inf_id,
+                wa_link_status="failed",
+                wa_link_error="The selected WhatsApp type does not match the supplied link or JID.",
+            ))
+        if invite and not destination.get("invite_link"):
+            destination["invite_link"] = invite
+        session.pop(UNDO_CHANNEL_KEY, None)
+        _save_whatsapp_destination(
+            inf_id,
+            destination,
+            role="whatsapp",
+            allowed_sources=allowed_src,
+            wa_session_key=wa_key,
+            channel_settings=channel_settings,
+        )
+        return redirect(url_for(
+            "influencer_detail", inf_id=inf_id, wa_link_status="pending"
+        ))
+    else:
+        return redirect(url_for(
+            "influencer_detail", inf_id=inf_id,
+            wa_link_status="failed", wa_link_error="Unsupported destination type.",
+        ))
 
     return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+
+def _easy_setup_defaults() -> dict:
+    return {
+        "name": "",
+        "amazon_tag": config.AMAZON_ASSOCIATE_TAG,
+        "approval": "",
+        "main": "",
+        "whatsapp": "",
+        "allow_amazon": True,
+        "allow_earnkaro": True,
+        "allow_hypd": True,
+        "only_amazon": False,
+        "hypd_store_id": _effective_hypd_store_id(),
+    }
+
+
+def _easy_setup_form_values() -> dict:
+    """Read the easy-setup form, defaulting every switch sensibly."""
+    values = _easy_setup_defaults()
+    values.update({
+        "name": request.form.get("name", "").strip(),
+        "amazon_tag": request.form.get("amazon_tag", "").strip() or config.AMAZON_ASSOCIATE_TAG,
+        "approval": request.form.get("approval_channel", "").strip(),
+        "main": request.form.get("main_channel", "").strip(),
+        "whatsapp": request.form.get("whatsapp_channel", "").strip(),
+        "allow_amazon": bool(_form_flag("allow_amazon", default=False)),
+        "allow_earnkaro": bool(_form_flag("allow_earnkaro", default=False)),
+        "allow_hypd": bool(_form_flag("allow_hypd", default=False)),
+        "only_amazon": bool(_form_flag("only_amazon", default=False)),
+        "hypd_store_id": (
+            request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
+        ),
+    })
+    return values
+
+
+def _routing_arguments(values: dict) -> dict:
+    """Only the routing keys, so the form values can be forwarded safely."""
+    return {
+        "amazon_tag": values["amazon_tag"],
+        "allow_amazon": values["allow_amazon"],
+        "allow_earnkaro": values["allow_earnkaro"],
+        "allow_hypd": values["allow_hypd"],
+        "only_amazon": values["only_amazon"],
+        "hypd_store_id": values["hypd_store_id"],
+    }
+
+
+@app.route("/easy-setup", methods=["GET", "POST"])
+def easy_setup():
+    """One screen: creator + approval channel + main channel + 3 switches."""
+    sources = db.list_sources(active_only=False)
+    active_sources = sum(1 for source in sources if source.get("active"))
+    values = _easy_setup_defaults()
+    result: dict | None = session.pop("_easy_setup_result", None)
+    errors: list[str] = []
+
+    if request.method == "POST":
+        values = _easy_setup_form_values()
+        if not values["name"]:
+            errors.append("Enter the creator's name.")
+        if not values["main"] and not values["approval"]:
+            errors.append("Enter at least the main channel (and ideally the approval channel).")
+
+        approval_ident, main_ident = "", ""
+        if values["approval"]:
+            approval_ident = clean_identifier(values["approval"])
+            ok, error = _valid_telegram_identifier(approval_ident)
+            if not ok:
+                errors.append(f"Approval channel: {error}")
+        if values["main"]:
+            main_ident = clean_identifier(values["main"])
+            ok, error = _valid_telegram_identifier(main_ident)
+            if not ok:
+                errors.append(f"Main channel: {error}")
+        if not errors and values["approval"] and values["main"] and approval_ident == main_ident:
+            errors.append("Approval and main channels must be two different channels.")
+
+        if not errors:
+            applied = _apply_easy_setup(values, approval_ident, main_ident)
+            session["_easy_setup_result"] = applied
+            flash(
+                f"✅ {applied['name']} is set up and posting. "
+                f"Amazon → {values['amazon_tag']}"
+                + (", other merchants → EarnKaro" if values["allow_earnkaro"] else "")
+                + (f", Meesho → HYPD store {values['hypd_store_id']}" if values["allow_hypd"] else ""),
+                "success",
+            )
+            return redirect(url_for("easy_setup", done=applied["inf_id"]))
+
+    preview = _routing_preview(**_routing_arguments(values))
+    return render_template(
+        "easy_setup.html",
+        values=values,
+        preview=preview,
+        result=result,
+        errors=errors,
+        switches=ROUTING_SWITCHES,
+        source_count=len(sources),
+        active_source_count=active_sources,
+    )
+
+
+def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dict:
+    """Create or update one creator with both channels and the chosen routes."""
+    name = values["name"]
+    existing = next(
+        (profile for profile in db.list_influencers()
+         if str(profile.get("name") or "").strip().lower() == name.lower()),
+        None,
+    )
+    settings = {
+        "only_amazon": values["only_amazon"],
+        "allow_amazon": values["allow_amazon"],
+        "allow_earnkaro": values["allow_earnkaro"],
+        "allow_hypd": values["allow_hypd"],
+        "hypd_store_id": values["hypd_store_id"],
+        "active": True,
+    }
+    if existing:
+        inf_id = int(existing["id"])
+        db.update_influencer(inf_id, name=name, amazon_tag=values["amazon_tag"], **settings)
+        action = "updated"
+    else:
+        inf_id = db.add_influencer(
+            name, values["amazon_tag"], allow_amazon=values["allow_amazon"],
+            allow_earnkaro=values["allow_earnkaro"], allow_hypd=values["allow_hypd"],
+            only_amazon=values["only_amazon"], hypd_store_id=values["hypd_store_id"],
+        )
+        action = "created"
+    db.set_influencer_active(inf_id, True)
+
+    channels = db.list_channels(inf_id)
+    created, updated = [], []
+
+    def _upsert(identifier: str, role: str) -> None:
+        if not identifier:
+            return
+        match = next(
+            (channel for channel in db.list_channels(inf_id)
+             if channel.get("platform") == "telegram"
+             and str(channel.get("identifier") or "").strip().lower() == identifier.lower()),
+            None,
+        )
+        if match:
+            db.update_channel_details(
+                match["id"], identifier=identifier, role=role, status="ready",
+                allow_amazon=values["allow_amazon"],
+                allow_earnkaro=values["allow_earnkaro"],
+                allow_hypd=values["allow_hypd"],
+                hypd_store_id=values["hypd_store_id"],
+            )
+            updated.append(identifier)
+        else:
+            db.add_channel(
+                inf_id, "telegram", identifier, status="ready", role=role,
+                allow_amazon=values["allow_amazon"],
+                allow_earnkaro=values["allow_earnkaro"],
+                allow_hypd=values["allow_hypd"],
+                hypd_store_id=values["hypd_store_id"],
+            )
+            created.append(identifier)
+
+    _upsert(approval_ident, "approval")
+    _upsert(main_ident, "broadcast")
+
+    sources = db.list_sources(active_only=False)
+    return {
+        "action": action,
+        "inf_id": inf_id,
+        "name": name,
+        "created": created,
+        "updated": updated,
+        "existing_channels": len(channels),
+        "active_sources": sum(1 for source in sources if source.get("active")),
+    }
+
+
+@app.route("/api/routing-preview")
+def routing_preview_api():
+    """Live routing table for the current easy-setup form values."""
+    values = _easy_setup_defaults()
+    values.update({
+        "amazon_tag": request.args.get("amazon_tag", "").strip() or config.AMAZON_ASSOCIATE_TAG,
+        "allow_amazon": str(request.args.get("allow_amazon", "1")).lower() in {"1", "true", "on"},
+        "allow_earnkaro": str(request.args.get("allow_earnkaro", "1")).lower() in {"1", "true", "on"},
+        "allow_hypd": str(request.args.get("allow_hypd", "1")).lower() in {"1", "true", "on"},
+        "only_amazon": str(request.args.get("only_amazon", "0")).lower() in {"1", "true", "on"},
+        "hypd_store_id": request.args.get("hypd_store_id", "").strip() or _effective_hypd_store_id(),
+    })
+    inf_id = request.args.get("inf_id", "").strip()
+    if inf_id.isdigit():
+        profile = db.get_influencer(int(inf_id))
+        if profile:
+            values["amazon_tag"] = str(profile.get("amazon_tag") or values["amazon_tag"])
+            values["hypd_store_id"] = (
+                str(profile.get("hypd_store_id") or "").strip() or values["hypd_store_id"]
+            )
+    return jsonify({"ok": True, "preview": _routing_preview(**_routing_arguments(values))})
 
 
 @app.route("/bulk-import", methods=["POST"])
@@ -1481,11 +2239,76 @@ def bulk_import():
 
 @app.route("/channel/<int:channel_id>/delete", methods=["POST"])
 def delete_channel(channel_id):
-    inf_id = request.form.get("inf_id")
+    """Remove one destination, keeping a one-step undo snapshot."""
+    inf_id = request.form.get("inf_id", "").strip()
+    channel = next(
+        (candidate for candidate in db.list_channels()
+         if int(candidate.get("id", -1)) == int(channel_id)),
+        None,
+    )
+    if not channel:
+        flash("That channel was already removed.", "warning")
+        return redirect(url_for("index"))
+
+    owner_id = int(channel["influencer_id"])
+    if inf_id.isdigit() and int(inf_id) != owner_id:
+        flash("That channel does not belong to this creator. Nothing was removed.", "error")
+        return redirect(url_for("influencer_detail", inf_id=owner_id))
+
+    identifier = str(channel.get("identifier") or "").strip() or f"#{channel_id}"
+    session[UNDO_CHANNEL_KEY] = {key: channel[key] for key in channel.keys()}
     db.delete_channel(channel_id)
-    if inf_id:
-        return redirect(url_for("influencer_detail", inf_id=int(inf_id)))
-    return redirect(url_for("index"))
+    flash(
+        f"Removed the {channel.get('platform')} destination {identifier}. "
+        "Use Undo to put it straight back.",
+        "success",
+    )
+    return redirect(url_for("influencer_detail", inf_id=owner_id))
+
+
+@app.route("/channels/undo", methods=["POST"])
+def undo_channel_delete():
+    """Restore the most recently removed channel with its original settings."""
+    snapshot = session.pop(UNDO_CHANNEL_KEY, None)
+    if not snapshot:
+        flash("There is no recent channel removal to undo.", "warning")
+        return redirect(url_for("index"))
+
+    inf_id = int(snapshot.get("influencer_id") or 0)
+    if not db.get_influencer(inf_id):
+        flash("The creator for that channel no longer exists, so it cannot be restored.", "error")
+        return redirect(url_for("index"))
+
+    restored_id = db.add_channel(
+        inf_id,
+        snapshot.get("platform") or "telegram",
+        snapshot.get("identifier") or "",
+        invite_link=snapshot.get("invite_link") or "",
+        status=snapshot.get("status") or "pending",
+        role=snapshot.get("role") or "broadcast",
+        amazon_override_tag=snapshot.get("amazon_override_tag") or "",
+        strip_amazon=bool(snapshot.get("strip_amazon")),
+        price_filter=snapshot.get("price_filter") or "",
+        allowed_sources=snapshot.get("allowed_sources") or "",
+        wa_session_key=snapshot.get("wa_session_key") or "",
+        bitly_api_key=snapshot.get("bitly_api_key") or "",
+        categories=snapshot.get("categories") or "",
+        posting_schedule=snapshot.get("posting_schedule") or "",
+        only_amazon=bool(snapshot.get("only_amazon")),
+        allow_amazon=snapshot.get("allow_amazon", 1),
+        allow_earnkaro=snapshot.get("allow_earnkaro", 1),
+        allow_hypd=snapshot.get("allow_hypd", 1),
+        hypd_store_id=snapshot.get("hypd_store_id") or None,
+        custom_button_enabled=bool(snapshot.get("custom_button_enabled")),
+        custom_button_text=snapshot.get("custom_button_text") or "",
+        custom_button_url=snapshot.get("custom_button_url") or "",
+    )
+    flash(
+        f"Restored the {snapshot.get('platform')} destination "
+        f"{snapshot.get('identifier') or restored_id}.",
+        "success",
+    )
+    return redirect(url_for("influencer_detail", inf_id=inf_id))
 
 
 @app.route("/influencer/<int:inf_id>/toggle-active", methods=["POST"])
@@ -1677,6 +2500,14 @@ def influencer_detail(inf_id):
     demo_approval = link_router.render_for_influencer(demo_sample, inf["amazon_tag"], role="approval")
     demo_broadcast = link_router.render_for_influencer(demo_sample, inf["amazon_tag"], role="broadcast")
 
+    routing_arguments = dict(
+        amazon_tag=inf.get("amazon_tag") or config.AMAZON_ASSOCIATE_TAG,
+        allow_amazon=bool(inf.get("allow_amazon", 1)),
+        allow_earnkaro=bool(inf.get("allow_earnkaro", 1)),
+        allow_hypd=bool(inf.get("allow_hypd", 1)),
+        only_amazon=bool(inf.get("only_amazon", 0)),
+        hypd_store_id=str(inf.get("hypd_store_id") or "").strip() or _effective_hypd_store_id(),
+    )
     return render_template(
         "influencer.html", inf=inf, channels=channels,
         wa_sessions=wa_sessions, stats=stats, wa_key=wa_key,
@@ -1684,6 +2515,8 @@ def influencer_detail(inf_id):
         poll_targets=poll_targets, poll_target_counts=poll_target_counts,
         poll_history=poll_history,
         demo_approval=demo_approval, demo_broadcast=demo_broadcast,
+        routing_broadcast=_routing_preview(**routing_arguments),
+        routing_approval=_routing_preview(**routing_arguments, channel_role="approval"),
         current_hypd_store=_effective_hypd_store_id(),
         current_ek_pubid=_effective_earnkaro_publisher_id(),
         earnkaro_configured=bool(

@@ -585,6 +585,7 @@ def filter_disallowed_affiliate_links(text: str, allowed_kinds: set[str]) -> str
 def _render_base(
     text: str, amazon_tag: str, ek: dict[str, str],
     hypd_store_id: str = config.HYPD_STORE_ID,
+    meesho_earnkaro_fallback: bool = False,
 ) -> str:
     out_parts: list[str] = []
     last = 0
@@ -602,9 +603,13 @@ def _render_base(
         elif kind == "hypd":
             replacement = convert_hypd_store_link(raw_url, hypd_store_id)
         elif kind == "meesho":
-            # Raw Meesho product URLs need HYPD's official generator to earn.
-            # Preserve the source URL until that conversion contract is configured.
-            replacement = raw_url
+            # HYPD owns Meesho but cannot mint an affiliate link from a raw
+            # product URL. With the operator's explicit fallback enabled, a
+            # verified EarnKaro conversion is used instead; otherwise the
+            # source URL is preserved for the HYPD route.
+            replacement = (
+                ek.get(raw_url) if meesho_earnkaro_fallback else None
+            ) or raw_url
         elif kind == "merchant":
             replacement = ek.get(raw_url) or compact_merchant_url(raw_url)
         elif kind == "lehlah":
@@ -731,6 +736,7 @@ def render_for_influencer(
     strip_amazon: bool = False,
     clean_promos: bool = True,
     hypd_store_id: str = config.HYPD_STORE_ID,
+    meesho_earnkaro_fallback: bool = False,
 ) -> str:
     """Render `text` for one influencer on a given channel `role`.
 
@@ -755,6 +761,11 @@ def render_for_influencer(
       'approval' -> supported affiliate links are Amazon-only and native (not
           shortened), with the '#ad (paid link)' disclosure. This is a formatter,
           not a program-approval guarantee.
+
+    meesho_earnkaro_fallback:
+      Use a supplied EarnKaro conversion for a raw Meesho URL. Only set by the
+      pipeline when the operator enabled that fallback; Meesho stays on the
+      HYPD route otherwise.
     """
     post_text = clean_source_post(text) if clean_promos else text
     ek = earnkaro_links or {}
@@ -765,7 +776,10 @@ def render_for_influencer(
         # Approval channel: ALWAYS native Amazon link with #ad disclosure. NEVER Bitly shortened.
         return _approval_render(post_text, amazon_tag)
     else:
-        rendered = _render_base(post_text, amazon_tag, ek, hypd_store_id=hypd_store_id)
+        rendered = _render_base(
+            post_text, amazon_tag, ek, hypd_store_id=hypd_store_id,
+            meesho_earnkaro_fallback=meesho_earnkaro_fallback,
+        )
 
     # Apply Bitly shortener replacements if available (for broadcast/whatsapp channels)
     if shortened_links and role != "approval":

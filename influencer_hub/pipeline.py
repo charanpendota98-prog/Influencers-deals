@@ -51,13 +51,39 @@ WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
 ACTIVE_CHANNEL_STATUSES = {"ready", "active"}
 
 
+def meesho_earnkaro_fallback_enabled() -> bool:
+    """Send raw Meesho links to EarnKaro when HYPD cannot mint an afflink.
+
+    HYPD owns Meesho, but it has no way to turn a raw meesho.com product URL
+    into an affiliate link, so that deal currently earns nothing. Routing it
+    through EarnKaro (when that route is verified) is strictly better than
+    posting a zero-commission link.
+    """
+    value = db.get_global_setting("meesho_earnkaro_fallback", config.MEESHO_EARNKARO_FALLBACK)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def only_earning_deals_enabled() -> bool:
+    """Hold back deals whose links would all post for free."""
+    value = db.get_global_setting("only_earning_deals", config.ONLY_EARNING_DEALS)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 async def _earnkaro_map_for(text: str) -> dict[str, str]:
-    urls = {u for u, k in link_router.collect_links(text).items() if k == "merchant"}
+    include_meesho = meesho_earnkaro_fallback_enabled()
+    collected = link_router.collect_links(text)
+    urls = {u for u, k in collected.items() if k == "merchant"}
+    if include_meesho:
+        urls |= {u for u, k in collected.items() if k == "meesho"}
     if not urls:
         return {}
     # Conversion is best-effort: the original clean merchant URL is retained
     # if the affiliate API is unavailable, so a deal is not lost.
-    return await earnkaro.convert_links(urls)
+    return await earnkaro.convert_links(urls, include_meesho=include_meesho)
 
 
 async def apply_whatsapp_safety_pacing(session_key: str) -> None:
@@ -334,9 +360,14 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 per_channel[ch["id"]] = "skipped"
                 continue
             # ADVANCED QUALITY FILTER: Only post B-tier and above (score 50+) to prevent 'motham vachinave' spam
-            # S=90-100 (must post), A=75-89 (good), B=50-74 (average), C<50 (skip) — can be configured per channel via global setting
+            # S=90-100 (must post), A=75-89 (good), B=50-74 (average), C<50 (skip)
+            # Priority: channel -> creator -> global setting.
             try:
-                min_tier = str(db.get_global_setting("min_deal_tier", "C")).strip().upper()  # Default C = allow all, set to B to be more selective
+                min_tier = str(
+                    ch.get("min_deal_tier")
+                    or inf.get("min_deal_tier")
+                    or db.get_global_setting("min_deal_tier", "C")
+                ).strip().upper()
                 if min_tier not in {"S", "A", "B", "C"}:
                     min_tier = "C"
                 if min_tier != "C" and not link_router.is_high_quality_deal(deal_text, min_tier=min_tier):
@@ -403,6 +434,15 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 ch.get("hypd_store_id") or inf.get("hypd_store_id") or global_hypd_store or config.HYPD_STORE_ID
             ).strip()
             shortened_map = {}
+            # Money Radar switches (global, read once per channel).
+            try:
+                meesho_fallback = meesho_earnkaro_fallback_enabled()
+            except Exception:
+                meesho_fallback = bool(config.MEESHO_EARNKARO_FALLBACK)
+            try:
+                only_earning = only_earning_deals_enabled()
+            except Exception:
+                only_earning = bool(config.ONLY_EARNING_DEALS)
 
             if effective_bitly_key and role != "approval":
                 # Check if ADVANCED ONLY-OUR-LINKS mode is enabled (user requested "ONLY MANA LINK KI")
@@ -424,7 +464,8 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                     # Render base version to identify final URLs that will appear
                     base_rendered = link_router.render_for_influencer(
                         render_text, effective_amz_tag, channel_ek_map, role=role, strip_amazon=strip_amz,
-                        clean_promos=True, hypd_store_id=effective_hypd_store
+                        clean_promos=True, hypd_store_id=effective_hypd_store,
+                        meesho_earnkaro_fallback=meesho_fallback,
                     )
                     # Amazon, HYPD, and existing LehLah affiliate URLs never go
                     # through generic Bitly. Their first-party routes are applied later.
@@ -450,7 +491,8 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
 
             rendered = link_router.render_for_influencer(
                 render_text, effective_amz_tag, channel_ek_map, shortened_links=shortened_map,
-                role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store
+                role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store,
+                meesho_earnkaro_fallback=meesho_fallback,
             )
             # ADVANCED SHORTENER: ONLY OUR affiliate links are shortened
             # - HYPD links with OUR store ID (93944) -> first-party /m/<code> or Bitly fallback
@@ -525,6 +567,28 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 except Exception as _guard_exc:
                     import logging
                     logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
+
+            # 8b-2. MONEY FILTER: never spend a post on a deal that pays nothing.
+            # Off by default so volume is never reduced without the operator's
+            # say; the Money Radar recommends it when it sees free posts.
+            if only_earning:
+                try:
+                    from . import money_radar
+
+                    expected_pubid = (
+                        db.get_global_setting("earnkaro_publisher_id")
+                        or config.EARNKARO_PUBLISHER_ID or ""
+                    ).strip()
+                    audit = money_radar.audit_text(
+                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
+                        bitly_map=shortened_map,
+                    )
+                    if audit["earning"] == 0 and audit["monetisable"] > 0:
+                        per_channel[ch["id"]] = "skipped:no_commission_link"
+                        continue
+                except Exception as _money_exc:  # pragma: no cover - defensive
+                    import logging
+                    logging.getLogger(__name__).exception("money filter failed: %s", _money_exc)
             # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
             # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
             try:

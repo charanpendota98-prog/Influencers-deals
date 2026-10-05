@@ -17,9 +17,25 @@
     {% if dashboard_authenticated %}
       <nav class="app-nav" aria-label="Main navigation">
         <a href="{{ url_for('index') }}">📊 Dashboard</a>
+        <a href="{{ url_for('easy_setup') }}">⚡ Easy</a>
+        <a href="{{ url_for('money_dashboard') }}">💰 Money</a>
         <a href="{{ url_for('setup') }}">⚙️ Setup</a>
         <a href="{{ url_for('secret_vault_tab') }}">🔒 Vault &amp; Sources</a>
         <a href="{{ url_for('vm') }}">💻 Health</a>
+        {% if setup_unlocked %}
+          <form method="post" action="{{ url_for('lock_setup_changes') }}" class="nav-lock-form">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+            <button type="submit" class="nav-lock is-unlocked"
+                    title="Setup changes are unlocked. Every add / save / delete goes through without another password prompt until the dashboard is idle for {{ setup_unlock_window_minutes }} minutes. Click to lock now.">
+              🔓 Unlocked · {{ setup_unlock_minutes }}m left · Lock now
+            </button>
+          </form>
+        {% else %}
+          <button type="button" class="nav-lock is-locked" data-unlock-trigger
+                  title="Setup changes are locked. The next add / save / delete asks for the admin password once, then stays unlocked.">
+            🔒 Setup locked · Unlock
+          </button>
+        {% endif %}
         <form method="post" action="{{ url_for('logout') }}" class="nav-logout-form">
           <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
           <button type="submit" class="nav-logout">Sign out</button>
@@ -29,15 +45,54 @@
       <span class="nav-security-label">Admin access · Secure session</span>
     {% endif %}
   </header>
-  <main id="main-content">{% block content %}{% endblock %}</main>
+  <main id="main-content">
+    {% if insecure_login %}
+      <div class="insecure-banner" role="alert">
+        ⚠️ You are connected over plain HTTP. The sign-in cookie cannot be marked
+        <code>Secure</code> here, so keep port 5000 firewalled or put HTTPS in
+        front of it before using this dashboard on a public network.
+      </div>
+    {% endif %}
+    {% if request.args.get('reauth') and dashboard_authenticated %}
+      <!-- With JavaScript the password dialog opens automatically; this is the
+           no-JS path so the dashboard is never a dead end. -->
+      <noscript>
+      <div class="unlock-banner" role="alert">
+        <form method="post" action="{{ url_for('reauthenticate_setup_change') }}" class="unlock-form">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+          <div>
+            <strong>🔒 Setup changes are locked — nothing was saved.</strong>
+            <p class="hint" style="margin:4px 0 0;">
+              Enter the admin password once. Setup then stays unlocked for
+              {{ setup_unlock_window_minutes }} minutes, so the next add / save /
+              delete will not ask again.
+            </p>
+          </div>
+          <input type="password" name="password" autocomplete="current-password"
+                 placeholder="Admin password" aria-label="Admin password" required />
+          <button type="submit" class="btn btn-primary">Unlock &amp; continue</button>
+        </form>
+      </div>
+      </noscript>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
   {% if dashboard_authenticated %}
     <nav class="mobile-bottom-dock" aria-label="Quick navigation">
       <a href="{{ url_for('index') }}" class="dock-item">
         <span class="dock-icon" aria-hidden="true">📊</span>
         <span class="dock-label">Dashboard</span>
       </a>
-      <a href="{{ url_for('setup') }}" class="dock-item dock-add-btn">
-        <span class="dock-add-icon" aria-hidden="true">⚙️</span>
+      <a href="{{ url_for('easy_setup') }}" class="dock-item dock-add-btn">
+        <span class="dock-add-icon" aria-hidden="true">⚡</span>
+        <span class="dock-label">Easy</span>
+      </a>
+      <a href="{{ url_for('money_dashboard') }}" class="dock-item">
+        <span class="dock-icon" aria-hidden="true">💰</span>
+        <span class="dock-label">Money</span>
+      </a>
+      <a href="{{ url_for('setup') }}" class="dock-item">
+        <span class="dock-icon" aria-hidden="true">⚙️</span>
         <span class="dock-label">Setup</span>
       </a>
       <a href="{{ url_for('secret_vault_tab') }}" class="dock-item">
@@ -54,14 +109,18 @@
     <dialog id="reauth-dialog" class="reauth-dialog" aria-labelledby="reauth-title">
       <div class="reauth-panel">
         <div class="reauth-icon" aria-hidden="true">🔐</div>
-        <h2 id="reauth-title">Confirm this setup change</h2>
-        <p>Enter the dashboard password to save this change. Confirmation is used once.</p>
+        <h2 id="reauth-title">Confirm setup changes once</h2>
+        <p id="reauth-copy">
+          Enter the dashboard password to continue. Setup stays unlocked for
+          <b>{{ setup_unlock_window_minutes }} minutes</b> of work, so adding,
+          saving and deleting channels after this will not ask again.
+        </p>
         <label for="reauth-password">Admin password</label>
         <input id="reauth-password" type="password" autocomplete="current-password" inputmode="text" />
         <p id="reauth-error" class="reauth-error" role="alert" aria-live="polite"></p>
         <div class="reauth-actions">
           <button type="button" class="btn btn-secondary" id="reauth-cancel">Cancel</button>
-          <button type="button" class="btn btn-primary" id="reauth-confirm">Confirm &amp; save</button>
+          <button type="button" class="btn btn-primary" id="reauth-confirm">Unlock &amp; continue</button>
         </div>
       </div>
     </dialog>

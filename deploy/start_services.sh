@@ -73,7 +73,7 @@ start_supervised() {
 # errors internally; this wrapper restarts it if its process ever exits.
 start_supervised "deal-worker" env HUB_TELEGRAM_SESSION_SLOT=worker .venv/bin/python -m influencer_hub.worker
 start_supervised "wa-hub" env NODE_ENV=production node wa_hub/server.js
-start_supervised "dashboard" env HUB_TELEGRAM_SESSION_SLOT=dashboard .venv/bin/gunicorn --bind 127.0.0.1:5000 --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile - dashboard.wsgi:app
+start_supervised "dashboard" env HUB_TELEGRAM_SESSION_SLOT=dashboard .venv/bin/gunicorn --bind 0.0.0.0:5000 --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile - dashboard.wsgi:app
 start_supervised "vm-watch" .venv/bin/python -m influencer_hub.cli vm-watch --loop
 
 echo "All services started under restart supervisors. Logs and pid files are in ./logs/."

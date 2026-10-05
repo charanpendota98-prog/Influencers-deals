@@ -1,0 +1,150 @@
+{% extends "layout.html" %}
+{% block title %}💰 Money Radar · Influencer Hub{% endblock %}
+{% block content %}
+<section class="dashboard-hero">
+  <div>
+    <p class="eyebrow">MONEY RADAR · LAST {{ days }} DAY{{ 'S' if days != 1 else '' }}</p>
+    <h1>💰 Money Radar</h1>
+    <p class="hint">
+      Every link we posted, checked for OUR attribution. It counts how many links were
+      earning, not what the networks paid — approval, cookies and cancellations decide the
+      final payout, and no link inspection can promise those.
+    </p>
+  </div>
+  <div class="money-days" role="group" aria-label="Report range">
+    {% for option in day_options %}
+      <a class="money-day {% if option == days %}is-active{% endif %}"
+         href="{{ url_for('money_dashboard', days=option) }}">{{ option }}d</a>
+    {% endfor %}
+  </div>
+</section>
+
+{% if switched %}
+  <div class="alert-success" role="status">✅ Switch saved — it applies to the next deal that renders.</div>
+{% endif %}
+
+<section class="dashboard-metrics" aria-label="Attribution totals">
+  <div class="dashboard-metric">
+    <div class="dashboard-metric-label">Attribution coverage</div>
+    <div class="dashboard-metric-value {% if report.totals.coverage_pct >= 95 %}money-good{% elif report.totals.coverage_pct >= 70 %}money-warn{% else %}money-bad{% endif %}">
+      {{ report.totals.coverage_pct }}%
+    </div>
+    <small>of monetisable links carried our tag / store / publisher</small>
+  </div>
+  <div class="dashboard-metric">
+    <div class="dashboard-metric-label">Posts checked</div>
+    <div class="dashboard-metric-value">{{ report.totals.posts }}</div>
+    <small>{{ report.totals.clean_posts }} clean · {{ report.totals.zero_commission_posts }} with a leak</small>
+  </div>
+  <div class="dashboard-metric">
+    <div class="dashboard-metric-label">Earning links</div>
+    <div class="dashboard-metric-value money-good">{{ report.totals.earning }}</div>
+    <small>carried our attribution</small>
+  </div>
+  <div class="dashboard-metric">
+    <div class="dashboard-metric-label">Leaked links</div>
+    <div class="dashboard-metric-value {% if report.totals.leak %}money-bad{% else %}money-good{% endif %}">{{ report.totals.leak }}</div>
+    <small>monetisable but paid nobody</small>
+  </div>
+</section>
+
+<section class="card money-card">
+  <div class="setup-section-title"><h2>What to fix, in order</h2></div>
+  <div class="money-actions">
+    {% for action in report.suggestions %}
+      <div class="money-action is-{{ action.severity }}">
+        <div class="money-action-body">
+          <strong>{{ action.title }}</strong>
+          <span>{{ action.detail }}</span>
+        </div>
+        {% if action.setting %}
+          <form method="post" action="{{ url_for('toggle_money_switch') }}" class="money-action-form">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+            <input type="hidden" name="setting" value="{{ action.setting }}" />
+            <input type="hidden" name="value" value="on" />
+            <button type="submit" class="btn btn-primary"
+                    data-require-reauth>{{ action.action }} →</button>
+          </form>
+        {% elif action.href %}
+          <a class="btn btn-secondary" href="{{ action.href }}">{{ action.action }} →</a>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card money-card">
+  <div class="setup-section-title">
+    <h2>Money switches</h2>
+    <span class="hint">These change what the pipeline posts — password confirmed.</span>
+  </div>
+  <div class="money-switches">
+    {% for switch in switches %}
+      <div class="money-switch {% if switch.on %}is-on{% endif %}">
+        <div class="money-switch-body">
+          <div class="money-switch-top">
+            <strong>{{ switch.label }}</strong>
+            <span class="money-switch-state">{% if switch.on %}ON{% else %}OFF{% endif %}</span>
+          </div>
+          <span>{{ switch.detail }}</span>
+        </div>
+        <form method="post" action="{{ url_for('toggle_money_switch') }}" class="money-action-form">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+          <input type="hidden" name="setting" value="{{ switch.key }}" />
+          <input type="hidden" name="value" value="{{ 'off' if switch.on else 'on' }}" />
+          <button type="submit" class="btn {{ 'btn-secondary' if switch.on else 'btn-primary' }}"
+                  data-require-reauth>{% if switch.on %}Turn off{% else %}Turn on{% endif %}</button>
+        </form>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="money-grid">
+  <section class="card money-card">
+    <div class="setup-section-title"><h2>Why links leaked</h2></div>
+    {% if report.by_reason %}
+      <table class="money-table">
+        <thead><tr><th scope="col">Reason</th><th scope="col">Links</th></tr></thead>
+        <tbody>
+          {% for reason, count in report.by_reason %}
+            <tr><td>{{ reason }}</td><td class="money-num">{{ count }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No leaks in this window — every monetisable link carried our attribution.</p>
+    {% endif %}
+  </section>
+
+  <section class="card money-card">
+    <div class="setup-section-title"><h2>Per creator</h2></div>
+    {% if report.creators %}
+      <table class="money-table">
+        <thead>
+          <tr>
+            <th scope="col">Creator</th>
+            <th scope="col">Posts</th>
+            <th scope="col">Earning</th>
+            <th scope="col">Leaked</th>
+            <th scope="col">Coverage</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for creator in report.creators %}
+            <tr>
+              <td><a class="text-link" href="{{ url_for('influencer_detail', inf_id=creator.id) }}">{{ creator.name }}</a></td>
+              <td class="money-num">{{ creator.posts }}</td>
+              <td class="money-num money-good">{{ creator.earning }}</td>
+              <td class="money-num {% if creator.leak %}money-bad{% else %}money-good{% endif %}">{{ creator.leak }}</td>
+              <td class="money-num {% if creator.coverage_pct >= 95 %}money-good{% elif creator.coverage_pct >= 70 %}money-warn{% else %}money-bad{% endif %}">{{ creator.coverage_pct }}%</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No posts recorded in this window yet.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

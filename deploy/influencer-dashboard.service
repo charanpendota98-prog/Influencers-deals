@@ -7,7 +7,10 @@ Type=simple
 User=@SERVICE_USER@
 Group=@SERVICE_GROUP@
 WorkingDirectory=@REPO_ROOT@
-ExecStart=@REPO_ROOT@/.venv/bin/gunicorn --bind 127.0.0.1:5000 --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile - dashboard.wsgi:app
+# 0.0.0.0 so the dashboard is reachable on http://<public-ip>:5000. Keep the
+# port firewalled (cloud security list + ufw) or terminate HTTPS in front of
+# it; plain HTTP is only safe on a private network / VPN such as Tailscale.
+ExecStart=@REPO_ROOT@/.venv/bin/gunicorn --bind 0.0.0.0:5000 --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile - dashboard.wsgi:app
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONPATH=@REPO_ROOT@

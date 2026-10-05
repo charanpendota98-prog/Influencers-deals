@@ -334,7 +334,50 @@ def test_raw_meesho_uses_hypd_toggle_and_never_earnkaro(monkeypatch, tmp_path):
     assert result[hypd_id][hypd_channel] == "posted"
     assert result[no_hypd_id][no_hypd_channel] == "skipped"
     assert raw_meesho in sent[0]
-    earnkaro_converter.assert_not_awaited()
+    # HYPD still owns Meesho; it simply cannot mint an affiliate link from a
+    # raw meesho.com product URL. The fallback offers that URL to EarnKaro (the
+    # only route that can monetise it) and keeps the source URL when no
+    # conversion comes back. Generic Bitly shortening is never used for Meesho.
+    assert earnkaro_converter.await_count >= 1
+    for call in earnkaro_converter.await_args_list:
+        assert raw_meesho in call.args[0]
+        assert call.kwargs["include_meesho"] is True
+    assert "bit.ly" not in sent[0]
+
+
+def test_meesho_fallback_off_keeps_meesho_off_the_earnkaro_route(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "meesho-fallback-off.sqlite3")
+    db.init()
+    db.set_global_setting("meesho_earnkaro_fallback", "off")
+    influencer_id = db.add_influencer(
+        "Meesho Fallback Off", "meeshoff-21", allow_amazon=False,
+        allow_earnkaro=True, allow_hypd=True,
+    )
+    channel_id = db.add_channel(
+        influencer_id, "telegram", "@meesho_fallback_off", status="ready",
+        allow_amazon=False, allow_earnkaro=True, allow_hypd=True,
+    )
+    raw_meesho = "https://www.meesho.com/s/p/7amuq5"
+    sent = []
+
+    async def fake_dispatch(_influencer, _channel, text):
+        sent.append(text)
+        return "posted"
+
+    earnkaro_converter = AsyncMock(return_value={})
+    monkeypatch.setattr(earnkaro, "convert_links", earnkaro_converter)
+    monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
+
+    result = asyncio.run(
+        pipeline.render_and_dispatch(
+            f"Meesho product {raw_meesho}", influencer_ids=[influencer_id],
+        )
+    )
+
+    assert result[influencer_id][channel_id] == "posted"
+    assert raw_meesho in sent[0]
+    for call in earnkaro_converter.await_args_list:
+        assert raw_meesho not in call.args[0]
 
 
 def test_amazon_earnkaro_and_hypd_switches_route_independently(monkeypatch, tmp_path):
