@@ -1,18 +1,50 @@
 # `patches/` — verified, replayable fixes
 
-Two self-contained appliers. Both are **idempotent, exact-text and validated
-before writing**, and both refuse to run a second time (exit `1`) so they can
-never double-edit a tree.
+Three ways to move this work into another checkout. All three are verified to
+land on **exactly** the same tree.
+
+| # | path | use it when |
+| --- | --- | --- |
+| 1 | `patches/*.patch` | a clean `0bf913f` checkout: `git apply` all three, done |
+| 2 | `patches/apply-*.py` | a VM that already has part of the work (surgical, exact-text) |
+| 3 | `patches/tests/` | the verified test files `--with-tests` installs |
+
+## 1. The three git patches
 
 ```bash
-# on the VM, from the repo root
-python3 patches/apply-commission-fixes.py      # section 2: influencer_hub/
-python3 patches/apply-password-policy.py       # section 3: dashboard/
+cd ~/Influencers-deals
+git apply patches/commission-leaks.patch   # influencer_hub/
+git apply patches/password-policy.patch    # dashboard/
+git apply patches/tests.patch              # tests/
+pytest -q                                  # 285 passed
+```
+
+| patch | lines | covers |
+| --- | --- | --- |
+| `commission-leaks.patch` | 681 | `influencer_hub/` — the three leaks **and** the account model |
+| `password-policy.patch` | 666 | `dashboard/` — password only for removals + the who-earns table |
+| `tests.patch` | 1254 | `tests/` — every changed and new test file |
+
+They are generated with `git diff 0bf913f..HEAD -- <dir>`, so they apply on a
+clean `main` (`0bf913f`) and reproduce this branch byte for byte.
+
+## 2. The three appliers
+
+```bash
+python3 patches/apply-commission-fixes.py --with-tests
+python3 patches/apply-password-policy.py  --with-tests
+python3 patches/apply-account-model.py    --with-tests
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
 ```
 
-Each script supports:
+| applier | touches | what it fixes |
+| --- | --- | --- |
+| `apply-commission-fixes.py` | `influencer_hub/` | tagged Amazon pages kept, `convert_option` payload, `affExtParam2`/`id=` provenance |
+| `apply-password-policy.py` | `dashboard/` | `REAUTH_REQUIRED_ENDPOINTS` 28 → 3, no `data-require-reauth` on adds/saves, one shared unlock dialog |
+| `apply-account-model.py` | both | installs `influencer_hub/accounts.py` + wires it in (their Amazon id, our EarnKaro/HYPD) |
+
+Each supports `--check`, `--dry-run`, `--with-tests` and stops a second run:
 
 | flag | meaning |
 | --- | --- |
@@ -25,77 +57,76 @@ Exit codes: `0` applied / already in place with `--check`, `1` already applied
 (stop — never double-edit), `2` the file did not match the verified revision
 (nothing was written).
 
-## What each patch does
+**On the VM, apply only what is missing.** The commission fixes are already
+live there; `apply-account-model.py` and `apply-password-policy.py` are the two
+it still needs. Each applier touches a different set of functions, so they can
+run in any order. Without `--with-tests` an applier changes only its own code
+files — the tests it installs assume **all three** policies are in place.
 
-### `apply-commission-fixes.py` — the three commission leaks
+## 3. What each policy actually does
 
-1. **Amazon attribution is decided by the `tag`, not by the `/dp/` path.**
-   A search page / storefront / `amzn.to` short link carrying OUR Associate tag
-   used to be flagged "not OUR canonical" and deleted by the commission guard —
-   throwing away real commission. `advanced_shortener.is_our_amazon_attribution`
-   now keeps any Amazon URL with exactly one tag equal to ours, in the guard,
-   in Money Radar and in the pipeline's "does anything still earn?" check.
-   Files: `link_router.py`, `advanced_shortener.py`, `commission_guard.py`,
-   `money_radar.py`, `pipeline.py`.
-2. **EarnKaro converter payload.** The verified contract is
-   `{"deal": <clean merchant url>, "convert_option": "convert_only"}`. A wrong
-   body answers HTTP 200 with no link, so Flipkart / Myntra / Ajio / Nykaa /
-   Croma / Shopsy links posted for free. Fixed in `convert_one` and in the live
-   verifier.
-3. **Publisher provenance.** The publisher id is read from `affExtParam2` **and**
-   from a plain numeric `id=` (`link_router.publisher_ids_in_url`). A link that
-   carries somebody else's id falls back to the raw merchant URL instead of
-   being accepted as ours.
+### Commission leaks (`influencer_hub/`)
 
-### `apply-password-policy.py` — password only for removals
+1. **Amazon attribution follows the `tag`, not the `/dp/` path.** A search page /
+   storefront / `amzn.to` short link carrying OUR tag is kept instead of being
+   deleted by the commission guard
+   (`advanced_shortener.is_our_amazon_attribution`, used by the guard, Money
+   Radar and the pipeline's "does anything still earn?" check).
+2. **EarnKaro payload.** `{"deal": <clean url>, "convert_option": "convert_only"}`
+   in `convert_one` *and* the live verifier. The old body answered HTTP 200 with
+   no link, which posted unpaid Flipkart / Myntra / Ajio / Nykaa / Croma /
+   Shopsy links.
+3. **Provenance.** `link_router.publisher_ids_in_url()` reads `affExtParam2`
+   **and** a numeric `id=`; a link carrying somebody else's id falls back to the
+   raw merchant URL.
 
-* `REAUTH_REQUIRED_ENDPOINTS`: 28 endpoints → exactly
-  `delete_channel`, `delete_influencer`, `delete_deal_source`.
+### Account model (`influencer_hub/accounts.py`)
+
+| network | who earns | enforced by |
+| --- | --- | --- |
+| Amazon | the **creator** (their own Associate tag) | `accounts.creator_amazon_tag()` — channel override → creator tag → flagged fallback |
+| EarnKaro | **us** (vault credentials + publisher id) | `accounts.central_earnkaro_*()` |
+| Meesho / HYPD | **us** (our store id) | `accounts.hypd_store_for()` — with `central_network_accounts` on (default) a stored per-creator store cannot take the commission |
+| LehLah | the source's attribution | preserved as-is |
+
+Pipeline, Money Radar and both dashboard previews resolve through the module, so
+posts and the money audit can never disagree; Easy Setup shows a **"whose
+account earns"** table.
+
+### Password policy (`dashboard/`)
+
+* `REAUTH_REQUIRED_ENDPOINTS`: 28 endpoints → `delete_channel`,
+  `delete_influencer`, `delete_deal_source`.
 * `data-require-reauth` removed from the 20 add / save / toggle / poll /
-  Easy-Setup / money-switch forms; kept on the 3 removal forms.
-* Delete-Influencer loses its own inline `prompt()`/`admin_password` field and
-  uses the same shared unlock dialog as every other removal.
-* Copy says **Removals**, not "setup changes", everywhere (app.py flash, nav
-  lock button, no-JS banner, unlock dialog, Easy Setup / Setup / Money hints).
+  Easy-Setup / money-switch forms (kept on the four removal tags).
+* Delete-Influencer drops its own `prompt()`/`admin_password` and uses the shared
+  unlock dialog; copy says **Removals** everywhere.
+* The Vault tab keeps its separate password gate (it stores credentials).
 
-## `patches/tests/`
+## `patches/tests/` + `conftest.py`
 
-Byte-identical copies of the branch's `tests/` versions for the files touched by
-the two policies above (`test_reauth_policy.py` is new):
+`patches/tests/` holds byte-identical copies of the test files the policies
+touched (including `test_reauth_policy.py`, `test_amazon_tag_attribution.py` and
+`test_account_model.py`). `patches/conftest.py` keeps pytest from collecting the
+bundle, so a receiving checkout needs no extra config.
 
-```
-test_advanced_features.py        test_amazon_tag_attribution.py
-test_channel_add_delete_unlock.py test_dashboard_security.py
-test_earnkaro_live.py            test_easy_setup_and_routing.py
-test_reauth_policy.py
-```
-
-`--with-tests` copies them over `tests/`. They assume **both** patches have been
-applied (that is the state of this branch), so run it only when both are in
-place. Without `--with-tests` the scripts touch nothing outside
-`influencer_hub/` and `dashboard/` respectively.
-
-`patches/conftest.py` keeps pytest from collecting this folder, so a checkout
-that receives `patches/` can run its suite without any extra config — the bundle
-is self-contained.
-
-**On the VM, run `apply-password-policy.py` only.** The commission fixes are
-already live there, and the commission applier would either report "already
-applied" or abort with exit `2` (writing nothing) because the VM files no longer
-match the verified `main` revision.
+`tests/test_patch_bundle.py` is the drift guard for all of this: it fails if a
+`.patch` is malformed, if `patches/tests/` copies diverge from `tests/`, or if an
+applier no longer reports the branch state.
 
 ## Traps (learned the hard way)
 
 * **Never** `git checkout -- <file>` on the VM — the VM holds fixes that are not
   in `origin/main`, so a checkout silently reverts them.
-* `patch -U0` mis-applies these bundles (context-free hunks land in the wrong
-  place). Always use these scripts.
-* Keep artifacts **inside** the repo. A sandbox restart wipes `/home/user/*.patch`
-  and any other file outside the checkout; that is why this bundle lives here.
+* `patch -U0` mis-applies these bundles. Use `git apply` or the appliers.
+* Keep artifacts **inside** the repo: a sandbox restart wipes `/home/user/*.patch`
+  and anything else outside the checkout.
+* Don't mix paths casually — a `.patch` expects a clean `0bf913f`; an applier
+  expects the mix of fixes the VM actually has.
 
 ## Verified end-to-end
 
-A fresh clone of `main` + both appliers + `--with-tests` reproduces this
-branch's `influencer_hub/`, `dashboard/` and the seven test files byte for byte,
-and the suite reports **263 passed** (baseline on `main` before these patches:
-**234 passed**).
+* clean `0bf913f` + the three `.patch` files → **285 passed**, byte-identical tree
+* clean `0bf913f` + the three appliers (`--with-tests`) → **285 passed**, byte-identical tree
+* a second run of every applier → exit `1`, nothing written
+* baseline on `main` before any of this: **234 passed**
