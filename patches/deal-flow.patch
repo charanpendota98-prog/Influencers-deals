@@ -1,0 +1,474 @@
+diff --git a/dashboard/app.py b/dashboard/app.py
+index 5670213..c0f7364 100644
+--- a/dashboard/app.py
++++ b/dashboard/app.py
+@@ -1740,6 +1740,144 @@ ROUTING_SAMPLES = (
+ )
+ 
+ 
++def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dict:
++    """Is posting still flowing from the sources? One honest answer.
++
++    Sources that have produced a deal before but nothing for `stall_seconds` are
++    marked stalled, channels show their last successful post, and the worker's
++    heartbeat says whether anything is pulling at all. Pure reads; no network.
++    """
++    now = time.time()
++    note_list: list[str] = []
++
++    worker = db.get_worker_heartbeat()
++    worker_age = None
++    if worker and worker.get("heartbeat_at"):
++        worker_age = max(0.0, now - float(worker["heartbeat_at"]))
++    worker_alive = worker_age is not None and worker_age <= max(
++        120, 3 * int(getattr(config, "DEAL_WORKER_POLL_INTERVAL", 30) or 30)
++    )
++    if worker is None:
++        note_list.append(
++            "The deal worker has never reported in. Posts cannot flow until the "
++            "influencer-deal-worker service is running."
++        )
++    elif not worker_alive:
++        note_list.append(
++            f"No fresh worker heartbeat ({int(worker_age or 0)}s ago). Check "
++            "systemctl status influencer-deal-worker."
++        )
++
++    try:
++        sources = db.list_sources(active_only=False)
++    except Exception:
++        sources = []
++    active_specs = [
++        str(source.get("spec") or "").strip()
++        for source in sources
++        if source.get("active")
++    ]
++    activity = {row["source_key"]: row for row in db.list_source_activity()}
++    flow_sources: list[dict] = []
++    for spec in active_specs:
++        row = activity.get(spec) or {}
++        last_seen = float(row.get("last_seen_at") or 0)
++        delivered = bool(row)
++        flow_sources.append({
++            "spec": spec,
++            "deals_seen": int(row.get("deals_seen") or 0),
++            "posts_dispatched": int(row.get("posts_dispatched") or 0),
++            "failures": int(row.get("failures") or 0),
++            "last_error": str(row.get("last_error") or ""),
++            "last_seen_at": last_seen or None,
++            "age_seconds": int(now - last_seen) if last_seen else None,
++            "never_delivered": not delivered,
++            "stalled": delivered and (now - last_seen) > stall_seconds,
++        })
++    flow_sources.sort(
++        key=lambda item: (
++            item["never_delivered"],
++            item["age_seconds"] if item["age_seconds"] is not None else 0,
++        ),
++        reverse=True,
++    )
++    stalled = [row for row in flow_sources if row["stalled"]]
++    never = [row for row in flow_sources if row["never_delivered"]]
++    if active_specs and never:
++        note_list.append(
++            f"{len(never)} of {len(active_specs)} active sources have not delivered a "
++            "deal yet — they may not be joined by the Telegram account, or the "
++            "source is quiet."
++        )
++    if stalled:
++        note_list.append(
++            f"{len(stalled)} source(s) delivered before but nothing for over "
++            f"{stall_seconds // 3600}h."
++        )
++
++    try:
++        channels = db.channel_post_activity(hours=window_hours)
++    except Exception:
++        channels = []
++    live_channels = [
++        channel for channel in channels
++        if str(channel.get("status") or "").strip().lower() in {"ready", "active"}
++    ]
++    posted_window = sum(int(channel.get("posted_in_window") or 0) for channel in channels)
++    failed_total = sum(int(channel.get("failed_total") or 0) for channel in channels)
++    try:
++        hourly_loot = str(db.get_global_setting("hourly_loot_enabled", "0")).strip().lower() in {
++            "1", "true", "yes", "on"
++        }
++    except Exception:
++        hourly_loot = False
++    only_earning = bool(getattr(config, "ONLY_EARNING_DEALS", False))
++    if live_channels and not posted_window and worker_alive:
++        note_list.append(
++            f"No post in the last {window_hours}h across {len(live_channels)} ready "
++            "channel(s): either the sources are quiet or every deal was filtered."
++        )
++        if not hourly_loot:
++            note_list.append(
++                "The hourly loot sweep is off (global setting hourly_loot_enabled=1 "
++                "turns on an extra hourly pass over the sources)."
++            )
++
++    return {
++        "ok": True,
++        "generated_at": now,
++        "worker": {
++            "state": (worker or {}).get("state") or "not_reporting",
++            "alive": worker_alive,
++            "age_seconds": int(worker_age) if worker_age is not None else None,
++            "last_poll_at": (worker or {}).get("last_poll_at") or None,
++            "last_error_code": (worker or {}).get("last_error_code") or "",
++            "poll_interval_seconds": int(getattr(config, "DEAL_WORKER_POLL_INTERVAL", 30) or 30),
++        },
++        "sources": {
++            "active": len(active_specs),
++            "paused": max(0, len(sources) - len(active_specs)),
++            "delivered": len([row for row in flow_sources if not row["never_delivered"]]),
++            "stalled": len(stalled),
++            "never_delivered": len(never),
++            "rows": flow_sources,
++        },
++        "channels": {
++            "ready": len(live_channels),
++            "posted_in_window": posted_window,
++            "failed_total": failed_total,
++            "window_hours": window_hours,
++            "rows": channels,
++        },
++        "settings": {
++            "hourly_loot_enabled": hourly_loot,
++            "only_earning_deals": only_earning,
++        },
++        "notes": note_list,
++        "stall_seconds": stall_seconds,
++    }
++
++
+ def _earnkaro_ready() -> bool:
+     return bool(db.get_global_setting("earnkaro_api_key", "") or config.EARNKARO_API_KEY)
+ 
+@@ -2118,6 +2256,7 @@ def easy_setup():
+         switches=ROUTING_SWITCHES,
+         source_count=len(sources),
+         active_source_count=active_sources,
++        flow=_flow_snapshot(),
+     )
+ 
+ 
+@@ -2196,6 +2335,20 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
+     }
+ 
+ 
++@app.route("/api/flow")
++def api_flow():
++    """Read-only deal-flow status: worker, sources, channels (no network calls)."""
++    try:
++        stall_seconds = max(600, int(request.args.get("stall_seconds", 3 * 3600)))
++    except (TypeError, ValueError):
++        stall_seconds = 3 * 3600
++    try:
++        window_hours = max(1, min(168, int(request.args.get("window_hours", 24))))
++    except (TypeError, ValueError):
++        window_hours = 24
++    return jsonify(_flow_snapshot(stall_seconds=stall_seconds, window_hours=window_hours))
++
++
+ @app.route("/api/routing-preview")
+ def routing_preview_api():
+     """Live routing table for the current easy-setup form values."""
+diff --git a/dashboard/templates/easy_setup.html b/dashboard/templates/easy_setup.html
+index 55f94ee..4b90063 100644
+--- a/dashboard/templates/easy_setup.html
++++ b/dashboard/templates/easy_setup.html
+@@ -127,4 +127,78 @@
+     <span class="hint">Easy Setup saves immediately — no password. Only removals (delete a channel, a creator or a deal source) ask for the password, once per unlock window.</span>
+   </div>
+ </form>
++
++{% if flow %}
++<section class="easy-card" id="deal-flow">
++  <h2>🔄 Deal flow — sources → posts</h2>
++  <p class="hint">
++    {% if flow.worker.alive %}
++      ✅ Worker <strong>{{ flow.worker.state }}</strong> — last poll
++      {{ flow.worker.age_seconds }}s ago, checking every
++      {{ flow.worker.poll_interval_seconds }}s.
++    {% else %}
++      ⚠️ Worker <strong>{{ flow.worker.state }}</strong>{% if flow.worker.age_seconds %} (last seen {{ flow.worker.age_seconds }}s ago){% endif %} — posts cannot flow without it.
++      <code>sudo systemctl status influencer-deal-worker</code>
++    {% endif %}
++  </p>
++  <p class="hint">
++    Sources: <strong>{{ flow.sources.active }} active</strong>
++    ({{ flow.sources.paused }} paused) ·
++    <strong>{{ flow.sources.delivered }}</strong> delivered a deal ·
++    {{ flow.sources.never_delivered }} never delivered ·
++    {{ flow.sources.stalled }} stalled.
++    Channels: <strong>{{ flow.channels.ready }} ready</strong> ·
++    {{ flow.channels.posted_in_window }} posted and
++    {{ flow.channels.failed_total }} failed (all-time).
++    Hourly loot sweep: <strong>{{ 'on' if flow.settings.hourly_loot_enabled else 'off' }}</strong>.
++  </p>
++  {% for note in flow.notes %}
++    <p class="routing-note is-warn">⚠️ {{ note }}</p>
++  {% endfor %}
++
++  <details class="easy-advanced">
++    <summary>Per-source detail (advanced)</summary>
++    <table class="routing-table">
++      <thead>
++        <tr><th>Source</th><th>Last deal</th><th>Deals</th><th>Posted</th><th>State</th></tr>
++      </thead>
++      <tbody>
++        {% for row in flow.sources.rows %}
++          <tr class="routing-row is-{{ 'warn' if row.stalled or row.never_delivered else 'ok' }}">
++            <td><code>{{ row.spec }}</code></td>
++            <td>{% if row.age_seconds is not none %}{{ (row.age_seconds // 3600) }}h {{ ((row.age_seconds % 3600) // 60) }}m ago{% else %}—{% endif %}</td>
++            <td>{{ row.deals_seen }}</td>
++            <td>{{ row.posts_dispatched }}</td>
++            <td>
++              {% if row.stalled %}⚠️ stalled{% elif row.never_delivered %}· no deal yet{% elif row.failures %}⚠️ {{ row.failures }} failure(s){% else %}✅ flowing{% endif %}
++              {% if row.last_error %}<span class="routing-note">{{ row.last_error }}</span>{% endif %}
++            </td>
++          </tr>
++        {% else %}
++          <tr><td colspan="5">No active sources yet. Add them above or in Vault &amp; Sources.</td></tr>
++        {% endfor %}
++      </tbody>
++    </table>
++
++    <table class="routing-table">
++      <thead>
++        <tr><th>Channel</th><th>Last post</th><th>Posted {{ flow.channels.window_hours }}h</th><th>Failed (all-time)</th></tr>
++      </thead>
++      <tbody>
++        {% for row in flow.channels.rows %}
++          <tr class="routing-row is-{{ 'warn' if row.failed_total else 'ok' }}">
++            <td><strong>{{ row.influencer_name }}</strong><code>{{ row.platform }} · {{ row.identifier }}</code></td>
++            <td>{{ row.last_posted_at or '—' }}</td>
++            <td>{{ row.posted_in_window }}</td>
++            <td>{{ row.failed_total }}</td>
++          </tr>
++        {% else %}
++          <tr><td colspan="4">No channels configured yet.</td></tr>
++        {% endfor %}
++      </tbody>
++    </table>
++    <p class="hint">Machine-readable: <code>/api/flow</code> (add <code>?stall_seconds=</code> or <code>?window_hours=</code>).</p>
++  </details>
++</section>
++{% endif %}
+ {% endblock %}
+diff --git a/influencer_hub/db.py b/influencer_hub/db.py
+index 2486117..b8af3ce 100644
+--- a/influencer_hub/db.py
++++ b/influencer_hub/db.py
+@@ -122,6 +122,21 @@ CREATE TABLE IF NOT EXISTS worker_offsets (
+     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+ );
+ 
++-- Per-source deal flow: when a source last produced a deal, how many were
++-- dispatched, and how many failed. This is what makes "is posting still
++-- flowing?" answerable per source instead of guessing from logs.
++CREATE TABLE IF NOT EXISTS source_activity (
++    source_key        TEXT PRIMARY KEY,
++    last_seen_at      REAL NOT NULL DEFAULT 0,
++    last_message_at   REAL NOT NULL DEFAULT 0,
++    last_message_id   INTEGER NOT NULL DEFAULT 0,
++    deals_seen        INTEGER NOT NULL DEFAULT 0,
++    posts_dispatched  INTEGER NOT NULL DEFAULT 0,
++    failures          INTEGER NOT NULL DEFAULT 0,
++    last_error        TEXT NOT NULL DEFAULT '',
++    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
++);
++
+ -- First-party, auditable Amazon redirects. The short public URL still carries
+ -- the creator's Associates tag; targets are restricted in the redirect route.
+ CREATE TABLE IF NOT EXISTS amazon_short_links (
+@@ -1288,6 +1303,99 @@ def set_worker_offset(source_key: str, last_message_id: int) -> None:
+         con.close()
+ 
+ 
++def record_source_activity(
++    source_key: str,
++    *,
++    message_id: int = 0,
++    posted: int = 0,
++    failed: int = 0,
++    error: str = "",
++    now: float | None = None,
++) -> None:
++    """Record that one source produced a deal and what happened to it.
++
++    Called by the worker for every handled message, so the dashboard can show a
++    per-source flow instead of a single global heartbeat.
++    """
++    key = str(source_key or "").strip()
++    if not key:
++        return
++    stamp = time.time() if now is None else float(now)
++    message_id = int(message_id or 0)
++    con = _connect()
++    try:
++        con.execute(
++            "INSERT INTO source_activity (source_key, last_seen_at, last_message_at, "
++            "last_message_id, deals_seen, posts_dispatched, failures, last_error, updated_at) "
++            "VALUES (?,?,?,?,?,?,?,?,?) "
++            "ON CONFLICT(source_key) DO UPDATE SET "
++            "last_seen_at=excluded.last_seen_at, "
++            "last_message_at=CASE WHEN excluded.last_message_id > source_activity.last_message_id "
++            "THEN excluded.last_message_at ELSE source_activity.last_message_at END, "
++            "last_message_id=MAX(source_activity.last_message_id, excluded.last_message_id), "
++            "deals_seen=source_activity.deals_seen + excluded.deals_seen, "
++            "posts_dispatched=source_activity.posts_dispatched + excluded.posts_dispatched, "
++            "failures=source_activity.failures + excluded.failures, "
++            "last_error=CASE WHEN excluded.last_error <> '' THEN excluded.last_error "
++            "ELSE source_activity.last_error END, "
++            "updated_at=excluded.updated_at",
++            (key, stamp, stamp if message_id else 0.0, message_id, 1,
++             int(posted or 0), int(failed or 0), str(error or "")[:300], _now()),
++        )
++        con.commit()
++    finally:
++        con.close()
++
++
++def list_source_activity() -> list[dict]:
++    """Every source that has produced at least one deal, newest activity last."""
++    con = _connect()
++    try:
++        rows = con.execute(
++            "SELECT source_key, last_seen_at, last_message_at, last_message_id, "
++            "deals_seen, posts_dispatched, failures, last_error, updated_at "
++            "FROM source_activity ORDER BY last_seen_at ASC"
++        ).fetchall()
++        return [dict(row) for row in rows]
++    finally:
++        con.close()
++
++
++def channel_post_activity(hours: int = 24) -> list[dict]:
++    """Per channel: the last successful post, posts in the window, failures.
++
++    ``posts.posted_at`` is only stamped for successful posts, so failures are
++    reported all-time (``failed_total``) rather than pretending they are dated.
++    """
++    try:
++        window = max(1, int(hours))
++    except (TypeError, ValueError):
++        window = 24
++    from datetime import datetime, timedelta, timezone
++
++    cutoff = (datetime.now(timezone.utc) - timedelta(hours=window)).isoformat(
++        timespec="seconds"
++    )
++    con = _connect()
++    try:
++        rows = con.execute(
++            "SELECT c.id AS channel_id, c.influencer_id, c.platform, c.identifier, "
++            "c.status, c.role, i.name AS influencer_name, "
++            "MAX(p.posted_at) AS last_posted_at, "
++            "COALESCE(SUM(CASE WHEN p.status='posted' AND p.posted_at >= ? THEN 1 ELSE 0 END), 0) "
++            "AS posted_in_window, "
++            "COALESCE(SUM(CASE WHEN p.status='failed' THEN 1 ELSE 0 END), 0) "
++            "AS failed_total "
++            "FROM channels c LEFT JOIN influencers i ON i.id = c.influencer_id "
++            "LEFT JOIN posts p ON p.channel_id = c.id "
++            "GROUP BY c.id ORDER BY c.influencer_id, c.id",
++            (cutoff,),
++        ).fetchall()
++        return [dict(row) for row in rows]
++    finally:
++        con.close()
++
++
+ def reserve_whatsapp_send(
+     session_key: str,
+     gap_seconds: float,
+diff --git a/influencer_hub/worker.py b/influencer_hub/worker.py
+index 0b683b8..db63b0b 100644
+--- a/influencer_hub/worker.py
++++ b/influencer_hub/worker.py
+@@ -26,6 +26,42 @@ def _failed_delivery(results: dict) -> bool:
+     )
+ 
+ 
++def _delivery_counts(results: dict) -> tuple[int, int]:
++    """Count posted and failed destinations across one pipeline result."""
++    posted = failed = 0
++    for per_channel in (results or {}).values():
++        for status in (per_channel or {}).values():
++            normalized = str(status).strip().lower()
++            if normalized.startswith("posted"):
++                posted += 1
++            elif normalized.startswith("failed"):
++                failed += 1
++    return posted, failed
++
++
++def _first_failure_reason(results: dict) -> str:
++    """The first failure detail, so the flow board can show why a source stalled."""
++    for per_channel in (results or {}).values():
++        for status in (per_channel or {}).values():
++            normalized = str(status).strip()
++            if normalized.lower().startswith("failed"):
++                return normalized[:300]
++    return ""
++
++
++def _record_source_activity(
++    source_key: str, *, message_id: int = 0, posted: int = 0, failed: int = 0,
++    error: str = "",
++) -> None:
++    """Per-source flow bookkeeping; never allowed to stop ingestion."""
++    try:
++        db.record_source_activity(
++            source_key, message_id=message_id, posted=posted, failed=failed, error=error
++        )
++    except Exception:
++        logger.warning("Could not record source activity", exc_info=True)
++
++
+ def _record_heartbeat(state: str, *, poll_completed: bool = False, error_code: str = "") -> None:
+     try:
+         db.record_worker_heartbeat(
+@@ -109,14 +145,21 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
+                     seen_sigs_this_batch.add(_sig)
+                 except Exception:
+                     pass
++            posted = failed = 0
++            failure_note = ""
+             if text:
+                 deal = {"text": text, "source": str(record.get("source") or "")}
+                 try:
+                     result = await pipeline.run_once([deal])
+-                except Exception:
++                except Exception as exc:
+                     logger.exception("Pipeline failed for source %s message %s", source_key, message_id)
++                    _record_source_activity(
++                        source_key, message_id=message_id, failed=1,
++                        error=f"{type(exc).__name__}: {exc}",
++                    )
+                     retried += 1
+                     break
++                posted, failed = _delivery_counts(result)
+                 if _failed_delivery(result):
+                     # Some target(s) may have succeeded; pipeline dedup makes
+                     # their retry idempotent. Keep this source cursor unchanged
+@@ -125,8 +168,16 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
+                         "Delivery failure for source %s message %s; cursor held for retry",
+                         source_key, message_id,
+                     )
++                    failure_note = _first_failure_reason(result)
++                    _record_source_activity(
++                        source_key, message_id=message_id, posted=posted,
++                        failed=max(1, failed), error=failure_note,
++                    )
+                     retried += 1
+                     break
++                _record_source_activity(
++                    source_key, message_id=message_id, posted=posted, failed=failed
++                )
+ 
+             # Empty/media-only Telegram posts have no text parser input; mark
+             # them handled so they cannot block later deals forever.

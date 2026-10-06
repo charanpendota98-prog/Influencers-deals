@@ -43,7 +43,7 @@
 {% if source_count == 0 %}
   <div class="dashboard-alert" role="status">
     <strong>No deal sources yet.</strong> Add the recommended loot sources once and every creator starts receiving deals.
-    <form method="post" action="{{ url_for('seed_default_sources') }}" style="display:inline; margin-left:8px;" data-require-reauth>
+    <form method="post" action="{{ url_for('seed_default_sources') }}" style="display:inline; margin-left:8px;">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
       <button type="submit" class="btn btn-primary">📡 Add recommended sources</button>
     </form>
@@ -52,7 +52,7 @@
   <div class="dashboard-alert" role="status"><strong>Sources are paused.</strong> Turn them on in <a class="text-link" href="{{ url_for('secret_vault_tab') }}">Vault &amp; Sources</a>.</div>
 {% endif %}
 
-<form method="post" action="{{ url_for('easy_setup') }}" class="easy-form" id="easy-setup-form" data-require-reauth>
+<form method="post" action="{{ url_for('easy_setup') }}" class="easy-form" id="easy-setup-form">
   <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
 
   <section class="easy-card">
@@ -124,7 +124,81 @@
 
   <div class="easy-actions">
     <button type="submit" class="btn btn-primary">💾 Save &amp; start posting</button>
-    <span class="hint">One password confirmation unlocks setup for {{ setup_unlock_window_minutes }} minutes.</span>
+    <span class="hint">Easy Setup saves immediately — no password. Only removals (delete a channel, a creator or a deal source) ask for the password, once per unlock window.</span>
   </div>
 </form>
+
+{% if flow %}
+<section class="easy-card" id="deal-flow">
+  <h2>🔄 Deal flow — sources → posts</h2>
+  <p class="hint">
+    {% if flow.worker.alive %}
+      ✅ Worker <strong>{{ flow.worker.state }}</strong> — last poll
+      {{ flow.worker.age_seconds }}s ago, checking every
+      {{ flow.worker.poll_interval_seconds }}s.
+    {% else %}
+      ⚠️ Worker <strong>{{ flow.worker.state }}</strong>{% if flow.worker.age_seconds %} (last seen {{ flow.worker.age_seconds }}s ago){% endif %} — posts cannot flow without it.
+      <code>sudo systemctl status influencer-deal-worker</code>
+    {% endif %}
+  </p>
+  <p class="hint">
+    Sources: <strong>{{ flow.sources.active }} active</strong>
+    ({{ flow.sources.paused }} paused) ·
+    <strong>{{ flow.sources.delivered }}</strong> delivered a deal ·
+    {{ flow.sources.never_delivered }} never delivered ·
+    {{ flow.sources.stalled }} stalled.
+    Channels: <strong>{{ flow.channels.ready }} ready</strong> ·
+    {{ flow.channels.posted_in_window }} posted and
+    {{ flow.channels.failed_total }} failed (all-time).
+    Hourly loot sweep: <strong>{{ 'on' if flow.settings.hourly_loot_enabled else 'off' }}</strong>.
+  </p>
+  {% for note in flow.notes %}
+    <p class="routing-note is-warn">⚠️ {{ note }}</p>
+  {% endfor %}
+
+  <details class="easy-advanced">
+    <summary>Per-source detail (advanced)</summary>
+    <table class="routing-table">
+      <thead>
+        <tr><th>Source</th><th>Last deal</th><th>Deals</th><th>Posted</th><th>State</th></tr>
+      </thead>
+      <tbody>
+        {% for row in flow.sources.rows %}
+          <tr class="routing-row is-{{ 'warn' if row.stalled or row.never_delivered else 'ok' }}">
+            <td><code>{{ row.spec }}</code></td>
+            <td>{% if row.age_seconds is not none %}{{ (row.age_seconds // 3600) }}h {{ ((row.age_seconds % 3600) // 60) }}m ago{% else %}—{% endif %}</td>
+            <td>{{ row.deals_seen }}</td>
+            <td>{{ row.posts_dispatched }}</td>
+            <td>
+              {% if row.stalled %}⚠️ stalled{% elif row.never_delivered %}· no deal yet{% elif row.failures %}⚠️ {{ row.failures }} failure(s){% else %}✅ flowing{% endif %}
+              {% if row.last_error %}<span class="routing-note">{{ row.last_error }}</span>{% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5">No active sources yet. Add them above or in Vault &amp; Sources.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <table class="routing-table">
+      <thead>
+        <tr><th>Channel</th><th>Last post</th><th>Posted {{ flow.channels.window_hours }}h</th><th>Failed (all-time)</th></tr>
+      </thead>
+      <tbody>
+        {% for row in flow.channels.rows %}
+          <tr class="routing-row is-{{ 'warn' if row.failed_total else 'ok' }}">
+            <td><strong>{{ row.influencer_name }}</strong><code>{{ row.platform }} · {{ row.identifier }}</code></td>
+            <td>{{ row.last_posted_at or '—' }}</td>
+            <td>{{ row.posted_in_window }}</td>
+            <td>{{ row.failed_total }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4">No channels configured yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="hint">Machine-readable: <code>/api/flow</code> (add <code>?stall_seconds=</code> or <code>?window_hours=</code>).</p>
+  </details>
+</section>
+{% endif %}
 {% endblock %}

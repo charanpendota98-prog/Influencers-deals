@@ -128,6 +128,46 @@ def _is_domain(host: str, domain: str) -> bool:
     return host == domain or host.endswith("." + domain)
 
 
+# Affiliaters/EarnKaro encode the publisher id in the query string. The API's
+# own parameter is `affExtParam2` (case-insensitive); converted links also
+# carry a plain `id`.
+PUBLISHER_PARAM_KEYS = ("affextparam2", "id")
+
+
+def _looks_like_publisher_id(value: str, expected_pubid: str = "") -> bool:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return False
+    expected = str(expected_pubid or "").strip()
+    if expected and candidate.casefold() == expected.casefold():
+        return True
+    # A bare numeric id is a real publisher id; anything else (variant ids,
+    # session ids, slugs) is only trusted when it matches our own id.
+    return bool(re.fullmatch(r"\d{3,24}", candidate))
+
+
+def publisher_ids_in_url(url: str, expected_pubid: str = "") -> list[str]:
+    """Return the EarnKaro/Affiliaters publisher ids visible in a URL.
+
+    ``affExtParam2`` is always a publisher signal. ``id`` is weaker, so it only
+    counts when it matches the expected publisher or looks like a numeric
+    publisher id — unrelated merchant ``id=`` parameters must not be mistaken
+    for somebody else's publisher.
+    """
+    try:
+        pairs = parse_qsl(urlparse(url).query, keep_blank_values=True)
+    except (TypeError, ValueError):
+        return []
+    values: list[str] = []
+    for key, value in pairs:
+        name = key.casefold()
+        if name == "affextparam2":
+            values.append(value)
+        elif name == "id" and _looks_like_publisher_id(value, expected_pubid):
+            values.append(value)
+    return values
+
+
 def _is_lehlah_meesho_affiliate(url: str) -> bool:
     """Detect LehLah/AppsFlyer tracking so its existing affiliate attribution is kept."""
     try:

@@ -1,0 +1,1537 @@
+diff --git a/tests/test_account_model.py b/tests/test_account_model.py
+new file mode 100644
+index 0000000..d39aef7
+--- /dev/null
++++ b/tests/test_account_model.py
+@@ -0,0 +1,250 @@
++"""The account model, pinned.
++
++One rule, three networks:
++
++    Amazon        -> the CREATOR's own Associate tag (their id signs the post)
++    EarnKaro      -> OUR central Affiliaters/EarnKaro account (vault credentials)
++    Meesho / HYPD -> OUR central HYPD store id
++
++`influencer_hub/accounts.py` is the single source of truth, and the pipeline,
++the dashboard previews and Money Radar must all resolve the same pair of
++accounts — otherwise the audit would report leaks that do not exist, or miss
++the ones that do.
++"""
++from __future__ import annotations
++
++import asyncio
++from unittest.mock import AsyncMock
++
++import pytest
++
++from dashboard.app import app
++from influencer_hub import accounts, config, db, money_radar, pipeline
++
++FLIPKART = "https://www.flipkart.com/product/p/itm123456"
++
++
++@pytest.fixture
++def hub(monkeypatch, tmp_path):
++    monkeypatch.setitem(app.config, "TESTING", True)
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "accounts.sqlite3")
++    db.init()
++    return app.test_client()
++
++
++# --------------------------------------------------------------------------
++# Amazon: the creator's own id
++# --------------------------------------------------------------------------
++def test_creator_tag_wins_and_the_channel_override_still_count(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "amazon.sqlite3")
++    db.init()
++    creator = {"amazon_tag": "ravi-21"}
++    channel = {"amazon_override_tag": ""}
++    assert accounts.creator_amazon_tag(creator, channel) == "ravi-21"
++    assert accounts.amazon_tag_source(creator, channel) == "creator"
++    assert accounts.amazon_tag_is_creators_own(creator, channel) is True
++
++    channel = {"amazon_override_tag": "ravi-shopsy-21"}
++    assert accounts.creator_amazon_tag(creator, channel) == "ravi-shopsy-21"
++    assert accounts.amazon_tag_source(creator, channel) == "channel"
++
++
++def test_missing_own_tag_falls_back_but_says_so(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "amazon-fallback.sqlite3")
++    db.init()
++    assert accounts.creator_amazon_tag({"amazon_tag": ""}) == config.AMAZON_ASSOCIATE_TAG
++    assert accounts.amazon_tag_source({"amazon_tag": ""}) == "fallback"
++    assert accounts.amazon_tag_is_creators_own({"amazon_tag": ""}) is False
++
++
++def test_creators_missing_own_tag_lists_the_profiles(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "amazon-checklist.sqlite3")
++    db.init()
++    db.add_influencer("Has Tag", "hastag-21")
++    db.add_influencer("Needs Tag", "")
++    listed = {row["name"] for row in accounts.creators_missing_own_tag()}
++    assert "Needs Tag" in listed
++    assert "Has Tag" not in listed
++
++
++# --------------------------------------------------------------------------
++# HYPD: always our store while central accounts are on
++# --------------------------------------------------------------------------
++def test_hypd_store_is_ours_even_when_a_creator_brings_their_own(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "hypd-central.sqlite3")
++    db.init()
++    db.set_global_setting("hypd_store_id", "93944")
++    influencer = {"hypd_store_id": "55555"}
++    channel = {"hypd_store_id": "77777"}
++
++    assert accounts.central_network_accounts_enabled() is True
++    assert accounts.hypd_store_for(influencer, channel) == "93944"
++    assert accounts.hypd_store_for(influencer, {}) == "93944"
++    assert accounts.hypd_store_for({}, channel) == "93944"
++
++
++def test_the_setting_off_restores_the_legacy_priority(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "hypd-legacy.sqlite3")
++    db.init()
++    db.set_global_setting("hypd_store_id", "93944")
++    db.set_global_setting("central_network_accounts", "0")
++    influencer = {"hypd_store_id": "55555"}
++    channel = {"hypd_store_id": "77777"}
++
++    assert accounts.central_network_accounts_enabled() is False
++    assert accounts.hypd_store_for(influencer, channel) == "77777"
++    assert accounts.hypd_store_for(influencer, {}) == "55555"
++    assert accounts.hypd_store_for({}, {}) == "93944"
++
++
++# --------------------------------------------------------------------------
++# EarnKaro: our vault credentials, never a creator row
++# --------------------------------------------------------------------------
++def test_earnkaro_accounts_come_from_the_vault(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "ek.sqlite3")
++    db.init()
++    db.set_global_setting("earnkaro_api_key", "vault-token")
++    db.set_global_setting("earnkaro_publisher_id", "5478322")
++    assert accounts.central_earnkaro_api_key() == "vault-token"
++    assert accounts.central_earnkaro_publisher_id() == "5478322"
++
++
++def test_earnkaro_conversion_is_creator_agnostic(monkeypatch, tmp_path):
++    """Two creators, one conversion call, OUR publisher id for both."""
++    from influencer_hub import earnkaro
++
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "ek-shared.sqlite3")
++    db.init()
++    db.set_global_setting("earnkaro_api_key", "vault-token")
++    db.set_global_setting("earnkaro_publisher_id", "5478322")
++    earnkaro.CACHE.clear()
++
++    class Session:
++        def __init__(self):
++            self.calls = []
++
++        async def __aenter__(self):
++            return self
++
++        async def __aexit__(self, *args):
++            return False
++
++        def post(self, url, json=None, headers=None, timeout=None):
++            self.calls.append({"json": json, "headers": headers})
++
++            class Response:
++                status = 200
++
++                async def __aenter__(self_inner):
++                    return self_inner
++
++                async def __aexit__(self_inner, *args):
++                    return False
++
++                async def text(self_inner):
++                    return (
++                        '{"success":1,"data":"https://www.flipkart.com/p/itm1'
++                        '?id=5478322"}'
++                    )
++
++            return Response()
++
++    with pytest.MonkeyPatch.context() as patcher:
++        patcher.setattr("influencer_hub.earnkaro.aiohttp.ClientSession", lambda: Session())
++        # Both creators post through the same converter client.
++        first = asyncio.run(earnkaro.convert_links({FLIPKART}))
++        second = asyncio.run(earnkaro.convert_links({FLIPKART}))
++    assert first == second
++    assert list(first.values())[0].endswith("id=5478322")
++
++
++# --------------------------------------------------------------------------
++# End to end: two creators, one deal
++# --------------------------------------------------------------------------
++def test_one_deal_posts_each_creators_own_tag_and_our_store(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "two-creators.sqlite3")
++    db.init()
++    db.set_global_setting("hypd_store_id", "93944")
++
++    ravi = db.add_influencer("Ravi", "ravi-21", hypd_store_id="55555")
++    sampath = db.add_influencer("Sampath", "sampath-21", hypd_store_id="66666")
++    for influencer_id in (ravi, sampath):
++        db.add_channel(
++            influencer_id, "telegram", f"@creator_{influencer_id}", status="ready",
++            allow_amazon=True, allow_earnkaro=True, allow_hypd=True,
++        )
++
++    captured: list[str] = []
++
++    async def fake_dispatch(_influencer, _channel, text):
++        captured.append(text)
++        return "posted"
++
++    monkeypatch.setattr(pipeline, "_earnkaro_map_for",
++                        AsyncMock(return_value={FLIPKART: "https://ekaro.in/ours"}))
++    monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
++
++    deal = (
++        "Amazon https://www.amazon.in/dp/B0ABCDEFGH?tag=source-21\n"
++        "HYPD https://hypd.store/12345/afflink/product-token\n"
++        f"Flipkart {FLIPKART}"
++    )
++    asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[ravi, sampath]))
++
++    assert len(captured) == 2
++    ravi_post = next(text for text in captured if "ravi-21" in text)
++    sampath_post = next(text for text in captured if "sampath-21" in text)
++
++    for post in (ravi_post, sampath_post):
++        # Amazon -> the creator's own tag
++        assert "tag=source-21" not in post
++        # HYPD -> OUR store, never the creator's own
++        assert "https://hypd.store/93944/afflink/product-token" in post
++        assert "hypd.store/55555" not in post
++        assert "hypd.store/66666" not in post
++        # EarnKaro -> our converted link
++        assert "https://ekaro.in/ours" in post
++    assert ravi_post != sampath_post
++
++
++# --------------------------------------------------------------------------
++# Money Radar audits with the same accounts
++# --------------------------------------------------------------------------
++def test_money_radar_audits_the_posted_accounts(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "radar-accounts.sqlite3")
++    db.init()
++    db.set_global_setting("hypd_store_id", "93944")
++    creator = {"id": 1, "amazon_tag": "ravi-21", "hypd_store_id": "55555"}
++    channel = {"id": 1, "amazon_override_tag": "", "hypd_store_id": "66666"}
++    assert money_radar._creator_routing(creator, channel) == ("ravi-21", "93944")
++
++
++# --------------------------------------------------------------------------
++# The dashboard says which account earns
++# --------------------------------------------------------------------------
++def test_routing_preview_shows_the_account_model(hub):
++    db.set_global_setting("earnkaro_api_key", "vault-token")
++    preview = hub.get(
++        "/api/routing-preview?amazon_tag=ravi-21&allow_amazon=1&allow_earnkaro=1&allow_hypd=1"
++    ).get_json()["preview"]
++
++    by_network = {row["network"]: row for row in preview["model"]}
++    assert by_network["Amazon"]["earns"] == "creator"
++    assert by_network["Amazon"]["account"] == "ravi-21"
++    assert by_network["EarnKaro"]["earns"] == "central"
++    assert by_network["Meesho (HYPD)"]["earns"] == "central"
++    assert by_network["Meesho (HYPD)"]["account"] == config.HYPD_STORE_ID
++
++    amazon_row = next(row for row in preview["rows"] if row["kind"] == "amazon")
++    assert "OWN tag" in amazon_row["note"]
++    hypd_row = next(row for row in preview["rows"] if row["kind"] == "hypd")
++    assert "OUR HYPD store" in hypd_row["note"]
++    merchant_row = next(row for row in preview["rows"] if row["kind"] == "merchant")
++    assert "OUR EarnKaro account" in merchant_row["note"]
++
++
++def test_model_rows_copy_is_explicit_about_who_earns():
++    rows = accounts.model_rows(amazon_tag="ravi-21")
++    assert rows[0]["detail"].startswith("Every Amazon link is posted with this creator")
++    assert "OUR EarnKaro account" in rows[1]["detail"]
++    assert "OUR store" in rows[2]["detail"]
+diff --git a/tests/test_advanced_features.py b/tests/test_advanced_features.py
+index e796072..4c8e0dc 100644
+--- a/tests/test_advanced_features.py
++++ b/tests/test_advanced_features.py
+@@ -33,8 +33,13 @@ def test_only_amazon_filter_channel_and_influencer():
+     db.delete_influencer(iid)
+ 
+ 
+-def test_delete_influencer_security_password(monkeypatch):
+-    """Verify that delete influencer route enforces admin password."""
++def test_delete_influencer_uses_the_shared_unlock_not_an_inline_password(monkeypatch):
++    """Deleting a creator is a removal: one shared confirmation, no second form.
++
++    The middleware gate itself (locked -> 428, unlocked -> 302) is pinned in
++    tests/test_reauth_policy.py; this test only proves the route no longer asks
++    for its own admin_password field.
++    """
+     from dashboard.app import app
+     monkeypatch.setitem(app.config, "TESTING", True)
+     monkeypatch.setattr(config, "ADMIN_DELETE_PASSWORD", "unit-test-admin-password")
+@@ -43,13 +48,8 @@ def test_delete_influencer_security_password(monkeypatch):
+     db.init()
+     iid = db.add_influencer("Delete Protect Test", "deltest-21")
+ 
+-    # Attempt delete with wrong password
+-    resp_wrong = client.post(f"/influencer/{iid}/delete", data={"admin_password": "wrongpassword"})
+-    assert resp_wrong.status_code == 302
+-    assert "err=invalid_password" in resp_wrong.headers["Location"]
+-    assert db.get_influencer(iid) is not None  # Not deleted!
+-
+-    # Attempt delete with correct password
+-    resp_correct = client.post(f"/influencer/{iid}/delete", data={"admin_password": config.ADMIN_DELETE_PASSWORD})
+-    assert resp_correct.status_code == 302
+-    assert db.get_influencer(iid) is None  # Successfully deleted!
++    # No admin_password is required any more — the shared unlock window already
++    # confirmed the operator before this removal form was allowed through.
++    resp = client.post(f"/influencer/{iid}/delete", data={})
++    assert resp.status_code == 302
++    assert db.get_influencer(iid) is None
+diff --git a/tests/test_amazon_tag_attribution.py b/tests/test_amazon_tag_attribution.py
+new file mode 100644
+index 0000000..e96af57
+--- /dev/null
++++ b/tests/test_amazon_tag_attribution.py
+@@ -0,0 +1,110 @@
++"""Attribution on Amazon is decided by the ``tag``, not by the ``/dp/`` path.
++
++The leak this pins: a source deal that linked an Amazon search page or a
++storefront carrying OUR Associate tag used to be flagged as "not OUR canonical
++Amazon link" and deleted by the commission guard — throwing away commission on
++a page that actually earned. Any Amazon URL with exactly one tag equal to ours
++must be kept, and only a wrong or missing tag is a real leak.
++"""
++from __future__ import annotations
++
++from influencer_hub import advanced_shortener, commission_guard, money_radar
++
++TAG = "creator-21"
++
++
++# --------------------------------------------------------------------------
++# The predicate itself
++# --------------------------------------------------------------------------
++def test_tagged_search_and_storefront_pages_carry_our_attribution():
++    for url in (
++        f"https://www.amazon.in/s?k=running+shoes&tag={TAG}",
++        f"https://www.amazon.in/stores/page/ABC?tag={TAG}",
++        f"https://www.amazon.in/gp/bestsellers/kitchen?tag={TAG}",
++        f"https://amzn.to/4dnF9lU?tag={TAG}",
++    ):
++        assert advanced_shortener.is_our_amazon_attribution(url, TAG), url
++
++
++def test_attribution_requires_exactly_our_tag():
++    assert not advanced_shortener.is_our_amazon_attribution(
++        "https://www.amazon.in/s?k=shoes", TAG
++    )
++    assert not advanced_shortener.is_our_amazon_attribution(
++        "https://www.amazon.in/s?k=shoes&tag=someone-21", TAG
++    )
++    assert not advanced_shortener.is_our_amazon_attribution(
++        f"https://www.amazon.in/s?k=shoes&tag={TAG}&tag=someone-21", TAG
++    )
++    assert not advanced_shortener.is_our_amazon_attribution(
++        f"https://www.flipkart.com/s?k=shoes&tag={TAG}", TAG
++    )
++
++
++# --------------------------------------------------------------------------
++# Commission guard: keep the page instead of deleting it
++# --------------------------------------------------------------------------
++def test_guard_keeps_a_tagged_search_page():
++    rendered = f"Grab it now 🔥 https://www.amazon.in/s?k=loot&tag={TAG}"
++    audit = commission_guard.audit_rendered_text(rendered, TAG, "")
++
++    assert audit["ok"] is True
++    assert audit["amazon_ok"] is True
++    assert audit["issues"] == []
++    detail = next(d for d in audit["details"] if d["kind"] == "amazon")
++    assert detail["ok"] is True
++    assert TAG in detail["reason"]
++
++    kept, _ = commission_guard.sanitize_rendered_text(rendered, TAG, "")
++    assert kept == rendered
++
++
++def test_guard_still_strips_a_search_page_tagged_for_someone_else():
++    rendered = "Grab it now 🔥 https://www.amazon.in/s?k=loot&tag=someone-21"
++    audit = commission_guard.audit_rendered_text(rendered, TAG, "")
++
++    assert audit["ok"] is False
++    assert audit["amazon_ok"] is False
++    assert any("someone-21" in issue or "not OUR canonical" in issue
++               for issue in audit["issues"])
++
++    kept, _ = commission_guard.sanitize_rendered_text(rendered, TAG, "")
++    assert "someone-21" not in kept
++    assert "Grab it now" in kept
++
++
++def test_guard_still_strips_an_untagged_search_page():
++    rendered = "Grab it now 🔥 https://www.amazon.in/s?k=loot"
++    audit = commission_guard.audit_rendered_text(rendered, TAG, "")
++
++    assert audit["ok"] is False
++    kept, _ = commission_guard.sanitize_rendered_text(rendered, TAG, "")
++    assert "amazon.in/s" not in kept
++
++
++def test_guard_keeps_the_product_page_path_working():
++    rendered = f"Deal https://www.amazon.in/dp/B0D9P2M1PB?tag={TAG}"
++    audit = commission_guard.audit_rendered_text(rendered, TAG, "")
++
++    assert audit["ok"] is True
++    assert audit["amazon_ok"] is True
++
++
++# --------------------------------------------------------------------------
++# Money Radar: a tagged search page is earning, not a leak
++# --------------------------------------------------------------------------
++def test_money_radar_counts_a_tagged_search_page_as_earning():
++    entry = money_radar.classify_link(
++        f"https://www.amazon.in/s?k=loot&tag={TAG}", TAG
++    )
++    assert entry["state"] == money_radar.STATE_EARNING
++    assert TAG in entry["reason"]
++
++
++def test_money_radar_still_flags_wrong_and_missing_tags():
++    wrong = money_radar.classify_link(
++        "https://www.amazon.in/s?k=loot&tag=someone-21", TAG
++    )
++    missing = money_radar.classify_link("https://www.amazon.in/s?k=loot", TAG)
++    assert wrong["state"] == money_radar.STATE_LEAK
++    assert missing["state"] == money_radar.STATE_LEAK
+diff --git a/tests/test_channel_add_delete_unlock.py b/tests/test_channel_add_delete_unlock.py
+index e3bf692..2e8aff9 100644
+--- a/tests/test_channel_add_delete_unlock.py
++++ b/tests/test_channel_add_delete_unlock.py
+@@ -2,9 +2,9 @@
+ 
+ The operator asked for three guarantees:
+   1. adding a channel works first time, with a clear message (good or bad);
+-  2. saving a channel and deleting a channel ask for the admin password;
++  2. adding and saving need no password at all, while deleting asks;
+   3. the password is asked ONCE at the start of a work session — every later
+-     add / save / delete goes through without another prompt.
++     removal goes through without another prompt.
+ """
+ from __future__ import annotations
+ 
+@@ -218,21 +218,33 @@ def test_add_channel_ignores_unknown_roles_and_price_filters(hub):
+ 
+ 
+ # --------------------------------------------------------------------------
+-# 2 + 3. One password confirmation covers add, save and delete
++# 2 + 3. Adding is free; removals use one password confirmation
+ # --------------------------------------------------------------------------
+-def test_first_channel_change_asks_for_the_password(hub):
++def test_adding_a_channel_needs_no_password_but_the_first_removal_asks(hub):
+     client, session = hub
+     influencer_id = db.add_influencer("Locked Creator", "locked-21")
+ 
+-    locked = _add_channel(client, session.token, influencer_id)
++    # Adding saves immediately — no unlock, no 428, no redirect to the banner.
++    added = _add_channel(client, session.token, influencer_id)
++    assert added.status_code == 302
++    assert "reauth=1" not in added.headers["Location"]
++    assert len(db.list_channels(influencer_id)) == 1
++    channel = db.list_channels(influencer_id)[0]
++
++    # The removal is what asks for the password.
++    locked = client.post(
++        f"/channel/{channel['id']}/delete",
++        data={"inf_id": str(influencer_id), "_csrf_token": session.token},
++        headers={"Accept": "text/html"},
++    )
+     assert locked.status_code == 302
+     assert locked.headers["Location"].endswith("reauth=1")
+-    assert db.list_channels(influencer_id) == []
++    assert len(db.list_channels(influencer_id)) == 1
+ 
+     # JSON callers keep getting the machine-readable 428.
+     api_locked = client.post(
+-        f"/influencer/{influencer_id}/add-manual-channel",
+-        data={"platform": "telegram", "identifier": "@locked", "_csrf_token": session.token},
++        f"/channel/{channel['id']}/delete",
++        data={"inf_id": str(influencer_id), "_csrf_token": session.token},
+         headers={"Accept": "application/json"},
+     )
+     assert api_locked.status_code == 428
+@@ -317,16 +329,24 @@ def test_delete_asks_again_after_the_window_expires(hub):
+ 
+ 
+ def test_unlock_also_works_without_javascript(hub):
+-    """The inline banner form unlocks setup for browsers with JS disabled."""
++    """The inline banner form unlocks removals for browsers with JS disabled."""
+     client, session = hub
+     influencer_id = db.add_influencer("No JS Creator", "nojs-21")
++    _add_channel(client, session.token, influencer_id)
++    channel = db.list_channels(influencer_id)[0]
+ 
+-    locked = _add_channel(client, session.token, influencer_id)
++    locked = client.post(
++        f"/channel/{channel['id']}/delete",
++        data={"inf_id": str(influencer_id), "_csrf_token": session.token},
++        headers={"Accept": "text/html"},
++    )
+     assert locked.headers["Location"].endswith("reauth=1")
++    assert len(db.list_channels(influencer_id)) == 1
+ 
+     banner = _body(client.get(f"/influencer/{influencer_id}?reauth=1"))
+     assert "unlock-form" in banner
+-    assert "Setup changes are locked" in banner
++    assert "The removal is locked" in banner
++    assert "nothing was deleted" in banner
+ 
+     browser_headers = {
+         "Accept": "text/html",
+@@ -349,9 +369,14 @@ def test_unlock_also_works_without_javascript(hub):
+     assert unlocked.headers["Location"] == f"/influencer/{influencer_id}"
+     assert client.get("/reauth/status").get_json()["unlocked"] is True
+ 
+-    # The original change now goes through without another prompt.
+-    assert _add_channel(client, session.token, influencer_id).status_code == 302
+-    assert len(db.list_channels(influencer_id)) == 1
++    # The original removal now goes through without another prompt.
++    removed = client.post(
++        f"/channel/{channel['id']}/delete",
++        data={"inf_id": str(influencer_id), "_csrf_token": session.token},
++        headers={"Accept": "text/html"},
++    )
++    assert removed.status_code == 302
++    assert db.list_channels(influencer_id) == []
+ 
+ 
+ def test_unlock_slides_forward_while_the_operator_keeps_working(hub):
+@@ -361,11 +386,18 @@ def test_unlock_slides_forward_while_the_operator_keeps_working(hub):
+     monkeypatched_window = 1800
+     assert config.DASHBOARD_SETUP_UNLOCK_SECONDS == monkeypatched_window
+     session.unlock()
++    _add_channel(client, session.token, influencer_id)
++    channel = db.list_channels(influencer_id)[0]
+     with client.session_transaction() as browser_session:
+         browser_session["_setup_unlock_at"] = time.time() - 1500  # 25 min idle
+         stale = browser_session["_setup_unlock_at"]
+ 
+-    assert _add_channel(client, session.token, influencer_id).status_code == 302
++    removed = client.post(
++        f"/channel/{channel['id']}/delete",
++        data={"inf_id": str(influencer_id), "_csrf_token": session.token},
++        headers={"Accept": "text/html"},
++    )
++    assert removed.status_code == 302
+     with client.session_transaction() as browser_session:
+         assert browser_session["_setup_unlock_at"] > stale
+         assert browser_session["_setup_unlock_at"] >= time.time() - 5
+@@ -459,16 +491,28 @@ def test_undo_offer_disappears_after_another_channel_change(hub):
+     assert "connected" in page.lower()
+ 
+ 
+-def test_undo_requires_the_unlock_and_rejects_a_second_attempt(hub):
++def test_undo_needs_no_password(hub):
++    """Undo restores a removal the operator already confirmed — never locked."""
+     client, session = hub
+     influencer_id = db.add_influencer("Undo Guard Creator", "undo-guard-21")
++    session.unlock()
++    _add_channel(client, session.token, influencer_id, identifier="@undo_guard")
++    channel = db.list_channels(influencer_id)[0]
+ 
+-    guarded = client.post(
++    client.post(
++        f"/channel/{channel['id']}/delete",
++        data={"inf_id": str(influencer_id), "_csrf_token": session.token},
++        headers={"Accept": "text/html"},
++    )
++    session.lock()
++
++    restored = client.post(
+         "/channels/undo",
+         data={"_csrf_token": session.token},
+-        headers={"Accept": "application/json"},
++        headers={"Accept": "text/html"},
+     )
+-    assert guarded.status_code == 428
++    assert restored.status_code == 302
++    assert [c["identifier"] for c in db.list_channels(influencer_id)] == ["@undo_guard"]
+ 
+ 
+ # --------------------------------------------------------------------------
+@@ -479,27 +523,31 @@ def test_channel_page_shows_the_lock_state_and_the_confirmation_copy(hub):
+     influencer_id = db.add_influencer("Banner Creator", "banner-21")
+ 
+     locked_page = _body(client.get(f"/influencer/{influencer_id}"))
+-    assert "Setup locked" in locked_page
+-    assert "One password confirmation opens this up" in locked_page
++    assert "Removals locked" in locked_page
++    assert "Adding and saving need no password" in locked_page
+ 
+     session.unlock()
+     unlocked_page = _body(client.get(f"/influencer/{influencer_id}"))
+-    assert "Setup unlocked" in unlocked_page
++    assert "Removals unlocked" in unlocked_page
+     assert "Lock now" in unlocked_page
+-    assert "stays unlocked for" in unlocked_page
+ 
+ 
+-def test_locking_manually_makes_the_next_add_ask_again(hub):
++def test_locking_manually_makes_the_next_removal_ask_again(hub):
+     client, session = hub
+     influencer_id = db.add_influencer("Manual Lock Creator", "manual-lock-21")
+ 
+     session.unlock()
+     assert _add_channel(client, session.token, influencer_id).status_code == 302
++    channel = db.list_channels(influencer_id)[0]
+ 
+     assert session.lock().status_code == 200
+     assert client.get("/reauth/status").get_json()["unlocked"] is False
+ 
+-    locked = _add_channel(client, session.token, influencer_id, identifier="@third")
++    locked = client.post(
++        f"/channel/{channel['id']}/delete",
++        data={"inf_id": str(influencer_id), "_csrf_token": session.token},
++        headers={"Accept": "text/html"},
++    )
+     assert locked.status_code == 302
+     assert locked.headers["Location"].endswith("reauth=1")
+     assert len(db.list_channels(influencer_id)) == 1
+diff --git a/tests/test_dashboard_affiliate_routing.py b/tests/test_dashboard_affiliate_routing.py
+index 6f8e9f3..ef39e49 100644
+--- a/tests/test_dashboard_affiliate_routing.py
++++ b/tests/test_dashboard_affiliate_routing.py
+@@ -250,7 +250,8 @@ def test_manual_channel_saves_selected_networks_and_hypd_id(dashboard_client):
+     assert channel["hypd_store_id"] == "43210"
+ 
+ 
+-def test_pipeline_uses_creator_amazon_tag_earnkaro_and_profile_hypd(monkeypatch, tmp_path):
++def test_pipeline_uses_creator_amazon_tag_and_our_central_hypd_store(monkeypatch, tmp_path):
++    """The account model: their Amazon tag, our EarnKaro and HYPD accounts."""
+     monkeypatch.setattr(config, "DB_PATH", tmp_path / "pipeline-affiliates.sqlite3")
+     db.init()
+     influencer_id = db.add_influencer(
+@@ -289,7 +290,9 @@ def test_pipeline_uses_creator_amazon_tag_earnkaro_and_profile_hypd(monkeypatch,
+     assert result[influencer_id][channel_id] == "posted"
+     ek_convert.assert_awaited_once()
+     assert "amazon.in" not in captured[0]
+-    assert "https://hypd.store/77777/afflink/product-token" in captured[0]
++    # HYPD is OUR account: the profile's 77777 cannot move the commission.
++    assert f"https://hypd.store/{config.HYPD_STORE_ID}/afflink/product-token" in captured[0]
++    assert "https://hypd.store/77777/afflink/product-token" not in captured[0]
+     assert converted in captured[0]
+     assert flipkart not in captured[0]
+ 
+@@ -603,7 +606,8 @@ def test_dashboard_preview_applies_selected_networks_without_posting(
+     assert response.status_code == 200
+     assert result["ok"] is True
+     assert "amazon.in" not in result["rendered"]
+-    assert "https://hypd.store/24680/afflink/product-token" in result["rendered"]
++    assert f"https://hypd.store/{config.HYPD_STORE_ID}/afflink/product-token" in result["rendered"]
++    assert "https://hypd.store/24680/afflink/product-token" not in result["rendered"]
+     assert converted in result["rendered"]
+     assert result["network_settings"] == {
+         "amazon": False, "earnkaro": True, "hypd": True,
+@@ -666,7 +670,7 @@ def test_dashboard_preview_amazon_routes_alongside_selected_networks(
+     assert "tag=previewcreator-21" in result["rendered"]
+     assert converted in result["rendered"]
+     assert flipkart not in result["rendered"]
+-    assert "https://hypd.store/24680/afflink/product-token" in result["rendered"]
++    assert f"https://hypd.store/{config.HYPD_STORE_ID}/afflink/product-token" in result["rendered"]
+     assert result["network_settings"] == {
+         "amazon": True, "earnkaro": True, "hypd": True, "only_amazon": False,
+     }
+diff --git a/tests/test_dashboard_security.py b/tests/test_dashboard_security.py
+index 11ea5fa..835858d 100644
+--- a/tests/test_dashboard_security.py
++++ b/tests/test_dashboard_security.py
+@@ -79,8 +79,8 @@ def test_workers_share_one_persisted_session_key(monkeypatch, tmp_path):
+     assert app.test_client().get("/login").status_code == 200
+ 
+ 
+-def test_sensitive_setup_changes_use_one_password_per_unlock_window(monkeypatch, tmp_path):
+-    """The password is asked once at the start of a work session, not per change."""
++def test_only_removals_use_one_password_per_unlock_window(monkeypatch, tmp_path):
++    """Adding and saving never ask; each delete asks once per unlock window."""
+     monkeypatch.setitem(app.config, "TESTING", False)
+     monkeypatch.setattr(config, "DASHBOARD_ADMIN_PASSWORD", "test-admin-password-123")
+     monkeypatch.setattr(config, "ADMIN_DELETE_PASSWORD", "test-admin-password-123")
+@@ -99,14 +99,25 @@ def test_sensitive_setup_changes_use_one_password_per_unlock_window(monkeypatch,
+     setup_page = client.get("/setup")
+     assert setup_page.status_code == 200
+     token = _csrf(setup_page.get_data(as_text=True))
+-    change = {"name": "New source", "spec": "@new_source", "_csrf_token": token}
+-    # Locked at the start: the very first change asks for the password.
+-    assert client.post("/sources/add", data=change).status_code == 428
++
++    # Adding a source is free: no password, no 428, the row is saved.
++    assert client.post(
++        "/sources/add",
++        data={"name": "Free source", "spec": "@free_source", "_csrf_token": token},
++    ).status_code == 302
++    assert [source["spec"] for source in db.list_sources(active_only=False)] == [
++        "@free_source"
++    ]
++
++    # The very first removal asks for the password.
++    source_id = db.add_source("First source", "@first_source")
++    change = {"from_setup": "1", "_csrf_token": token}
++    assert client.post(f"/sources/{source_id}/delete", data=change).status_code == 428
+     rejected_password = client.post(
+         "/reauth", data={"password": "wrong", "_csrf_token": token}
+     )
+     assert rejected_password.status_code == 401
+-    assert client.post("/sources/add", data=change).status_code == 428
++    assert client.post(f"/sources/{source_id}/delete", data=change).status_code == 428
+ 
+     confirmed = client.post(
+         "/reauth",
+@@ -115,27 +126,32 @@ def test_sensitive_setup_changes_use_one_password_per_unlock_window(monkeypatch,
+     assert confirmed.status_code == 200
+     assert confirmed.get_json()["ok"] is True
+     assert confirmed.get_json()["unlocked"] is True
+-    assert client.post("/sources/add", data=change).status_code == 302
++    assert client.post(f"/sources/{source_id}/delete", data=change).status_code == 302
++    assert [source["spec"] for source in db.list_sources(active_only=False)] == [
++        "@free_source"
++    ]
+ 
+-    # Once unlocked, further changes go through without asking again.
+-    other_change = {"name": "Second source", "spec": "@second_source", "_csrf_token": token}
+-    assert client.post("/sources/add", data=other_change).status_code == 302
++    # Once unlocked, further removals go through without asking again.
++    second_id = db.add_source("Second source", "@second_source")
++    assert client.post(f"/sources/{second_id}/delete", data=change).status_code == 302
+ 
+-    # An idle dashboard locks itself again.
++    # An idle dashboard locks removals again.
+     with client.session_transaction() as browser_session:
+         browser_session["_setup_unlock_at"] = time.time() - 5000
+-    assert client.post("/sources/add", data=other_change).status_code == 428
++    third_id = db.add_source("Third source", "@third_source")
++    assert client.post(f"/sources/{third_id}/delete", data=change).status_code == 428
+ 
+     # …and one confirmation opens it back up.
+     assert client.post(
+         "/reauth",
+         data={"password": "test-admin-password-123", "_csrf_token": token},
+     ).status_code == 200
+-    assert client.post("/sources/add", data=other_change).status_code == 302
++    assert client.post(f"/sources/{third_id}/delete", data=change).status_code == 302
+ 
+     # Locking manually takes effect immediately.
++    fourth_id = db.add_source("Fourth source", "@fourth_source")
+     assert client.post("/reauth/lock", data={"_csrf_token": token}).status_code == 200
+-    assert client.post("/sources/add", data=other_change).status_code == 428
++    assert client.post(f"/sources/{fourth_id}/delete", data=change).status_code == 428
+ 
+ 
+ def test_setup_unlock_status_reports_and_binds_to_the_client_ip(monkeypatch, tmp_path):
+@@ -179,19 +195,36 @@ def test_locked_browser_form_post_redirects_back_instead_of_json(monkeypatch, tm
+     ).status_code == 302
+     token = _csrf(client.get("/setup").get_data(as_text=True))
+ 
+-    browser_headers = {"Accept": "text/html,application/xhtml+xml", "Referer": "http://localhost/setup"}
++    source_id = db.add_source("Browser", "@browser")
++    browser_headers = {
++        "Accept": "text/html,application/xhtml+xml",
++        "Referer": "http://localhost/setup",
++    }
+     locked = client.post(
+-        "/sources/add",
+-        data={"name": "Browser", "spec": "@browser", "_csrf_token": token},
++        f"/sources/{source_id}/delete",
++        data={"from_setup": "1", "_csrf_token": token},
+         headers=browser_headers,
+         follow_redirects=False,
+     )
+     assert locked.status_code == 302
+     assert locked.headers["Location"].endswith("/setup?reauth=1")
+-    assert db.list_sources() == []
++    # Nothing was deleted by the locked attempt.
++    assert [source["spec"] for source in db.list_sources(active_only=False)] == [
++        "@browser"
++    ]
++
++    # Adding a source is never redirected to the unlock banner.
++    added = client.post(
++        "/sources/add",
++        data={"name": "Browser free", "spec": "@browser_free", "_csrf_token": token},
++        headers=browser_headers,
++        follow_redirects=False,
++    )
++    assert added.status_code == 302
++    assert "reauth=1" not in added.headers["Location"]
+ 
+ 
+-def test_manual_poll_sending_requires_fresh_password_confirmation(monkeypatch, tmp_path):
++def test_manual_poll_sending_needs_no_password(monkeypatch, tmp_path):
+     monkeypatch.setitem(app.config, "TESTING", False)
+     monkeypatch.setattr(config, "HUB_ENV", "development")
+     monkeypatch.setattr(config, "DASHBOARD_ADMIN_PASSWORD", "test-admin-password-123")
+@@ -219,8 +252,11 @@ def test_manual_poll_sending_requires_fresh_password_confirmation(monkeypatch, t
+             "poll_platforms": "telegram",
+         },
+     )
+-    assert response.status_code == 428
+-    assert db.list_recent_polls(influencer_id) == []
++    # Sending a poll is not a removal: it is accepted without the password and
++    # the background worker owns delivery.
++    assert response.status_code == 302
++    assert "reauth=1" not in response.headers["Location"]
++    assert len(db.list_recent_polls(influencer_id)) == 1
+ 
+ 
+ def test_login_requires_csrf_and_authenticates_with_safe_redirect(monkeypatch, tmp_path):
+diff --git a/tests/test_deal_flow.py b/tests/test_deal_flow.py
+new file mode 100644
+index 0000000..566fac6
+--- /dev/null
++++ b/tests/test_deal_flow.py
+@@ -0,0 +1,264 @@
++"""Deal flow: sources keep feeding, posts keep going out, and both are visible.
++
++The engine already retries, holds a cursor on failure and heart-beats. What
++these tests pin is the *flow* itself:
++
++* every handled message records per-source activity (deals seen, posted, failed
++  and why), so a quiet source is distinguishable from a broken one;
++* a failed delivery holds the cursor and is counted as a failure, not silently
++  swallowed;
++* `/api/flow` and the Easy Setup card answer "is posting still flowing?" with
++  worker state, per-source last-seen and per-channel post counts;
++* a source that stopped producing, or a worker that stopped heart-beating, is
++  reported as such instead of looking healthy.
++"""
++from __future__ import annotations
++
++import asyncio
++import json
++import pathlib
++import time
++
++import pytest
++
++from dashboard.app import app
++from influencer_hub import config, db, worker
++
++TEMPLATE = (
++    pathlib.Path(__file__).resolve().parent.parent
++    / "dashboard" / "templates" / "easy_setup.html"
++)
++
++
++@pytest.fixture
++def hub(monkeypatch, tmp_path):
++    monkeypatch.setitem(app.config, "TESTING", True)
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "flow.sqlite3")
++    db.init()
++    return app.test_client()
++
++
++# --------------------------------------------------------------------------
++# db: per-source activity
++# --------------------------------------------------------------------------
++def test_source_activity_accumulates_and_remembers_the_last_error(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "activity.sqlite3")
++    db.init()
++    db.record_source_activity("@loot", message_id=5, posted=2)
++    db.record_source_activity("@loot", message_id=9, failed=1, error="failed: flood")
++    rows = {row["source_key"]: row for row in db.list_source_activity()}
++
++    row = rows["@loot"]
++    assert row["deals_seen"] == 2
++    assert row["posts_dispatched"] == 2
++    assert row["failures"] == 1
++    assert row["last_error"] == "failed: flood"
++    assert row["last_message_id"] == 9
++    assert row["last_seen_at"] > 0
++
++    # A cursor never moves backwards, even if an older message is replayed.
++    db.record_source_activity("@loot", message_id=3, posted=1)
++    assert db.get_worker_offset("@loot") == 0  # offsets are separate from activity
++    row = next(r for r in db.list_source_activity() if r["source_key"] == "@loot")
++    assert row["last_message_id"] == 9
++    assert row["deals_seen"] == 3
++
++
++def test_channel_post_activity_reports_last_post_and_counts(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "channel-activity.sqlite3")
++    db.init()
++    influencer = db.add_influencer("Flow Creator", "flow-21")
++    channel = db.add_channel(influencer, "telegram", "@flow", status="ready")
++    db.record_post(influencer, channel, "sig-1", status="posted")
++    db.record_post(influencer, channel, "sig-2", status="failed", error="boom")
++
++    row = next(r for r in db.channel_post_activity(hours=24) if r["channel_id"] == channel)
++    assert row["influencer_name"] == "Flow Creator"
++    assert row["last_posted_at"] is not None
++    assert row["posted_in_window"] == 1
++    assert row["failed_total"] == 1
++
++
++# --------------------------------------------------------------------------
++# worker: every handled message is accounted for
++# --------------------------------------------------------------------------
++def _record(source: str, message_id: int, text: str = "deal") -> dict:
++    return {
++        "source_id": source,
++        "message_id": message_id,
++        "text": text,
++        "source": source,
++    }
++
++
++def test_worker_records_posted_and_failed_per_source(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "worker-flow.sqlite3")
++    db.init()
++
++    async def fake_pull(limit=None, use_dummy=False):
++        return [
++            _record("@one", 10, "Deal one https://www.flipkart.com/p/itm123456"),
++            _record("@two", 20, "Deal two https://www.amazon.in/dp/B0D9P2M1PB"),
++        ]
++
++    calls = {"n": 0}
++
++    async def fake_run_once(deals):
++        calls["n"] += 1
++        if calls["n"] == 1:
++            return {1: {7: "posted"}}
++        return {1: {7: "failed: telegram flood wait"}}
++
++    monkeypatch.setattr(worker.puller, "pull_new_deals", fake_pull)
++    monkeypatch.setattr(worker.pipeline, "run_once", fake_run_once)
++
++    stats = asyncio.run(worker.process_pending_batch(limit=10))
++    assert stats["pulled"] == 2
++    assert stats["handled"] == 1
++    assert stats["retry_sources"] == 1
++
++    rows = {row["source_key"]: row for row in db.list_source_activity()}
++    assert rows["@one"]["posts_dispatched"] == 1
++    assert rows["@one"]["failures"] == 0
++    # The failed delivery is visible with its reason, and its cursor is held.
++    assert rows["@two"]["failures"] == 1
++    assert "flood wait" in rows["@two"]["last_error"]
++    assert db.get_worker_offset("@one") == 10
++    assert db.get_worker_offset("@two") == 0
++
++
++def test_worker_counts_a_crash_as_a_failure_without_losing_the_cursor(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "worker-crash.sqlite3")
++    db.init()
++
++    async def fake_pull(limit=None, use_dummy=False):
++        return [_record("@crash", 42, "Boom https://www.flipkart.com/p/itm999999")]
++
++    async def fake_run_once(deals):
++        raise RuntimeError("pipeline exploded")
++
++    monkeypatch.setattr(worker.puller, "pull_new_deals", fake_pull)
++    monkeypatch.setattr(worker.pipeline, "run_once", fake_run_once)
++
++    stats = asyncio.run(worker.process_pending_batch(limit=10))
++    assert stats["retry_sources"] == 1
++    assert db.get_worker_offset("@crash") == 0
++    row = next(r for r in db.list_source_activity() if r["source_key"] == "@crash")
++    assert row["failures"] == 1
++    assert "RuntimeError" in row["last_error"]
++
++
++def test_worker_advances_media_only_messages_so_they_cannot_block_flow(monkeypatch, tmp_path):
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "worker-media.sqlite3")
++    db.init()
++
++    async def fake_pull(limit=None, use_dummy=False):
++        return [_record("@media", 77, "")]
++
++    async def fake_run_once(deals):  # pragma: no cover - must not be called
++        raise AssertionError("empty text has nothing to render")
++
++    monkeypatch.setattr(worker.puller, "pull_new_deals", fake_pull)
++    monkeypatch.setattr(worker.pipeline, "run_once", fake_run_once)
++
++    stats = asyncio.run(worker.process_pending_batch(limit=10))
++    assert stats["handled"] == 1
++    assert db.get_worker_offset("@media") == 77
++
++
++# --------------------------------------------------------------------------
++# the flow board
++# --------------------------------------------------------------------------
++def test_flow_api_reports_healthy_flow(monkeypatch, tmp_path, hub):
++    influencer = db.add_influencer("Flow Creator", "flow-21")
++    channel = db.add_channel(influencer, "telegram", "@flow", status="ready")
++    db.record_post(influencer, channel, "sig-1", status="posted")
++    db.add_source("Live source", "@live_source")
++    db.record_source_activity("@live_source", message_id=11, posted=1)
++    db.record_worker_heartbeat("running", poll_completed=True)
++
++    flow = hub.get("/api/flow").get_json()
++    assert flow["ok"] is True
++    assert flow["worker"]["alive"] is True
++    assert flow["sources"]["active"] == 1
++    assert flow["sources"]["delivered"] == 1
++    assert flow["sources"]["stalled"] == 0
++    assert flow["channels"]["posted_in_window"] == 1
++    assert flow["notes"] == []
++    row = flow["sources"]["rows"][0]
++    assert row["spec"] == "@live_source"
++    assert row["stalled"] is False
++    assert row["never_delivered"] is False
++
++
++def test_flow_api_flags_a_stalled_source_and_a_silent_worker(hub):
++    db.add_source("Quiet source", "@quiet_source")
++    # Delivered once, long ago: stalled.
++    db.record_source_activity("@quiet_source", message_id=1, posted=1)
++    with db._connect() as con:  # noqa: SLF001 - direct timestamp control in a test
++        con.execute(
++            "UPDATE source_activity SET last_seen_at=? WHERE source_key=?",
++            (time.time() - 10 * 3600, "@quiet_source"),
++        )
++        con.commit()
++
++    flow = hub.get("/api/flow?stall_seconds=3600").get_json()
++    assert flow["sources"]["stalled"] == 1
++    assert flow["worker"]["alive"] is False
++    assert any("worker" in note.lower() for note in flow["notes"])
++    assert any("stalled" in note.lower() or "delivered before" in note.lower()
++               for note in flow["notes"])
++
++
++def test_flow_api_flags_sources_that_never_delivered(hub):
++    db.add_source("Never source", "@never_source")
++    flow = hub.get("/api/flow").get_json()
++    assert flow["sources"]["never_delivered"] == 1
++    assert flow["sources"]["rows"][0]["never_delivered"] is True
++    assert any("not delivered a deal yet" in note for note in flow["notes"])
++
++
++def test_easy_setup_page_shows_the_flow_card(hub):
++    db.add_source("Live source", "@live_source")
++    db.record_source_activity("@live_source", message_id=11, posted=2)
++    db.record_worker_heartbeat("running", poll_completed=True)
++    page = hub.get("/easy-setup").get_data(as_text=True)
++
++    assert "Deal flow — sources → posts" in page
++    assert "/api/flow" in page
++    assert "@live_source" in page
++    assert "Worker <strong>running</strong>" in page
++
++
++def test_flow_card_template_stays_machine_readable():
++    """The card documents the JSON endpoint and both query knobs."""
++    text = TEMPLATE.read_text(encoding="utf-8")
++    assert "/api/flow" in text
++    assert "stall_seconds" in text
++    assert "window_hours" in text
++
++
++def test_flow_api_surfaces_the_switches_that_control_flow(hub):
++    flow = hub.get("/api/flow").get_json()
++    assert flow["settings"] == {
++        "hourly_loot_enabled": False,
++        "only_earning_deals": False,
++    }
++    db.set_global_setting("hourly_loot_enabled", "1")
++    assert hub.get("/api/flow").get_json()["settings"]["hourly_loot_enabled"] is True
++
++
++def test_flow_api_explains_an_idle_worker_with_quiet_channels(hub):
++    influencer = db.add_influencer("Idle Creator", "idle-31")
++    db.add_channel(influencer, "telegram", "@idle", status="ready")
++    db.record_worker_heartbeat("running", poll_completed=True)
++
++    flow = hub.get("/api/flow").get_json()
++    assert any("hourly loot sweep is off" in note for note in flow["notes"])
++
++
++def test_flow_api_is_read_only_and_json(hub):
++    response = hub.get("/api/flow")
++    assert response.status_code == 200
++    assert response.headers["Content-Type"].startswith("application/json")
++    assert json.loads(response.get_data(as_text=True))["ok"] is True
+diff --git a/tests/test_earnkaro_live.py b/tests/test_earnkaro_live.py
+index c05f6c5..01b6c30 100644
+--- a/tests/test_earnkaro_live.py
++++ b/tests/test_earnkaro_live.py
+@@ -1,7 +1,10 @@
+ """End-to-end conversion test with a mocked EarnKaro HTTP API.
+ 
+-Verifies the real contract: POST with Bearer auth + {"deal": url}, and that the
+-returned short link is substituted. No network needed.
++Verifies the real contract: POST with Bearer auth +
++{"deal": url, "convert_option": "convert_only"}, and that the returned short
++link is substituted. A wrong body makes the live API answer HTTP 200 with no
++link, which posted unpaid merchant links — that is pinned here. No network
++needed.
+ """
+ import asyncio
+ from unittest.mock import patch
+@@ -52,7 +55,10 @@ def test_convert_links_uses_bearer_and_body():
+     assert len(fake.calls) == 1
+     call = fake.calls[0]
+     assert call["url"] == config.EARNKARO_API_URL
+-    assert call["json"] == {"deal": "https://www.flipkart.com/p/itm1"}
++    assert call["json"] == {
++        "deal": "https://www.flipkart.com/p/itm1",
++        "convert_option": "convert_only",
++    }
+     assert call["headers"]["Authorization"].startswith("Bearer ")
+     assert call["headers"]["Content-Type"] == "application/json"
+ 
+@@ -68,6 +74,68 @@ def test_convert_links_failure_falls_back():
+     assert out == {"https://www.flipkart.com/p/itm2": "https://www.flipkart.com/p/itm2"}
+ 
+ 
++def test_convert_links_accepts_a_direct_result_that_carries_our_publisher_as_id():
++    """Converted merchant URLs sometimes carry the publisher as ``id=``."""
++    ek.CACHE.clear()
++
++    class IdParamSession:
++        def __init__(self):
++            self.calls = []
++
++        async def __aenter__(self):
++            return self
++
++        async def __aexit__(self, *args):
++            return False
++
++        def post(self, url, json=None, headers=None, timeout=None):
++            self.calls.append({"url": url, "json": json, "headers": headers})
++            body = (
++                '{"success":1,"data":"https://www.flipkart.com/p/itm1'
++                '?pid=X&id=5478322"}'
++            )
++            return _FakeResp(200, body)
++
++    fake = IdParamSession()
++    with patch("influencer_hub.earnkaro.config.EARNKARO_API_KEY", "dummy-jwt-key"), \
++         patch("influencer_hub.earnkaro.config.EARNKARO_PUBLISHER_ID", "5478322"), \
++         patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=fake):
++        out = asyncio.run(ek.convert_links({"https://www.flipkart.com/p/itmID"}))
++
++    assert out == {
++        "https://www.flipkart.com/p/itmID": "https://www.flipkart.com/p/itm1?pid=X&id=5478322"
++    }
++    assert fake.calls[0]["json"]["convert_option"] == "convert_only"
++
++
++def test_convert_links_rejects_a_direct_result_for_another_publisher_id():
++    """A result carrying somebody else's ``id=`` must fall back to the raw URL."""
++    ek.CACHE.clear()
++
++    class WrongIdSession:
++        async def __aenter__(self):
++            return self
++
++        async def __aexit__(self, *args):
++            return False
++
++        def post(self, url, json=None, headers=None, timeout=None):
++            body = (
++                '{"success":1,"data":"https://www.flipkart.com/p/itm1'
++                '?pid=X&id=1111111"}'
++            )
++            return _FakeResp(200, body)
++
++    with patch("influencer_hub.earnkaro.config.EARNKARO_API_KEY", "dummy-jwt-key"), \
++         patch("influencer_hub.earnkaro.config.EARNKARO_PUBLISHER_ID", "5478322"), \
++         patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=WrongIdSession()):
++        out = asyncio.run(ek.convert_links({"https://www.flipkart.com/p/itmWrongID"}))
++
++    assert out == {
++        "https://www.flipkart.com/p/itmWrongID": "https://www.flipkart.com/p/itmWrongID"
++    }
++
++
+ def test_live_verifier_uses_dashboard_credentials_and_checks_publisher_provenance(monkeypatch):
+     ek.CACHE.clear()
+ 
+diff --git a/tests/test_easy_setup_and_routing.py b/tests/test_easy_setup_and_routing.py
+index f8e23e1..d511127 100644
+--- a/tests/test_easy_setup_and_routing.py
++++ b/tests/test_easy_setup_and_routing.py
+@@ -179,12 +179,13 @@ def test_easy_setup_strict_only_amazon_disables_the_other_networks(hub):
+     assert influencer["allow_amazon"] == 1
+ 
+ 
+-def test_easy_setup_is_password_protected_like_every_other_setup_change(hub):
++def test_easy_setup_saves_without_a_password(hub):
++    """Easy Setup is not a removal, so it never asks for the password."""
+     client, session = hub
+-    locked = _setup(client, session.token)
+-    assert locked.status_code == 302
+-    assert locked.headers["Location"].endswith("reauth=1")
+-    assert db.list_influencers() == []
++    saved = _setup(client, session.token)
++    assert saved.status_code == 302
++    assert "reauth=1" not in saved.headers["Location"]
++    assert len(db.list_influencers()) == 1
+ 
+ 
+ # --------------------------------------------------------------------------
+@@ -243,15 +244,21 @@ def test_routing_preview_sends_meesho_to_hypd(hub):
+     assert next(row for row in off["rows"] if row["kind"] == "hypd")["state"] == "off"
+ 
+ 
+-def test_routing_preview_uses_the_creator_hypd_store(hub):
++def test_routing_preview_posts_hypd_with_our_store_and_nothing_else(hub):
++    """Meesho/HYPD links always carry OUR store, whatever value is requested."""
+     client, session = hub
+     preview = client.get(
+         "/api/routing-preview?amazon_tag=ravi-21&allow_amazon=1&allow_earnkaro=1"
+         "&allow_hypd=1&hypd_store_id=55555"
+     ).get_json()["preview"]
+     afflink = next(row for row in preview["rows"] if row["kind"] == "hypd")
+-    assert afflink["result"] == "https://hypd.store/55555/afflink/SAMPLETOKEN"
+-    assert "55555" in preview["summary"]
++    our_store = config.HYPD_STORE_ID
++    assert afflink["result"] == f"https://hypd.store/{our_store}/afflink/SAMPLETOKEN"
++    assert our_store in preview["summary"]
++    assert "55555" not in preview["summary"]
++    # The Amazon row stays pinned to the creator's own tag.
++    amazon_row = next(row for row in preview["rows"] if row["kind"] == "amazon")
++    assert "tag=ravi-21" in amazon_row["result"]
+ 
+ 
+ def test_routing_preview_shows_off_states_and_informational_links(hub):
+diff --git a/tests/test_patch_bundle.py b/tests/test_patch_bundle.py
+new file mode 100644
+index 0000000..4452b06
+--- /dev/null
++++ b/tests/test_patch_bundle.py
+@@ -0,0 +1,140 @@
++"""The `patches/` bundle must stay in step with the tree it describes.
++
++Three ways to hand this work to another checkout, and all three have to agree:
++
++1. `patches/*.patch` — `git apply` on a clean `0bf913f` checkout;
++2. `patches/apply-*.py` — surgical appliers for a VM that already has part of
++   the work;
++3. `patches/tests/` — verified copies of the test files that `--with-tests`
++   installs.
++
++If any of them drifts from the real sources, a new session would replay *older*
++code and the suite would fail there for reasons that do not exist here. These
++tests fail first, on this branch.
++"""
++from __future__ import annotations
++
++import importlib.util
++import pathlib
++
++import pytest
++
++REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
++PATCH_DIR = REPO_ROOT / "patches"
++TESTS_COPY_DIR = PATCH_DIR / "tests"
++
++PATCH_FILES = (
++    "commission-leaks.patch",
++    "password-policy.patch",
++    "tests.patch",
++    "deal-flow.patch",
++    "docs.patch",
++)
++APPLIERS = (
++    "apply-commission-fixes.py",
++    "apply-password-policy.py",
++    "apply-account-model.py",
++    "apply-deal-flow.py",
++)
++
++
++def _load(path: pathlib.Path):
++    spec = importlib.util.spec_from_file_location(f"patch_bundle_{path.stem}", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _in_place(module) -> bool:
++    """Each applier names its own idempotency check slightly differently."""
++    for name in ("policy_in_place", "_policy_in_place", "flow_in_place"):
++        if hasattr(module, name):
++            return bool(getattr(module, name)())
++    raise AssertionError("applier has no in-place check")
++
++
++# --------------------------------------------------------------------------
++# 1. The git-apply patches
++# --------------------------------------------------------------------------
++@pytest.mark.parametrize("name", PATCH_FILES)
++def test_patch_file_is_present_and_well_formed(name):
++    patch = PATCH_DIR / name
++    assert patch.is_file(), f"patches/{name} is missing"
++    text = patch.read_text(encoding="utf-8")
++    assert text.startswith("diff --git "), "not a git diff"
++    assert "--- a/" in text or "--- /dev/null" in text
++    assert "+++ b/" in text
++    assert len(text.splitlines()) > 50, "suspiciously small patch"
++
++
++def test_patches_cover_the_touched_trees():
++    """The three patch files together cover influencer_hub/, dashboard/ and tests/."""
++    covered: set[str] = set()
++    for name in PATCH_FILES:
++        for line in (PATCH_DIR / name).read_text(encoding="utf-8").splitlines():
++            if line.startswith("diff --git a/"):
++                covered.add(line.split(" b/", 1)[0][len("diff --git a/"):])
++    assert any(path.startswith("influencer_hub/") for path in covered)
++    assert any(path.startswith("dashboard/") for path in covered)
++    assert any(path.startswith("tests/") for path in covered)
++    # Every path a patch touches must exist in the tree now.
++    for path in sorted(covered):
++        assert (REPO_ROOT / path).exists(), f"{path} is in a patch but not in the tree"
++
++
++# --------------------------------------------------------------------------
++# 2. The appliers
++# --------------------------------------------------------------------------
++@pytest.mark.parametrize("name", APPLIERS)
++def test_applier_is_present_and_reports_the_branch_state(name):
++    module = _load(PATCH_DIR / name)
++    # On this branch every applier must report "already applied": that is what
++    # makes a rerun on the VM stop instead of double-editing.
++    assert _in_place(module) is True, f"patches/{name} thinks the branch is unpatched"
++
++
++def test_applier_edits_point_at_real_files_and_real_kinds():
++    for name in APPLIERS:
++        module = _load(PATCH_DIR / name)
++        for relative, old, _new, _label in module.EDITS:
++            assert old.strip(), f"{name}: empty search text"
++            target = REPO_ROOT / relative
++            assert target.is_file(), f"{name}: {relative} does not exist"
++
++
++def test_account_applier_embeds_the_real_module_byte_for_byte():
++    module = _load(PATCH_DIR / "apply-account-model.py")
++    real = (REPO_ROOT / "influencer_hub" / "accounts.py").read_text(encoding="utf-8")
++    assert module.ACCOUNTS_MODULE == real
++
++
++# --------------------------------------------------------------------------
++# 3. The verified test copies
++# --------------------------------------------------------------------------
++def test_test_copies_are_byte_identical_to_the_real_tests():
++    copies = sorted(TESTS_COPY_DIR.glob("test_*.py"))
++    assert copies, "patches/tests/ is empty"
++    for copy in copies:
++        real = REPO_ROOT / "tests" / copy.name
++        assert real.is_file(), f"{copy.name} has no counterpart in tests/"
++        assert copy.read_text(encoding="utf-8") == real.read_text(encoding="utf-8"), (
++            f"patches/tests/{copy.name} drifted from tests/{copy.name}; "
++            "re-copy it so --with-tests cannot install stale tests"
++        )
++
++
++def test_handoff_doc_copy_matches_the_branch():
++    """`patches/` must be self-contained: the handoff ships inside it too."""
++    copy = PATCH_DIR / "HANDOFF.md"
++    assert copy.is_file(), "patches/HANDOFF.md is missing"
++    real = (REPO_ROOT / "HANDOFF.md").read_text(encoding="utf-8")
++    assert copy.read_text(encoding="utf-8") == real, (
++        "patches/HANDOFF.md drifted from HANDOFF.md; re-copy it"
++    )
++
++
++def test_bundle_keeps_itself_out_of_the_suite():
++    """patches/tests/ must never be collected twice."""
++    conftest = (PATCH_DIR / "conftest.py").read_text(encoding="utf-8")
++    assert "collect_ignore_glob" in conftest
++    assert "tests/*" in conftest
+diff --git a/tests/test_reauth_policy.py b/tests/test_reauth_policy.py
+new file mode 100644
+index 0000000..3de69e0
+--- /dev/null
++++ b/tests/test_reauth_policy.py
+@@ -0,0 +1,179 @@
++"""The dashboard password policy, pinned.
++
++Rule (the operator's words): the password is asked only at sign-in and only for
++removals. `REAUTH_REQUIRED_ENDPOINTS` must therefore be exactly three delete
++endpoints, every add / save / toggle / poll form must stay free, and no template
++may keep its own inline password prompt.
++
++These tests fail loudly if a future change quietly re-introduces a password
++prompt for everyday work.
++"""
++from __future__ import annotations
++
++import pathlib
++import re
++
++import pytest
++
++from dashboard.app import app, REAUTH_REQUIRED_ENDPOINTS
++from influencer_hub import config, db
++
++PASSWORD = "test-admin-password-123"
++REMOVALS = {"delete_channel", "delete_influencer", "delete_deal_source"}
++REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
++TEMPLATES = REPO_ROOT / "dashboard" / "templates"
++APP_JS = REPO_ROOT / "dashboard" / "static" / "app.js"
++
++REAUTH_TAG_RE = re.compile(
++    r"<(?:form|button)\b[^>]*\bdata-require-reauth\b[^>]*>", re.I | re.S
++)
++
++
++def _csrf(html: str) -> str:
++    match = re.search(r'name="_csrf_token" value="([^"]+)"', html)
++    assert match, "rendered form is missing its CSRF token"
++    return match.group(1)
++
++
++# --------------------------------------------------------------------------
++# The gate itself
++# --------------------------------------------------------------------------
++def test_the_gate_is_exactly_the_three_removals():
++    assert set(REAUTH_REQUIRED_ENDPOINTS) == REMOVALS
++
++
++def test_no_setup_endpoint_sneaks_back_into_the_gate():
++    """Anything that is not a removal must be absent from the gate."""
++    non_removals = {
++        "seed_default_sources", "add_deal_source", "toggle_deal_source",
++        "update_global_settings", "quick_add", "update_profile",
++        "update_channel_route", "add_manual_channel", "bulk_import",
++        "undo_channel_delete", "easy_setup", "toggle_influencer_active",
++        "toggle_channel_status", "onboard", "set_flags", "onboard_tg",
++        "toggle_money_switch", "onboard_wa", "create_tg", "pair_wa",
++        "create_group", "wa_connect_chat", "create_newsletter",
++        "send_test_message", "send_poll",
++    }
++    assert REAUTH_REQUIRED_ENDPOINTS.isdisjoint(non_removals)
++
++
++# --------------------------------------------------------------------------
++# Templates: only the removal forms carry the unlock dialog
++# --------------------------------------------------------------------------
++@pytest.mark.parametrize(
++    "template", sorted(TEMPLATES.glob("*.html")), ids=lambda path: path.name
++)
++def test_only_removal_forms_keep_the_unlock_dialog(template):
++    text = template.read_text(encoding="utf-8")
++    for match in REAUTH_TAG_RE.finditer(text):
++        tag = match.group(0)
++        assert re.search(
++            r"url_for\('(?:delete_channel|delete_influencer|delete_deal_source)'",
++            tag,
++        ), f"{template.name} keeps data-require-reauth on a non-removal form: {tag[:120]}"
++
++
++def test_the_unlock_dialog_is_wired_on_exactly_four_tags():
++    total = sum(
++        len(REAUTH_TAG_RE.findall(path.read_text(encoding="utf-8")))
++        for path in TEMPLATES.glob("*.html")
++    )
++    assert total == 4  # delete_influencer + delete_channel + 2x delete_deal_source
++    assert "[data-require-reauth]" in APP_JS.read_text(encoding="utf-8")
++
++
++def test_delete_influencer_uses_the_shared_dialog_only():
++    """No separate prompt()/admin_password field for one removal."""
++    html = (TEMPLATES / "influencer.html").read_text(encoding="utf-8")
++    assert "prompt(" not in html
++    assert 'name="admin_password"' not in html
++    assert "delete_influencer" in html
++
++
++def test_policy_copy_says_removals_not_setup_changes():
++    copy = "\n".join(
++        path.read_text(encoding="utf-8")
++        for path in list(TEMPLATES.glob("*.html")) + [APP_JS]
++    )
++    assert "Setup changes are locked" not in copy
++    assert "unlock setup changes" not in copy
++    assert "Removals locked" in copy
++    assert "Removals unlocked" in copy
++
++
++# --------------------------------------------------------------------------
++# Behaviour: add / save / poll are free, removals ask once per window
++# --------------------------------------------------------------------------
++@pytest.fixture
++def signed_in(monkeypatch, tmp_path):
++    monkeypatch.setitem(app.config, "TESTING", False)
++    monkeypatch.setattr(config, "HUB_ENV", "development")
++    monkeypatch.setattr(config, "DASHBOARD_ADMIN_PASSWORD", PASSWORD)
++    monkeypatch.setattr(config, "ADMIN_DELETE_PASSWORD", PASSWORD)
++    monkeypatch.setattr(config, "DASHBOARD_SETUP_UNLOCK_SECONDS", 1800)
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "reauth-policy.sqlite3")
++    db.init()
++
++    client = app.test_client()
++    token = _csrf(client.get("/login").get_data(as_text=True))
++    assert client.post(
++        "/login", data={"password": PASSWORD, "_csrf_token": token}
++    ).status_code == 302
++    token = _csrf(client.get("/setup").get_data(as_text=True))
++    return client, token
++
++
++def _post(client, path, data, token):
++    payload = dict(data, _csrf_token=token)
++    return client.post(path, data=payload, headers={"Accept": "text/html"})
++
++
++def test_adds_toggles_and_saves_never_ask_for_the_password(signed_in):
++    client, token = signed_in
++
++    added = _post(client, "/sources/add", {"name": "Policy source", "spec": "@policy"}, token)
++    assert added.status_code == 302
++    assert "reauth=1" not in added.headers["Location"]
++    source = db.list_sources(active_only=False)[0]
++
++    toggled = _post(client, f"/sources/{source['id']}/toggle", {}, token)
++    assert toggled.status_code == 302
++    assert "reauth=1" not in toggled.headers["Location"]
++
++    settings = _post(client, "/global-settings/update", {"nav_button_enabled": "0"}, token)
++    assert settings.status_code == 302
++    assert "reauth=1" not in settings.headers["Location"]
++
++    easy = _post(
++        client,
++        "/easy-setup",
++        {
++            "name": "Policy Creator",
++            "amazon_tag": "policy-21",
++            "approval_channel": "@policy_approval",
++            "main_channel": "@policy_main",
++            "allow_amazon": "1",
++        },
++        token,
++    )
++    assert easy.status_code == 302
++    assert "reauth=1" not in easy.headers["Location"]
++    assert client.get("/reauth/status").get_json()["unlocked"] is False
++
++
++def test_removals_ask_once_then_pass(signed_in):
++    client, token = signed_in
++    source_id = db.add_source("Policy source", "@policy_remove")
++
++    locked = _post(client, f"/sources/{source_id}/delete", {}, token)
++    assert locked.status_code == 302
++    assert locked.headers["Location"].endswith("reauth=1")
++    assert len(db.list_sources(active_only=False)) == 1
++
++    assert client.post(
++        "/reauth", data={"password": PASSWORD, "_csrf_token": token}
++    ).status_code == 200
++
++    removed = _post(client, f"/sources/{source_id}/delete", {}, token)
++    assert removed.status_code == 302
++    assert db.list_sources(active_only=False) == []

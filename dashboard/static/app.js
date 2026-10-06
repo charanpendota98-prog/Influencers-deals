@@ -74,8 +74,9 @@
   tick();
 })();
 
-// Setup mutations need one password confirmation per unlock window: the first
-// add / save / delete asks, the rest of the session does not. Passwords travel
+// Removals (delete a channel, a creator, a deal source) need one password
+// confirmation per unlock window: the first delete asks, later deletes in the
+// window do not. Adding and saving are never intercepted. Passwords travel
 // only in the same-origin request body and are never stored in the page.
 (function () {
   const dialog = document.getElementById('reauth-dialog');
@@ -101,7 +102,7 @@
       lockBadge.classList.add('is-unlocked');
       lockBadge.classList.remove('is-locked');
       lockBadge.textContent = `🔓 Unlocked · ${minutes}m left · Lock now`;
-      lockBadge.title = 'Setup changes are unlocked. Click to lock now.';
+      lockBadge.title = 'Removals are unlocked. Click to lock now.';
     } else if (lockBadge.classList.contains('is-unlocked')) {
       // The server owns the truth; reload so the nav renders the locked state.
       window.location.reload();
@@ -196,7 +197,7 @@
     if (typeof dialog.showModal === 'function') dialog.showModal();
     else {
       // Safe compatibility fallback for older mobile browsers.
-      const password = window.prompt('Enter the dashboard password to unlock setup changes');
+      const password = window.prompt('Enter the dashboard password to confirm this removal');
       if (password) verifyPassword(password);
     }
     if (dialog.open) window.setTimeout(() => passwordInput.focus(), 0);
@@ -294,8 +295,8 @@
     const restored = restoreSnapshot();
     openStandaloneUnlock(
       restored
-        ? 'Setup was locked, so nothing was saved. Your details were restored — confirm the password, then press the button again.'
-        : 'Setup was locked, so nothing was saved. Confirm the password once to unlock setup changes.'
+        ? 'The removal was locked, so nothing was deleted. Your details were restored — confirm the password, then press the button again.'
+        : 'The removal was locked, so nothing was deleted. Confirm the password once to unlock removals.'
     );
   }
 })();

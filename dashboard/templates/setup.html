@@ -66,16 +66,16 @@
 <section id="source-pool" class="card" style="margin-top:16px;">
   <div class="setup-section-title" style="margin-top:0;">
     <div><h2>📡 Source pool</h2><p class="hint">Add your own Telegram sources or the suggested catalog. This stores selectors only: it never checks invite links or joins channels. The Telegram account must already be a member.</p></div>
-    <form method="post" action="{{ url_for('seed_default_sources') }}" data-require-reauth>
+    <form method="post" action="{{ url_for('seed_default_sources') }}">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
       <button type="submit" class="btn btn-primary">Add suggested selectors</button>
     </form>
   </div>
   <div class="setup-shortcuts">
     <div class="dashboard-status"><strong>{{ sources|length }} configured selectors</strong><p>{{ sources|selectattr('active', 'equalto', 1)|list|length }} active · use the live check below to confirm joined-dialog matches.</p></div>
-    <div class="dashboard-status"><strong>{{ influencers|length }} creator profiles</strong><p>Profile and channel changes require password confirmation.</p></div>
+    <div class="dashboard-status"><strong>{{ influencers|length }} creator profiles</strong><p>Adding and saving need no password. A removal (creator, channel or deal source) asks once.</p></div>
   </div>
-  <form method="post" action="{{ url_for('add_deal_source') }}" class="source-add-form" data-require-reauth>
+  <form method="post" action="{{ url_for('add_deal_source') }}" class="source-add-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
     <input type="hidden" name="from_setup" value="1" />
     <label><span>Source label</span><input name="name" maxlength="120" placeholder="Required for private invites; e.g. Shopsy Deals" /></label>
@@ -90,7 +90,7 @@
         {% for s in sources %}
           <article class="source-pool-row">
             <div class="source-pool-info"><strong>{{ s.name or 'Unnamed source' }}</strong><code>{{ s.spec }}</code><small>{{ s.kind|title }} · {{ 'Active' if s.active else 'Paused' }}</small></div>
-            <form method="post" action="{{ url_for('toggle_deal_source', source_id=s.id) }}" data-require-reauth>
+            <form method="post" action="{{ url_for('toggle_deal_source', source_id=s.id) }}">
               <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" /><input type="hidden" name="from_setup" value="1" />
               <button type="submit" class="btn btn-secondary">{{ 'Pause' if s.active else 'Activate' }}</button>
             </form>
@@ -124,7 +124,7 @@
     </div>
   </div>
 
-  <form method="post" action="{{ url_for('update_global_settings') }}" style="display:grid; grid-template-columns: auto 1fr 1.5fr auto; gap:14px; align-items:center;" data-require-reauth>
+  <form method="post" action="{{ url_for('update_global_settings') }}" style="display:grid; grid-template-columns: auto 1fr 1.5fr auto; gap:14px; align-items:center;">
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
     <label style="font-size: 13px; font-weight: 700; color: #a5b4fc; cursor: pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; background:#1e1b4b; padding:10px 14px; border-radius:8px; border:1px solid #4338ca;">
       <input type="checkbox" name="nav_button_enabled" value="1" {{ 'checked' if settings.get('nav_button_enabled') == '1' else '' }} /> 🔘 <b>UNIVERSAL BUTTON ON</b>
@@ -165,7 +165,7 @@
           <h4 style="margin:0 0 8px; color:#c7d2fe;">Upload CSV (1000+ Scale)</h4>
           <p class="hint" style="font-size:11px; margin-bottom:10px;">Columns: <code>name,tag,phone,insta,approval_tg,broadcast_tg,whatsapp_id,allow_amazon,allow_earnkaro,allow_hypd,only_amazon,hypd_store_id</code></p>
           <p class="hint" style="font-size:10px; margin-bottom:10px;">Network columns accept 1/0 and are independent. Amazon uses its tag; EarnKaro handles supported non-Amazon merchants except Meesho; HYPD is reserved for Meesho. `only_amazon=1` temporarily suppresses other routes without clearing switches.</p>
-          <form method="post" action="{{ url_for('bulk_import') }}" enctype="multipart/form-data" data-require-reauth>
+          <form method="post" action="{{ url_for('bulk_import') }}" enctype="multipart/form-data">
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
             <input type="file" name="csv_file" accept=".csv" style="width:100%; font-size:12px; margin-bottom:10px;" />
             <button type="submit" style="width:100%; background:#10b981; font-weight:700;">🚀 Import Now</button>
@@ -189,7 +189,7 @@
     <span style="background:#1e3a8a; color:#bfdbfe; font-size:11px; padding:4px 10px; border-radius:6px; font-weight:700;">PROFILE + ROUTING SETUP</span>
   </div>
 
-  <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;" data-require-reauth>
+  <form method="post" action="{{ url_for('quick_add') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;">
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Influencer Name *</label>

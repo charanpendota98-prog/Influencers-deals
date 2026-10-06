@@ -1,5 +1,23 @@
 {# Shared "what gets posted" table. Expects a `preview` dict from _routing_preview(). #}
 <p class="routing-summary"><strong>{{ preview.summary }}</strong></p>
+{% if preview.model %}
+  <table class="routing-table">
+    <thead>
+      <tr>
+        <th>Network</th>
+        <th>Whose account earns</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in preview.model %}
+        <tr class="routing-row">
+          <td><strong>{{ entry.network }}</strong><code>{{ entry.account }}</code></td>
+          <td><span class="routing-note">{{ entry.detail }}</span></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
 {% if preview.strict %}
   <p class="routing-note">🔥 Strict mode is on: only Amazon deals are posted, with this creator's tag.</p>
 {% endif %}

@@ -19,7 +19,11 @@ import re
 from urllib.parse import parse_qsl, urlparse
 
 from . import link_router
-from .advanced_shortener import is_our_amazon_link, is_our_hypd_link
+from .advanced_shortener import (
+    is_our_amazon_attribution,
+    is_our_amazon_link,
+    is_our_hypd_link,
+)
 
 # EarnKaro shortener hosts (copied from earnkaro.py to avoid aiohttp import)
 _EARNKARO_SHORT_HOSTS = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "myntr.it"}
@@ -44,9 +48,10 @@ def is_earnkaro_short_link(url: str) -> bool:
     return _is_earnkaro_short(url)
 
 
-def _affextparam2_values(url: str) -> list[str]:
+def _publisher_id_values(url: str, expected_pubid: str = "") -> list[str]:
+    """EarnKaro publisher ids visible in a link (``affExtParam2`` and ``id``)."""
     try:
-        return [v for k, v in parse_qsl(urlparse(url).query, keep_blank_values=True) if k.casefold() == "affextparam2"]
+        return link_router.publisher_ids_in_url(url, expected_pubid)
     except Exception:
         return []
 
@@ -142,18 +147,27 @@ def audit_rendered_text(
                 issues.append(entry["reason"])
             elif is_our_amazon_link(url, effective_tag):
                 entry["reason"] = f"OUR Amazon verified tag={effective_tag}"
+            elif is_our_amazon_attribution(url, effective_tag):
+                # A search page, a storefront or a short link cannot be turned
+                # into /dp/ASIN without a network round-trip, but commission is
+                # carried by the tag — so the page is KEPT, never deleted.
+                if _host_of(url) in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}:
+                    entry["reason"] = f"amzn.to with OUR tag (short code opaque, tag appended): {url}"
+                    issues.append(f"WARN amzn.to opaque link (commission best-effort, prefer /dp/ASIN): {url}")
+                else:
+                    entry["reason"] = (
+                        f"OUR Amazon page kept as-is (tag={effective_tag}, "
+                        f"route {urlparse(url).path or '/'}) — attribution comes "
+                        "from the tag, not from the /dp/ path"
+                    )
             else:
                 parsed = urlparse(url)
                 tags = [v for k, v in parse_qsl(parsed.query) if k.lower() == "tag"]
                 if _host_of(url) in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}:
-                    if tags == [effective_tag]:
-                        entry["reason"] = f"amzn.to with OUR tag (short code opaque, tag appended): {url}"
-                        issues.append(f"WARN amzn.to opaque link (commission best-effort, prefer /dp/ASIN): {url}")
-                    else:
-                        entry["ok"] = False
-                        entry["reason"] = f"amzn.to without OUR tag (expected {effective_tag}): {url}"
-                        amazon_ok = False
-                        issues.append(entry["reason"])
+                    entry["ok"] = False
+                    entry["reason"] = f"amzn.to without OUR tag (expected {effective_tag}): {url}"
+                    amazon_ok = False
+                    issues.append(entry["reason"])
                 else:
                     entry["ok"] = False
                     entry["reason"] = f"Amazon link not OUR canonical (expected tag {effective_tag}): {url}"
@@ -204,15 +218,16 @@ def audit_rendered_text(
 
         elif _is_earnkaro_short(url):
             # EarnKaro short link (ekaro.in, fktr.in, clnk.in, myntr.it, etc.)
-            # Verify provenance if expected_pubid known — check affExtParam2 if visible
-            pubids = _affextparam2_values(url)
+            # Verify provenance if expected_pubid known — check the publisher
+            # id parameters visible on the short link itself.
+            pubids = _publisher_id_values(url, expected_pubid)
             if expected_pubid:
                 if pubids:
                     if all(pid == expected_pubid for pid in pubids):
                         entry["reason"] = f"EarnKaro short verified pubid={expected_pubid}"
                     else:
                         entry["ok"] = False
-                        entry["reason"] = f"EarnKaro short has wrong pubid {pubids} (expected {expected_pubid}): {url}"
+                        entry["reason"] = f"EarnKaro short has wrong publisher {pubids} (expected {expected_pubid}): {url}"
                         earnkaro_ok = False
                         issues.append(entry["reason"])
                 else:

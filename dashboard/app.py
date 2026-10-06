@@ -93,25 +93,17 @@ WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
 _LOGIN_FAILURES: dict[str, list[float]] = defaultdict(list)
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES = 5
-# One password confirmation unlocks every sensitive setup change below for a
-# rolling idle window (see config.DASHBOARD_SETUP_UNLOCK_SECONDS). The first
-# change asks for the password; the rest of the session does not ask again
-# until the dashboard has been idle (or is locked manually).
+# Password policy: the password is asked only at sign-in and before a REMOVAL
+# (delete a channel, a creator, or a deal source) for a rolling idle window
+# (see config.DASHBOARD_SETUP_UNLOCK_SECONDS). Adding, saving, toggling and
+# polling cost no extra confirmation; a removal asks once per window.
 DEFAULT_SETUP_UNLOCK_SECONDS = 30 * 60
 MIN_SETUP_UNLOCK_SECONDS = 60
 SETUP_UNLOCK_AT_KEY = "_setup_unlock_at"
 SETUP_UNLOCK_IP_KEY = "_setup_unlock_ip"
 UNDO_CHANNEL_KEY = "_undo_channel"
 REAUTH_REQUIRED_ENDPOINTS = frozenset({
-    "seed_default_sources", "add_deal_source", "delete_deal_source",
-    "toggle_deal_source", "update_global_settings", "quick_add",
-    "update_profile", "update_channel_route", "add_manual_channel",
-    "bulk_import", "delete_channel", "undo_channel_delete", "easy_setup",
-    "toggle_influencer_active",
-    "toggle_channel_status", "onboard", "set_flags", "onboard_tg",
-    "toggle_money_switch",
-    "onboard_wa", "create_tg", "pair_wa", "create_group",
-    "wa_connect_chat", "create_newsletter", "send_test_message", "send_poll",
+    "delete_channel", "delete_influencer", "delete_deal_source",
 })
 
 DEFAULT_SOURCE_CATALOG = [
@@ -216,9 +208,40 @@ def _form_flag(name: str, default: bool | None = None) -> bool | None:
 
 
 def _effective_hypd_store_id() -> str:
-    """Return the live central HYPD Store ID used for new profiles/channels."""
-    configured = db.get_global_setting("hypd_store_id", config.HYPD_STORE_ID)
-    return str(configured or config.HYPD_STORE_ID).strip() or config.HYPD_STORE_ID
+    """OUR central HYPD Store ID (vault/global setting, then environment).
+
+    Resolved through influencer_hub.accounts so the dashboard and the pipeline
+    can never disagree about which store earns.
+    """
+    try:
+        from influencer_hub import accounts
+
+        return accounts.central_hypd_store_id()
+    except Exception:  # pragma: no cover - defensive
+        configured = db.get_global_setting("hypd_store_id", config.HYPD_STORE_ID)
+        return str(configured or config.HYPD_STORE_ID).strip() or config.HYPD_STORE_ID
+
+
+def _routing_hypd_store(requested: str = "") -> str:
+    """The HYPD store a post will really carry.
+
+    With central accounts on (the default) that is always OUR store: a value
+    typed for one creator cannot move HYPD commission elsewhere. With the
+    setting off the requested/profile value is used, so the legacy per-creator
+    behaviour stays reachable.
+    """
+    try:
+        from influencer_hub import accounts, config as hub_config
+
+        if accounts.central_network_accounts_enabled():
+            return accounts.central_hypd_store_id()
+        requested = str(requested or "").strip()
+        if requested:
+            return requested
+        setting = db.get_global_setting("hypd_store_id", hub_config.HYPD_STORE_ID)
+        return str(setting or hub_config.HYPD_STORE_ID).strip() or hub_config.HYPD_STORE_ID
+    except Exception:  # pragma: no cover - defensive
+        return str(requested or "").strip() or _effective_hypd_store_id()
 
 
 def _effective_earnkaro_publisher_id() -> str:
@@ -412,7 +435,7 @@ def _get_csrf_token() -> str:
 
 
 # --------------------------------------------------------------------------
-# Setup unlock: one password confirmation, then a rolling idle window.
+# Removal unlock: one password confirmation, then a rolling idle window.
 # --------------------------------------------------------------------------
 def _setup_unlock_window_seconds() -> int:
     """Length of the unlock window, configurable and clamped to sane values."""
@@ -452,7 +475,7 @@ def _grant_setup_unlock() -> None:
 
 
 def _renew_setup_unlock() -> None:
-    """Sliding window: each confirmed change restarts the idle timer."""
+    """Sliding window: each confirmed removal restarts the idle timer."""
     if _setup_unlocked():
         session[SETUP_UNLOCK_AT_KEY] = time.time()
 
@@ -583,9 +606,10 @@ def protect_dashboard_routes():
                     "unlock_url": url_for("reauthenticate_setup_change"),
                 }), 428
             flash(
-                "Setup changes are locked. Confirm the dashboard password once, "
-                "then every add / save / delete stays unlocked for "
-                f"{_setup_unlock_window_seconds() // 60} minutes.",
+                "Removals are locked. Confirm the dashboard password once, "
+                "then every delete stays unlocked for "
+                f"{_setup_unlock_window_seconds() // 60} minutes. "
+                "Adding and saving never ask.",
                 "warning",
             )
             return redirect(_reauth_return_url())
@@ -706,11 +730,11 @@ def logout():
 
 @app.route("/reauth", methods=["POST"])
 def reauthenticate_setup_change():
-    """Confirm the admin password once and unlock sensitive setup changes.
+    """Confirm the admin password once and unlock removals.
 
-    The unlock is a rolling idle window (default 30 minutes): the operator is
-    asked at the start of a work session and not again for every add / save /
-    delete, unless the dashboard goes idle, is locked manually, or signs out.
+    The unlock is a rolling idle window (default 30 minutes): the first delete
+    asks and later deletes do not, unless the dashboard goes idle, is locked
+    manually, or signs out. Adding and saving never ask at all.
     """
     if not session.get("dashboard_authenticated"):
         return jsonify({"ok": False, "error": "authentication_required"}), 401
@@ -729,7 +753,7 @@ def reauthenticate_setup_change():
     if not _password_matches(request.form.get("password", ""), config.DASHBOARD_ADMIN_PASSWORD):
         _LOGIN_FAILURES[bucket_key].append(now)
         if not _expects_json_response():
-            flash("Password did not match. Setup is still locked.", "error")
+            flash("Password did not match. Removals are still locked.", "error")
             return redirect(_reauth_return_url())
         return jsonify({"ok": False, "error": "password_confirmation_failed"}), 401
 
@@ -739,7 +763,7 @@ def reauthenticate_setup_change():
     if not _expects_json_response():
         # Works without JavaScript: the page reloads unlocked so the operator
         # can press the original button again.
-        flash(f"Setup unlocked for {minutes} minutes of work.", "success")
+        flash(f"Removals unlocked for {minutes} minutes of work.", "success")
         return redirect(_local_referrer(with_reauth=False) or url_for("index"))
     return jsonify({
         "ok": True,
@@ -751,7 +775,7 @@ def reauthenticate_setup_change():
 
 @app.route("/reauth/status")
 def setup_unlock_status():
-    """Tell the page whether the setup password will be asked right now."""
+    """Tell the page whether a removal will ask for the password right now."""
     if not session.get("dashboard_authenticated"):
         return jsonify({"ok": False, "error": "authentication_required"}), 401
     remaining = _setup_unlock_remaining_seconds()
@@ -765,13 +789,13 @@ def setup_unlock_status():
 
 @app.route("/reauth/lock", methods=["POST"])
 def lock_setup_changes():
-    """Lock setup changes immediately so the next change asks again."""
+    """Lock removals immediately so the next delete asks again."""
     if not session.get("dashboard_authenticated"):
         return jsonify({"ok": False, "error": "authentication_required"}), 401
     _clear_setup_unlock()
     if _expects_json_response():
         return jsonify({"ok": True, "unlocked": False, "remaining_seconds": 0})
-    flash("Locked. The next setup change will ask for the password again.", "success")
+    flash("Locked. The next removal will ask for the password again.", "success")
     return redirect(_local_referrer(with_reauth=False) or url_for("index"))
 
 
@@ -1716,6 +1740,144 @@ ROUTING_SAMPLES = (
 )
 
 
+def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dict:
+    """Is posting still flowing from the sources? One honest answer.
+
+    Sources that have produced a deal before but nothing for `stall_seconds` are
+    marked stalled, channels show their last successful post, and the worker's
+    heartbeat says whether anything is pulling at all. Pure reads; no network.
+    """
+    now = time.time()
+    note_list: list[str] = []
+
+    worker = db.get_worker_heartbeat()
+    worker_age = None
+    if worker and worker.get("heartbeat_at"):
+        worker_age = max(0.0, now - float(worker["heartbeat_at"]))
+    worker_alive = worker_age is not None and worker_age <= max(
+        120, 3 * int(getattr(config, "DEAL_WORKER_POLL_INTERVAL", 30) or 30)
+    )
+    if worker is None:
+        note_list.append(
+            "The deal worker has never reported in. Posts cannot flow until the "
+            "influencer-deal-worker service is running."
+        )
+    elif not worker_alive:
+        note_list.append(
+            f"No fresh worker heartbeat ({int(worker_age or 0)}s ago). Check "
+            "systemctl status influencer-deal-worker."
+        )
+
+    try:
+        sources = db.list_sources(active_only=False)
+    except Exception:
+        sources = []
+    active_specs = [
+        str(source.get("spec") or "").strip()
+        for source in sources
+        if source.get("active")
+    ]
+    activity = {row["source_key"]: row for row in db.list_source_activity()}
+    flow_sources: list[dict] = []
+    for spec in active_specs:
+        row = activity.get(spec) or {}
+        last_seen = float(row.get("last_seen_at") or 0)
+        delivered = bool(row)
+        flow_sources.append({
+            "spec": spec,
+            "deals_seen": int(row.get("deals_seen") or 0),
+            "posts_dispatched": int(row.get("posts_dispatched") or 0),
+            "failures": int(row.get("failures") or 0),
+            "last_error": str(row.get("last_error") or ""),
+            "last_seen_at": last_seen or None,
+            "age_seconds": int(now - last_seen) if last_seen else None,
+            "never_delivered": not delivered,
+            "stalled": delivered and (now - last_seen) > stall_seconds,
+        })
+    flow_sources.sort(
+        key=lambda item: (
+            item["never_delivered"],
+            item["age_seconds"] if item["age_seconds"] is not None else 0,
+        ),
+        reverse=True,
+    )
+    stalled = [row for row in flow_sources if row["stalled"]]
+    never = [row for row in flow_sources if row["never_delivered"]]
+    if active_specs and never:
+        note_list.append(
+            f"{len(never)} of {len(active_specs)} active sources have not delivered a "
+            "deal yet — they may not be joined by the Telegram account, or the "
+            "source is quiet."
+        )
+    if stalled:
+        note_list.append(
+            f"{len(stalled)} source(s) delivered before but nothing for over "
+            f"{stall_seconds // 3600}h."
+        )
+
+    try:
+        channels = db.channel_post_activity(hours=window_hours)
+    except Exception:
+        channels = []
+    live_channels = [
+        channel for channel in channels
+        if str(channel.get("status") or "").strip().lower() in {"ready", "active"}
+    ]
+    posted_window = sum(int(channel.get("posted_in_window") or 0) for channel in channels)
+    failed_total = sum(int(channel.get("failed_total") or 0) for channel in channels)
+    try:
+        hourly_loot = str(db.get_global_setting("hourly_loot_enabled", "0")).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+    except Exception:
+        hourly_loot = False
+    only_earning = bool(getattr(config, "ONLY_EARNING_DEALS", False))
+    if live_channels and not posted_window and worker_alive:
+        note_list.append(
+            f"No post in the last {window_hours}h across {len(live_channels)} ready "
+            "channel(s): either the sources are quiet or every deal was filtered."
+        )
+        if not hourly_loot:
+            note_list.append(
+                "The hourly loot sweep is off (global setting hourly_loot_enabled=1 "
+                "turns on an extra hourly pass over the sources)."
+            )
+
+    return {
+        "ok": True,
+        "generated_at": now,
+        "worker": {
+            "state": (worker or {}).get("state") or "not_reporting",
+            "alive": worker_alive,
+            "age_seconds": int(worker_age) if worker_age is not None else None,
+            "last_poll_at": (worker or {}).get("last_poll_at") or None,
+            "last_error_code": (worker or {}).get("last_error_code") or "",
+            "poll_interval_seconds": int(getattr(config, "DEAL_WORKER_POLL_INTERVAL", 30) or 30),
+        },
+        "sources": {
+            "active": len(active_specs),
+            "paused": max(0, len(sources) - len(active_specs)),
+            "delivered": len([row for row in flow_sources if not row["never_delivered"]]),
+            "stalled": len(stalled),
+            "never_delivered": len(never),
+            "rows": flow_sources,
+        },
+        "channels": {
+            "ready": len(live_channels),
+            "posted_in_window": posted_window,
+            "failed_total": failed_total,
+            "window_hours": window_hours,
+            "rows": channels,
+        },
+        "settings": {
+            "hourly_loot_enabled": hourly_loot,
+            "only_earning_deals": only_earning,
+        },
+        "notes": note_list,
+        "stall_seconds": stall_seconds,
+    }
+
+
 def _earnkaro_ready() -> bool:
     return bool(db.get_global_setting("earnkaro_api_key", "") or config.EARNKARO_API_KEY)
 
@@ -1742,6 +1904,15 @@ def _routing_preview(
     tag = str(amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG
     store = str(hypd_store_id or "").strip() or _effective_hypd_store_id()
     ek_ready = _earnkaro_ready()
+    try:
+        from influencer_hub import accounts
+
+        model = accounts.model_rows(
+            amazon_tag=tag, hypd_store=store,
+            earnkaro_pubid=_effective_earnkaro_publisher_id(),
+        )
+    except Exception:  # pragma: no cover - defensive
+        model = []
 
     rows: list[dict] = []
     for label, sample, kind in ROUTING_SAMPLES:
@@ -1749,7 +1920,10 @@ def _routing_preview(
         if kind == "amazon":
             if amazon_on:
                 row["result"] = link_router.apply_amazon_tag(sample, tag)
-                row["note"] = f"Posted with this creator's tag ({tag}). Never shortened away from Amazon."
+                row["note"] = (
+                    f"Posted with this creator's OWN tag ({tag}) — Amazon commission is theirs. "
+                    "Never shortened away from Amazon."
+                )
             else:
                 row["state"] = "off"
                 row["note"] = "Amazon is OFF — this link is removed from the post."
@@ -1759,7 +1933,9 @@ def _routing_preview(
                 row["note"] = "EarnKaro is OFF — non-Amazon merchant links are removed from the post."
             elif ek_ready:
                 row["result"] = sample
-                row["note"] = "Converted to this creator's EarnKaro link at send time."
+                row["note"] = (
+                    "Converted at send time on OUR EarnKaro account — this link earns for us."
+                )
             else:
                 row["state"] = "warn"
                 row["result"] = sample
@@ -1781,7 +1957,7 @@ def _routing_preview(
         elif kind == "hypd":
             if hypd_on:
                 row["result"] = link_router.convert_hypd_store_link(sample, store)
-                row["note"] = f"Retagged to this creator's HYPD store {store}."
+                row["note"] = f"Retagged to OUR HYPD store {store} (our account, not the creator's)."
             else:
                 row["state"] = "off"
                 row["note"] = "HYPD (Meesho) is OFF — this link is removed from the post."
@@ -1792,13 +1968,14 @@ def _routing_preview(
 
     summary = " · ".join(
         part for part in (
-            f"Amazon → tag {tag}" if amazon_on else "Amazon off",
-            "Other merchants → EarnKaro" if ek_on else "Other merchants off",
-            f"Meesho → HYPD store {store}" if hypd_on else "Meesho off",
+            f"Amazon → creator's tag {tag}" if amazon_on else "Amazon off",
+            "Other merchants → our EarnKaro" if ek_on else "Other merchants off",
+            f"Meesho → our HYPD store {store}" if hypd_on else "Meesho off",
         )
     )
     return {
         "rows": rows,
+        "model": model,
         "summary": summary,
         "strict": strict,
         "amazon_on": amazon_on,
@@ -2079,6 +2256,7 @@ def easy_setup():
         switches=ROUTING_SWITCHES,
         source_count=len(sources),
         active_source_count=active_sources,
+        flow=_flow_snapshot(),
     )
 
 
@@ -2157,6 +2335,20 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
     }
 
 
+@app.route("/api/flow")
+def api_flow():
+    """Read-only deal-flow status: worker, sources, channels (no network calls)."""
+    try:
+        stall_seconds = max(600, int(request.args.get("stall_seconds", 3 * 3600)))
+    except (TypeError, ValueError):
+        stall_seconds = 3 * 3600
+    try:
+        window_hours = max(1, min(168, int(request.args.get("window_hours", 24))))
+    except (TypeError, ValueError):
+        window_hours = 24
+    return jsonify(_flow_snapshot(stall_seconds=stall_seconds, window_hours=window_hours))
+
+
 @app.route("/api/routing-preview")
 def routing_preview_api():
     """Live routing table for the current easy-setup form values."""
@@ -2167,16 +2359,16 @@ def routing_preview_api():
         "allow_earnkaro": str(request.args.get("allow_earnkaro", "1")).lower() in {"1", "true", "on"},
         "allow_hypd": str(request.args.get("allow_hypd", "1")).lower() in {"1", "true", "on"},
         "only_amazon": str(request.args.get("only_amazon", "0")).lower() in {"1", "true", "on"},
-        "hypd_store_id": request.args.get("hypd_store_id", "").strip() or _effective_hypd_store_id(),
+        "hypd_store_id": _routing_hypd_store(request.args.get("hypd_store_id", "")),
     })
     inf_id = request.args.get("inf_id", "").strip()
     if inf_id.isdigit():
         profile = db.get_influencer(int(inf_id))
         if profile:
             values["amazon_tag"] = str(profile.get("amazon_tag") or values["amazon_tag"])
-            values["hypd_store_id"] = (
-                str(profile.get("hypd_store_id") or "").strip() or values["hypd_store_id"]
-            )
+            # Our store stays ours: a creator's stored store id is not used for
+            # routing while central accounts are on (the default).
+            values["hypd_store_id"] = _routing_hypd_store(profile.get("hypd_store_id"))
     return jsonify({"ok": True, "preview": _routing_preview(**_routing_arguments(values))})
 
 
@@ -2348,9 +2540,9 @@ def toggle_channel_status(channel_id):
 
 @app.route("/influencer/<int:inf_id>/delete", methods=["POST"])
 def delete_influencer(inf_id):
-    pwd = request.form.get("admin_password", "").strip()
-    if not _password_matches(pwd, config.ADMIN_DELETE_PASSWORD):
-        return redirect(url_for("influencer_detail", inf_id=inf_id, err="invalid_password"))
+    # The shared unlock window already confirmed the operator's password for
+    # this removal (see REAUTH_REQUIRED_ENDPOINTS), so there is no second,
+    # separate password prompt here.
     db.delete_influencer(inf_id)
     return redirect(url_for("index"))
 
@@ -2678,7 +2870,7 @@ def api_test_render_deal():
     """
     sample_text = request.form.get("sample_text", "").strip()
     amz_tag = request.form.get("amazon_tag", config.AMAZON_ASSOCIATE_TAG).strip()
-    hypd_store = request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
+    hypd_store = _routing_hypd_store(request.form.get("hypd_store_id", ""))
     role = request.form.get("role", "broadcast").strip().lower()
     allow_amazon = _form_flag("allow_amazon", default=True)
     allow_earnkaro = _form_flag("allow_earnkaro", default=True)

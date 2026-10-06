@@ -26,14 +26,14 @@
           <form method="post" action="{{ url_for('lock_setup_changes') }}" class="nav-lock-form">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
             <button type="submit" class="nav-lock is-unlocked"
-                    title="Setup changes are unlocked. Every add / save / delete goes through without another password prompt until the dashboard is idle for {{ setup_unlock_window_minutes }} minutes. Click to lock now.">
+                    title="Removals are unlocked. Deleting a channel, a creator or a deal source goes through without another password prompt until the dashboard is idle for {{ setup_unlock_window_minutes }} minutes. Click to lock now.">
               🔓 Unlocked · {{ setup_unlock_minutes }}m left · Lock now
             </button>
           </form>
         {% else %}
           <button type="button" class="nav-lock is-locked" data-unlock-trigger
-                  title="Setup changes are locked. The next add / save / delete asks for the admin password once, then stays unlocked.">
-            🔒 Setup locked · Unlock
+                  title="Removals are locked. The next delete asks for the admin password once, then stays unlocked. Adding and saving never ask.">
+            🔒 Removals locked · Unlock
           </button>
         {% endif %}
         <form method="post" action="{{ url_for('logout') }}" class="nav-logout-form">
@@ -61,16 +61,16 @@
         <form method="post" action="{{ url_for('reauthenticate_setup_change') }}" class="unlock-form">
           <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
           <div>
-            <strong>🔒 Setup changes are locked — nothing was saved.</strong>
+            <strong>🔒 The removal is locked — nothing was deleted.</strong>
             <p class="hint" style="margin:4px 0 0;">
-              Enter the admin password once. Setup then stays unlocked for
-              {{ setup_unlock_window_minutes }} minutes, so the next add / save /
-              delete will not ask again.
+              Enter the admin password once. Removals then stay unlocked for
+              {{ setup_unlock_window_minutes }} minutes, so the next delete will
+              not ask again. Adding and saving never ask.
             </p>
           </div>
           <input type="password" name="password" autocomplete="current-password"
                  placeholder="Admin password" aria-label="Admin password" required />
-          <button type="submit" class="btn btn-primary">Unlock &amp; continue</button>
+          <button type="submit" class="btn btn-primary">Unlock &amp; delete</button>
         </form>
       </div>
       </noscript>
@@ -109,18 +109,18 @@
     <dialog id="reauth-dialog" class="reauth-dialog" aria-labelledby="reauth-title">
       <div class="reauth-panel">
         <div class="reauth-icon" aria-hidden="true">🔐</div>
-        <h2 id="reauth-title">Confirm setup changes once</h2>
+        <h2 id="reauth-title">Confirm this removal once</h2>
         <p id="reauth-copy">
-          Enter the dashboard password to continue. Setup stays unlocked for
-          <b>{{ setup_unlock_window_minutes }} minutes</b> of work, so adding,
-          saving and deleting channels after this will not ask again.
+          Enter the dashboard password to delete. Removals stay unlocked for
+          <b>{{ setup_unlock_window_minutes }} minutes</b> of work, so later
+          deletes after this will not ask again. Adding and saving never ask.
         </p>
         <label for="reauth-password">Admin password</label>
         <input id="reauth-password" type="password" autocomplete="current-password" inputmode="text" />
         <p id="reauth-error" class="reauth-error" role="alert" aria-live="polite"></p>
         <div class="reauth-actions">
           <button type="button" class="btn btn-secondary" id="reauth-cancel">Cancel</button>
-          <button type="button" class="btn btn-primary" id="reauth-confirm">Unlock &amp; continue</button>
+          <button type="button" class="btn btn-primary" id="reauth-confirm">Confirm &amp; delete</button>
         </div>
       </div>
     </dialog>
