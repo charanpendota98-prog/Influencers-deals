@@ -16,9 +16,9 @@ inside the repo — and this branch is pushed, so a fetch is enough.
 | --- | --- |
 | `origin/main` | `0bf913f` "Merge PR #6" — PRs #1–#6 all merged, none open |
 | PR #6 content | Password login, ⚡ Easy Setup, 💰 Money Radar, gunicorn `0.0.0.0:5000`, Telegram ingestion — **already on `main`, do not redo** |
-| branch `arena/a54d6a1d-influencers-deals` | commission fixes + password policy + account model + the patch bundle |
-| tests | `main` = **234 passed**, this branch = **285 passed** |
-| VM | commission fixes live; password policy + account model still to apply |
+| branch `arena/a54d6a1d-influencers-deals` | commission fixes + password policy + account model + deal-flow board + the patch bundle |
+| tests | `main` = **234 passed**, this branch = **300 passed** (`--with-tests` replay: **287**, see §1) |
+| VM | commission fixes live; password policy + account model + deal-flow board still to apply |
 
 Fastest path into a new session:
 
@@ -35,7 +35,7 @@ If the branch cannot be fetched, use `patches/` (upload it from the workspace).
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -q pytest aiohttp flask
-.venv/bin/python -m pytest -q      # 285 passed here, 234 on main
+.venv/bin/python -m pytest -q      # 300 passed here, 234 on main
 ```
 
 From a **clean `main`** checkout, either replay path reproduces this branch
@@ -46,18 +46,21 @@ byte for byte:
 git apply patches/commission-leaks.patch
 git apply patches/password-policy.patch
 git apply patches/tests.patch
+git apply patches/deal-flow.patch
 
 # B. surgical appliers (for a VM that already has some of the work)
 python3 patches/apply-commission-fixes.py --with-tests
 python3 patches/apply-password-policy.py  --with-tests
 python3 patches/apply-account-model.py    --with-tests
+python3 patches/apply-deal-flow.py        --with-tests
 
-.venv/bin/python -m pytest -q      # expect 274 passed
+.venv/bin/python -m pytest -q      # expect 287 passed via B, 300 via A
 ```
 
-(`285` is the count **on this branch**: it includes the 11 guards in
+(`300` is the count **on this branch**: it includes the 13 guards in
 `tests/test_patch_bundle.py`, which `--with-tests` intentionally does not
-install. Via path A the number is 285 too, because `tests.patch` carries them.)
+install — hence `287` on path B. Path A installs them through `tests.patch`.
+The only file no patch carries is this `HANDOFF.md`.)
 
 `patches/conftest.py` keeps pytest out of `patches/tests/`; `pytest.ini` is not
 needed. `tests/test_patch_bundle.py` fails if the bundle ever drifts from the
@@ -122,14 +125,49 @@ python3 -c "from influencer_hub import db; db.init(); db.set_global_setting('cen
 
 ---
 
-## 5. Apply on the VM (what is still missing there)
+## 5. Deal flow (done) — sources keep feeding posts, and you can see it
+
+The engine was already self-healing (`worker.py`: a source cursor advances only
+after a message is handled, the heartbeat is refreshed every loop, backoff is
+capped, the poll queue is separate). What was missing was *evidence*:
+
+* `db.source_activity` + `worker._record_source_activity()` record, per source:
+  deals seen, posts dispatched, failures and the failure reason. A cursor is
+  still held on a failed delivery — and now the retry is visible instead of
+  only being in logs.
+* `GET /api/flow` (read-only, no network) returns the worker heartbeat, per
+  source last-seen / stalled / never-delivered, per channel last post and
+  posted/failed counts, plus `hourly_loot_enabled` and `only_earning_deals` and
+  plain-language notes ("3 of 7 active sources have not delivered a deal yet").
+* Easy Setup ends with a **Deal flow — sources → posts** card; per-source and
+  per-channel tables sit in its Advanced section.
+* Tests: `tests/test_deal_flow.py` (13) — including "a failed delivery holds the
+  cursor and is counted", "a crash is a failure, not a lost cursor", "media-only
+  messages advance so they cannot block the queue" and "a stalled source is
+  reported as stalled".
+
+Two honest gaps in ingestion as it stands:
+
+1. **Hourly loot is off unless asked for**: `scheduler.py` runs the extra hourly
+   sweep only when the global setting `hourly_loot_enabled=1`. `/api/flow` now
+   says so when a day is idle.
+2. **Priority sources are hardcoded** in `puller.py` (`PRIORITY_SOURCE_SPECS`,
+   three invite links) and the puller reads only dialogs the Telegram account
+   has already joined — it never joins. A source that is not joined looks
+   "never delivered" on the flow card.
+
+---
+
+## 6. Apply on the VM (what is still missing there)
 
 ```bash
 cd ~/Influencers-deals
 python3 patches/apply-password-policy.py --with-tests
 python3 patches/apply-account-model.py   --with-tests
-sudo systemctl restart influencer-dashboard
-systemctl is-active influencer-dashboard
+python3 patches/apply-deal-flow.py       --with-tests
+sudo systemctl restart influencer-deal-worker influencer-dashboard
+systemctl is-active influencer-deal-worker influencer-dashboard
+curl -s localhost:5000/api/flow | head -c 400
 ```
 
 * The commission fixes are **already live** on the VM, so
@@ -140,7 +178,7 @@ systemctl is-active influencer-dashboard
 
 ---
 
-## 6. Next decisions, in order
+## 7. Next decisions, in order
 
 1. **EarnKaro / Affiliaters token vault — biggest earning gap.** Until a valid
    token + publisher id sit in the Vault tab, every non-Amazon link earns
@@ -155,7 +193,7 @@ systemctl is-active influencer-dashboard
 
 ---
 
-## 7. Traps — do not relearn these
+## 8. Traps — do not relearn these
 
 * **Never** `git checkout -- <file>` on the VM: it reverts fixes that are not in
   `origin/main`.
@@ -166,4 +204,6 @@ systemctl is-active influencer-dashboard
   2–4 unless you replay `patches/`.
 * Python is externally managed (PEP 668): `pip install` needs a venv.
 * Test counts in older notes (244 / 251) do not match this tree; the real
-  numbers are **234 on `main`** and **285 on this branch**.
+  numbers are **234 on `main`**, **300 on this branch** and **287 via the
+  `--with-tests` applier path** (the bundle's own 13 guards are not installed
+  there).

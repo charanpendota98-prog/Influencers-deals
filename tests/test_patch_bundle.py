@@ -27,11 +27,13 @@ PATCH_FILES = (
     "commission-leaks.patch",
     "password-policy.patch",
     "tests.patch",
+    "deal-flow.patch",
 )
 APPLIERS = (
     "apply-commission-fixes.py",
     "apply-password-policy.py",
     "apply-account-model.py",
+    "apply-deal-flow.py",
 )
 
 
@@ -44,7 +46,7 @@ def _load(path: pathlib.Path):
 
 def _in_place(module) -> bool:
     """Each applier names its own idempotency check slightly differently."""
-    for name in ("policy_in_place", "_policy_in_place"):
+    for name in ("policy_in_place", "_policy_in_place", "flow_in_place"):
         if hasattr(module, name):
             return bool(getattr(module, name)())
     raise AssertionError("applier has no in-place check")

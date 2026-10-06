@@ -1,41 +1,50 @@
 # `patches/` — verified, replayable fixes
 
-Three ways to move this work into another checkout. All three are verified to
-land on **exactly** the same tree.
+Four ways to move this work into another checkout. All of them are verified to
+land on **exactly** the same code and tests.
 
 | # | path | use it when |
 | --- | --- | --- |
-| 1 | `patches/*.patch` | a clean `0bf913f` checkout: `git apply` all three, done |
+| 1 | `patches/*.patch` | a clean `0bf913f` checkout: `git apply` all four, done |
 | 2 | `patches/apply-*.py` | a VM that already has part of the work (surgical, exact-text) |
 | 3 | `patches/tests/` | the verified test files `--with-tests` installs |
+| 4 | `HANDOFF.md` | the human handoff (not part of the patches — prose ships with the branch) |
 
-## 1. The three git patches
+## 1. The four git patches
 
 ```bash
 cd ~/Influencers-deals
 git apply patches/commission-leaks.patch   # influencer_hub/
 git apply patches/password-policy.patch    # dashboard/
 git apply patches/tests.patch              # tests/
-pytest -q                                  # 285 passed
+git apply patches/deal-flow.patch          # influencer_hub/ + dashboard/ (flow board)
+pytest -q                                  # 300 passed
 ```
 
 | patch | lines | covers |
 | --- | --- | --- |
-| `commission-leaks.patch` | 681 | `influencer_hub/` — the three leaks **and** the account model |
+| `commission-leaks.patch` | 681 | `influencer_hub/` — the three leaks **plus** the account model |
 | `password-policy.patch` | 666 | `dashboard/` — password only for removals + the who-earns table |
-| `tests.patch` | 1254 | `tests/` — every changed and new test file |
+| `tests.patch` | 1524 | `tests/` — every changed and new test file, at this revision |
+| `deal-flow.patch` | 474 | `influencer_hub/` + `dashboard/` — per-source deal flow, `/api/flow`, the Easy Setup card |
 
-They are generated with `git diff 0bf913f..HEAD -- <dir>`, so they apply on a
-clean `main` (`0bf913f`) and reproduce this branch byte for byte.
+`commission-leaks.patch`, `password-policy.patch` and `tests.patch` cover
+`0bf913f..77acbe7`; `deal-flow.patch` covers `77acbe7..HEAD` for the two code
+directories only, so the tests always come from the single `tests.patch`. Apply
+them in the order above on a clean `main` (`0bf913f`) and the tree matches this
+branch down to the byte — the only file not reconstructed is `HANDOFF.md`
+(documentation, not code).
 
-## 2. The three appliers
+## 2. The four appliers
 
 ```bash
 python3 patches/apply-commission-fixes.py --with-tests
 python3 patches/apply-password-policy.py  --with-tests
 python3 patches/apply-account-model.py    --with-tests
+python3 patches/apply-deal-flow.py        --with-tests
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
+curl -s localhost:5000/api/flow | head -c 400
 ```
 
 | applier | touches | what it fixes |
@@ -43,6 +52,7 @@ systemctl is-active influencer-deal-worker influencer-dashboard
 | `apply-commission-fixes.py` | `influencer_hub/` | tagged Amazon pages kept, `convert_option` payload, `affExtParam2`/`id=` provenance |
 | `apply-password-policy.py` | `dashboard/` | `REAUTH_REQUIRED_ENDPOINTS` 28 → 3, no `data-require-reauth` on adds/saves, one shared unlock dialog |
 | `apply-account-model.py` | both | installs `influencer_hub/accounts.py` + wires it in (their Amazon id, our EarnKaro/HYPD) |
+| `apply-deal-flow.py` | both | `source_activity` bookkeeping, `_flow_snapshot()`, `GET /api/flow`, the Easy Setup flow card |
 
 Each supports `--check`, `--dry-run`, `--with-tests` and stops a second run:
 
@@ -58,10 +68,11 @@ Exit codes: `0` applied / already in place with `--check`, `1` already applied
 (nothing was written).
 
 **On the VM, apply only what is missing.** The commission fixes are already
-live there; `apply-account-model.py` and `apply-password-policy.py` are the two
-it still needs. Each applier touches a different set of functions, so they can
-run in any order. Without `--with-tests` an applier changes only its own code
-files — the tests it installs assume **all three** policies are in place.
+live there; `apply-password-policy.py`, `apply-account-model.py` and
+`apply-deal-flow.py` are the ones it still needs. The appliers touch different
+functions, so they can run in any order. Without `--with-tests` an applier
+changes only its own code files — the tests it installs assume **all four**
+policies are in place.
 
 ## 3. What each policy actually does
 
@@ -91,7 +102,24 @@ files — the tests it installs assume **all three** policies are in place.
 
 Pipeline, Money Radar and both dashboard previews resolve through the module, so
 posts and the money audit can never disagree; Easy Setup shows a **"whose
-account earns"** table.
+account earns"** table. `accounts.creators_missing_own_tag()` lists any profile
+that would post on the fallback tag.
+
+### Deal flow (`influencer_hub/` + `dashboard/`)
+
+* The worker keeps its self-healing properties (cursor held on a failed
+  delivery, heartbeat, capped backoff, separate poll queue) and now records per
+  source: deals seen, posts dispatched, failures and the **reason**.
+* `db.source_activity` + `db.channel_post_activity()` are the readers;
+  `posts.posted_at` only exists for successful posts, so failures are reported
+  all-time rather than pretending they are dated.
+* `GET /api/flow` (pure reads, no network) returns worker state, per-source
+  last-seen, per-channel posted/failed counts, `hourly_loot_enabled` and
+  `only_earning_deals`, plus plain-language notes — e.g. a source that delivered
+  before but has been silent for 3h, or an idle day that is idle because the
+  hourly loot sweep is off.
+* Easy Setup ends with a **"Deal flow — sources → posts"** card; the per-source
+  table and the channel table live in its Advanced section.
 
 ### Password policy (`dashboard/`)
 
@@ -106,9 +134,10 @@ account earns"** table.
 ## `patches/tests/` + `conftest.py`
 
 `patches/tests/` holds byte-identical copies of the test files the policies
-touched (including `test_reauth_policy.py`, `test_amazon_tag_attribution.py` and
-`test_account_model.py`). `patches/conftest.py` keeps pytest from collecting the
-bundle, so a receiving checkout needs no extra config.
+touched (including `test_reauth_policy.py`, `test_amazon_tag_attribution.py`,
+`test_account_model.py` and `test_deal_flow.py`). `patches/conftest.py` keeps
+pytest from collecting the bundle, so a receiving checkout needs no extra
+config.
 
 `tests/test_patch_bundle.py` is the drift guard for all of this: it fails if a
 `.patch` is malformed, if `patches/tests/` copies diverge from `tests/`, or if an
@@ -123,13 +152,17 @@ applier no longer reports the branch state.
   and anything else outside the checkout.
 * Don't mix paths casually — a `.patch` expects a clean `0bf913f`; an applier
   expects the mix of fixes the VM actually has.
+* `patches/tests/` copies go stale the moment a test changes. Re-copy, then let
+  `tests/test_patch_bundle.py` prove they match.
 
 ## Verified end-to-end
 
-* clean `0bf913f` + the three `.patch` files → **285 passed**, byte-identical tree
-  (that count includes the 11 guards in `tests/test_patch_bundle.py`)
-* clean `0bf913f` + the three appliers (`--with-tests`) → **274 passed**,
-  byte-identical tree. The 11 bundle guards are deliberately **not** installed by
-  `--with-tests`: they only make sense on the branch that ships the bundle.
+* clean `0bf913f` + the four `.patch` files → **300 passed**, every code/test file
+  byte-identical (only `HANDOFF.md` is not in the patches; 13 of those tests are
+  the bundle guards in `tests/test_patch_bundle.py`)
+* clean `0bf913f` + the four appliers (`--with-tests`) → **287 passed**, every
+  code/test file byte-identical. The 13 bundle guards are deliberately **not**
+  installed by `--with-tests`: they only make sense on the branch that ships the
+  bundle.
 * a second run of every applier → exit `1`, nothing written
 * baseline on `main` before any of this: **234 passed**
