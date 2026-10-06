@@ -244,15 +244,21 @@ def test_routing_preview_sends_meesho_to_hypd(hub):
     assert next(row for row in off["rows"] if row["kind"] == "hypd")["state"] == "off"
 
 
-def test_routing_preview_uses_the_creator_hypd_store(hub):
+def test_routing_preview_posts_hypd_with_our_store_and_nothing_else(hub):
+    """Meesho/HYPD links always carry OUR store, whatever value is requested."""
     client, session = hub
     preview = client.get(
         "/api/routing-preview?amazon_tag=ravi-21&allow_amazon=1&allow_earnkaro=1"
         "&allow_hypd=1&hypd_store_id=55555"
     ).get_json()["preview"]
     afflink = next(row for row in preview["rows"] if row["kind"] == "hypd")
-    assert afflink["result"] == "https://hypd.store/55555/afflink/SAMPLETOKEN"
-    assert "55555" in preview["summary"]
+    our_store = config.HYPD_STORE_ID
+    assert afflink["result"] == f"https://hypd.store/{our_store}/afflink/SAMPLETOKEN"
+    assert our_store in preview["summary"]
+    assert "55555" not in preview["summary"]
+    # The Amazon row stays pinned to the creator's own tag.
+    amazon_row = next(row for row in preview["rows"] if row["kind"] == "amazon")
+    assert "tag=ravi-21" in amazon_row["result"]
 
 
 def test_routing_preview_shows_off_states_and_informational_links(hub):

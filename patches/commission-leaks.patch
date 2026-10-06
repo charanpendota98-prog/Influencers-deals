@@ -1,0 +1,681 @@
+diff --git a/influencer_hub/accounts.py b/influencer_hub/accounts.py
+new file mode 100644
+index 0000000..eec8c57
+--- /dev/null
++++ b/influencer_hub/accounts.py
+@@ -0,0 +1,223 @@
++"""Who earns on which network — the account model in one place.
++
++The operator's rule:
++
++    Amazon        -> the CREATOR's own Associate tag. Their id signs the post.
++    EarnKaro      -> OUR central Affiliaters/EarnKaro account (vault credentials).
++    Meesho / HYPD -> OUR central HYPD store id.
++    LehLah        -> the source's own attribution, preserved as-is.
++
++`central_network_accounts` (a global setting, default from
++``config.CENTRAL_NETWORK_ACCOUNTS``) makes the central half non-negotiable: a
++`hypd_store_id` stored on a creator or a channel cannot redirect HYPD commission
++away from our store, and EarnKaro always uses the vault credentials.
++
++Amazon is deliberately **never** centralised. ``creator_amazon_tag`` prefers the
++channel override and then the creator's own tag; the configured default is only
++a last-resort fallback for a profile that still needs a tag, and
++``amazon_tag_source`` reports when that happened so the dashboard can say so.
++"""
++from __future__ import annotations
++
++from . import config
++
++CENTRAL = "central"
++CREATOR = "creator"
++SOURCE = "source"
++
++#: Which account earns on each network. This is the whole model, in one dict.
++NETWORK_MODEL: dict[str, str] = {
++    "amazon": CREATOR,
++    "earnkaro": CENTRAL,
++    "hypd": CENTRAL,
++    "lehlah": SOURCE,
++}
++
++CENTRAL_ACCOUNTS_SETTING = "central_network_accounts"
++
++
++def _global_setting(key: str, default=None):
++    """Read a global setting without ever exploding on a fresh database."""
++    try:
++        from . import db
++
++        return db.get_global_setting(key, default)
++    except Exception:
++        return default
++
++
++def _truthy(value) -> bool:
++    if isinstance(value, bool):
++        return value
++    return str(value).strip().lower() in {"1", "true", "yes", "on"}
++
++
++def central_network_accounts_enabled() -> bool:
++    """True when EarnKaro/HYPD must use OUR accounts, whatever a row says."""
++    setting = _global_setting(
++        CENTRAL_ACCOUNTS_SETTING, bool(config.CENTRAL_NETWORK_ACCOUNTS)
++    )
++    return _truthy(setting)
++
++
++def central_hypd_store_id() -> str:
++    """OUR HYPD store id: vault/global setting first, then the environment."""
++    configured = _global_setting("hypd_store_id", "") or config.HYPD_STORE_ID
++    return str(configured or config.HYPD_STORE_ID).strip() or config.HYPD_STORE_ID
++
++
++def central_earnkaro_publisher_id() -> str:
++    """OUR EarnKaro/Affiliaters publisher id."""
++    configured = (
++        _global_setting("earnkaro_publisher_id", "")
++        or config.EARNKARO_PUBLISHER_ID
++        or ""
++    )
++    return str(configured).strip()
++
++
++def central_earnkaro_api_key() -> str:
++    """OUR EarnKaro/Affiliaters API token (never logged, never cached)."""
++    configured = _global_setting("earnkaro_api_key", "") or config.EARNKARO_API_KEY
++    return str(configured).strip()
++
++
++def creator_amazon_tag(
++    influencer: dict | None = None, channel: dict | None = None
++) -> str:
++    """The tag an Amazon link is posted with: the creator's own id.
++
++    Priority: the channel's explicit override (still an operator-entered id for
++    that creator), then the creator's own tag, then the configured fallback so a
++    deal is never dropped for a missing profile value.
++    """
++    influencer = influencer or {}
++    channel = channel or {}
++    for candidate in (
++        channel.get("amazon_override_tag"),
++        influencer.get("amazon_tag"),
++        config.AMAZON_ASSOCIATE_TAG,
++    ):
++        value = str(candidate or "").strip()
++        if value:
++            return value
++    return ""
++
++
++def amazon_tag_source(
++    influencer: dict | None = None, channel: dict | None = None
++) -> str:
++    """Where :func:`creator_amazon_tag` got its value: channel/creator/fallback."""
++    influencer = influencer or {}
++    channel = channel or {}
++    if str(channel.get("amazon_override_tag") or "").strip():
++        return "channel"
++    if str(influencer.get("amazon_tag") or "").strip():
++        return "creator"
++    return "fallback"
++
++
++def amazon_tag_is_creators_own(
++    influencer: dict | None = None, channel: dict | None = None
++) -> bool:
++    """True when the post is signed with the creator's own id, not our fallback."""
++    return amazon_tag_source(influencer, channel) in {"channel", "creator"}
++
++
++def hypd_store_for(
++    influencer: dict | None = None, channel: dict | None = None
++) -> str:
++    """The HYPD store id that will appear in posts.
++
++    With central accounts on (the default) this is always OUR store, so a stale
++    or copied per-creator value cannot take HYPD commission elsewhere. Turning
++    the setting off restores the legacy channel -> creator -> central priority.
++    """
++    if central_network_accounts_enabled():
++        return central_hypd_store_id()
++    influencer = influencer or {}
++    channel = channel or {}
++    for candidate in (
++        channel.get("hypd_store_id"),
++        influencer.get("hypd_store_id"),
++        central_hypd_store_id(),
++    ):
++        value = str(candidate or "").strip()
++        if value:
++            return value
++    return central_hypd_store_id()
++
++
++def routing_for(
++    influencer: dict | None = None, channel: dict | None = None
++) -> tuple[str, str]:
++    """The (amazon_tag, hypd_store) pair the pipeline will actually use."""
++    return (
++        creator_amazon_tag(influencer, channel),
++        hypd_store_for(influencer, channel),
++    )
++
++
++def model_rows(
++    amazon_tag: str = "", hypd_store: str = "", earnkaro_pubid: str = ""
++) -> list[dict]:
++    """Human-readable rows of the model, for the dashboard and the preview."""
++    tag = str(amazon_tag or "").strip() or str(config.AMAZON_ASSOCIATE_TAG or "").strip()
++    store = str(hypd_store or "").strip() or central_hypd_store_id()
++    pubid = str(earnkaro_pubid or "").strip() or central_earnkaro_publisher_id()
++    central = central_network_accounts_enabled()
++    return [
++        {
++            "network": "Amazon",
++            "earns": "creator",
++            "account": tag or "the creator's own tag",
++            "detail": (
++                f"Every Amazon link is posted with this creator's own Associate "
++                f"tag ({tag})." if tag else
++                "This creator still needs their own Associate tag."
++            ),
++        },
++        {
++            "network": "EarnKaro",
++            "earns": "central",
++            "account": pubid or "our publisher id (not configured)",
++            "detail": (
++                "Flipkart / Myntra / Ajio / Nykaa / Croma / Shopsy links are "
++                f"converted on OUR EarnKaro account (publisher {pubid or '—'})."
++            ),
++        },
++        {
++            "network": "Meesho (HYPD)",
++            "earns": "central",
++            "account": store,
++            "detail": (
++                f"Meesho / HYPD links carry OUR store {store}"
++                + ("." if central else " (central accounts are off: per-creator stores apply).")
++            ),
++        },
++    ]
++
++
++def creators_missing_own_tag() -> list[dict]:
++    """Creators whose Amazon posts are not signed with an id of their own.
++
++    A profile counts as missing when it has no tag, or when its tag is still the
++    configured fallback (`config.AMAZON_ASSOCIATE_TAG`) — which is what a profile
++    created without a tag ends up storing. Operator checklist material: for these
++    creators the Amazon post earns under the fallback tag, not theirs.
++    """
++    try:
++        from . import db
++
++        profiles = db.list_influencers()
++    except Exception:
++        return []
++    fallback = str(config.AMAZON_ASSOCIATE_TAG or "").strip().casefold()
++    missing: list[dict] = []
++    for profile in profiles:
++        tag = str(profile.get("amazon_tag") or "").strip()
++        if not tag or (fallback and tag.casefold() == fallback):
++            missing.append(
++                {"id": profile.get("id"), "name": profile.get("name") or ""}
++            )
++    return missing
+diff --git a/influencer_hub/advanced_shortener.py b/influencer_hub/advanced_shortener.py
+index 170f631..f0a4f8a 100644
+--- a/influencer_hub/advanced_shortener.py
++++ b/influencer_hub/advanced_shortener.py
+@@ -38,6 +38,30 @@ def is_our_amazon_link(url: str, amazon_tag: str) -> bool:
+         return False
+ 
+ 
++def is_our_amazon_attribution(url: str, amazon_tag: str) -> bool:
++    """True when an Amazon URL carries OUR Associate tag, whatever its route.
++
++    Amazon attribution travels in the ``tag`` query parameter, not in the path.
++    A search page (``/s?k=...``), a storefront or an ``amzn.to`` short link that
++    carries exactly one tag equal to ours earns exactly like a ``/dp/ASIN``
++    product page — so the audit must keep the page instead of deleting it.
++    ``is_our_amazon_link`` stays the stricter check used before we shorten or
++    re-mint a link ourselves.
++    """
++    try:
++        tag = str(amazon_tag or "").strip()
++        if not tag or link_router.classify_url(url) != "amazon":
++            return False
++        parsed = urlparse(url)
++        tags = [
++            value for key, value in parse_qsl(parsed.query, keep_blank_values=True)
++            if key.casefold() == "tag" and value
++        ]
++        return len(tags) == 1 and tags[0] == tag
++    except Exception:
++        return False
++
++
+ def is_our_hypd_link(url: str, hypd_store_id: str) -> bool:
+     """Check if URL is OUR HYPD affiliate link with the exact store ID."""
+     try:
+diff --git a/influencer_hub/commission_guard.py b/influencer_hub/commission_guard.py
+index 096ba9b..8997ad9 100644
+--- a/influencer_hub/commission_guard.py
++++ b/influencer_hub/commission_guard.py
+@@ -19,7 +19,11 @@ import re
+ from urllib.parse import parse_qsl, urlparse
+ 
+ from . import link_router
+-from .advanced_shortener import is_our_amazon_link, is_our_hypd_link
++from .advanced_shortener import (
++    is_our_amazon_attribution,
++    is_our_amazon_link,
++    is_our_hypd_link,
++)
+ 
+ # EarnKaro shortener hosts (copied from earnkaro.py to avoid aiohttp import)
+ _EARNKARO_SHORT_HOSTS = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "myntr.it"}
+@@ -44,9 +48,10 @@ def is_earnkaro_short_link(url: str) -> bool:
+     return _is_earnkaro_short(url)
+ 
+ 
+-def _affextparam2_values(url: str) -> list[str]:
++def _publisher_id_values(url: str, expected_pubid: str = "") -> list[str]:
++    """EarnKaro publisher ids visible in a link (``affExtParam2`` and ``id``)."""
+     try:
+-        return [v for k, v in parse_qsl(urlparse(url).query, keep_blank_values=True) if k.casefold() == "affextparam2"]
++        return link_router.publisher_ids_in_url(url, expected_pubid)
+     except Exception:
+         return []
+ 
+@@ -142,18 +147,27 @@ def audit_rendered_text(
+                 issues.append(entry["reason"])
+             elif is_our_amazon_link(url, effective_tag):
+                 entry["reason"] = f"OUR Amazon verified tag={effective_tag}"
++            elif is_our_amazon_attribution(url, effective_tag):
++                # A search page, a storefront or a short link cannot be turned
++                # into /dp/ASIN without a network round-trip, but commission is
++                # carried by the tag — so the page is KEPT, never deleted.
++                if _host_of(url) in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}:
++                    entry["reason"] = f"amzn.to with OUR tag (short code opaque, tag appended): {url}"
++                    issues.append(f"WARN amzn.to opaque link (commission best-effort, prefer /dp/ASIN): {url}")
++                else:
++                    entry["reason"] = (
++                        f"OUR Amazon page kept as-is (tag={effective_tag}, "
++                        f"route {urlparse(url).path or '/'}) — attribution comes "
++                        "from the tag, not from the /dp/ path"
++                    )
+             else:
+                 parsed = urlparse(url)
+                 tags = [v for k, v in parse_qsl(parsed.query) if k.lower() == "tag"]
+                 if _host_of(url) in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}:
+-                    if tags == [effective_tag]:
+-                        entry["reason"] = f"amzn.to with OUR tag (short code opaque, tag appended): {url}"
+-                        issues.append(f"WARN amzn.to opaque link (commission best-effort, prefer /dp/ASIN): {url}")
+-                    else:
+-                        entry["ok"] = False
+-                        entry["reason"] = f"amzn.to without OUR tag (expected {effective_tag}): {url}"
+-                        amazon_ok = False
+-                        issues.append(entry["reason"])
++                    entry["ok"] = False
++                    entry["reason"] = f"amzn.to without OUR tag (expected {effective_tag}): {url}"
++                    amazon_ok = False
++                    issues.append(entry["reason"])
+                 else:
+                     entry["ok"] = False
+                     entry["reason"] = f"Amazon link not OUR canonical (expected tag {effective_tag}): {url}"
+@@ -204,15 +218,16 @@ def audit_rendered_text(
+ 
+         elif _is_earnkaro_short(url):
+             # EarnKaro short link (ekaro.in, fktr.in, clnk.in, myntr.it, etc.)
+-            # Verify provenance if expected_pubid known — check affExtParam2 if visible
+-            pubids = _affextparam2_values(url)
++            # Verify provenance if expected_pubid known — check the publisher
++            # id parameters visible on the short link itself.
++            pubids = _publisher_id_values(url, expected_pubid)
+             if expected_pubid:
+                 if pubids:
+                     if all(pid == expected_pubid for pid in pubids):
+                         entry["reason"] = f"EarnKaro short verified pubid={expected_pubid}"
+                     else:
+                         entry["ok"] = False
+-                        entry["reason"] = f"EarnKaro short has wrong pubid {pubids} (expected {expected_pubid}): {url}"
++                        entry["reason"] = f"EarnKaro short has wrong publisher {pubids} (expected {expected_pubid}): {url}"
+                         earnkaro_ok = False
+                         issues.append(entry["reason"])
+                 else:
+diff --git a/influencer_hub/config.py b/influencer_hub/config.py
+index f630162..51da2ba 100644
+--- a/influencer_hub/config.py
++++ b/influencer_hub/config.py
+@@ -112,6 +112,11 @@ DEAL_WORKER_BATCH_SIZE = _int("DEAL_WORKER_BATCH_SIZE", 100)
+ DEAL_WORKER_INITIAL_BATCH_SIZE = _int("DEAL_WORKER_INITIAL_BATCH_SIZE", 10)
+ DEAL_WORKER_MAX_BACKOFF = _int("DEAL_WORKER_MAX_BACKOFF", 900)
+ HYPD_STORE_ID = _env("HYPD_STORE_ID", "93944")
++# Account model: Amazon uses each creator's own Associate tag, while
++# EarnKaro and Meesho/HYPD use OUR central accounts. On (the default) a
++# per-creator or per-channel hypd_store_id cannot move HYPD commission
++# away from our store. See influencer_hub/accounts.py.
++CENTRAL_NETWORK_ACCOUNTS = _bool("CENTRAL_NETWORK_ACCOUNTS", True)
+ # Optional branded first-party domain for shortening existing HYPD and LehLah
+ # Meesho affiliate links (e.g. https://go.yourbrand.in). No API key is needed.
+ MEESHO_SHORT_LINK_BASE_URL = _env("MEESHO_SHORT_LINK_BASE_URL", "").rstrip("/")
+diff --git a/influencer_hub/earnkaro.py b/influencer_hub/earnkaro.py
+index 94aeab6..693cfad 100644
+--- a/influencer_hub/earnkaro.py
++++ b/influencer_hub/earnkaro.py
+@@ -1,8 +1,8 @@
+ """EarnKaro converter client.
+ 
+-The configured integration posts a cleaned merchant URL to the EarnKaro
+-converter endpoint with a Bearer credential and parses a returned affiliate
+-link. When a publisher ID is configured, direct results must include a matching
++The configured integration posts a cleaned merchant URL plus
++`"convert_option": "convert_only"` to the EarnKaro converter endpoint with a
++Bearer credential and parses a returned affiliate link. When a publisher ID is configured, direct results must include a matching
+ ID; known shorteners receive a best-effort redirect check. If credentials are
+ absent, conversion fails, or the result cannot be validated, the original
+ merchant URL is returned so the deal is not dropped. This code cannot guarantee
+@@ -44,20 +44,48 @@ def _affextparam2_values(link: str) -> list[str]:
+     ]
+ 
+ 
+-async def _resolve_affextparam2(session: aiohttp.ClientSession, link: str,
+-                                 timeout: float = 8.0) -> str | None:
+-    """Follow redirects and return the affExtParam2 of the final URL (best-effort)."""
++def _publisher_id_values(link: str, expected_pubid: str = "") -> list[str]:
++    """Publisher IDs visible on a link: ``affExtParam2`` and plain ``id``.
++
++    The converter sometimes returns a merchant URL that carries our publisher
++    id as ``id=`` instead of ``affExtParam2=``. Both are checked, and a link
++    that carries somebody else's id is rejected back to the raw URL.
++    """
++    return link_router.publisher_ids_in_url(link, expected_pubid)
++
++
++async def _resolve_final_url(session: aiohttp.ClientSession, link: str,
++                             timeout: float = 8.0) -> str | None:
++    """Follow redirects and return the final URL (best-effort)."""
+     try:
+         async with session.get(
+             link, allow_redirects=True,
+             timeout=aiohttp.ClientTimeout(total=timeout),
+             headers={"User-Agent": "Mozilla/5.0"},
+         ) as resp:
+-            final = str(resp.url)
++            return str(resp.url)
+     except Exception:
+         return None
++
++
++async def _resolve_affextparam2(session: aiohttp.ClientSession, link: str,
++                                timeout: float = 8.0) -> str | None:
++    """Follow redirects and return the affExtParam2 of the final URL (best-effort)."""
++    final = await _resolve_final_url(session, link, timeout=timeout)
++    if final is None:
++        return None
+     return next(iter(_affextparam2_values(final)), None)
+ 
++
++async def _resolve_publisher_id(session: aiohttp.ClientSession, link: str,
++                                expected_pubid: str = "",
++                                timeout: float = 8.0) -> str | None:
++    """Follow redirects and return the publisher id the landing page carries."""
++    final = await _resolve_final_url(session, link, timeout=timeout)
++    if final is None:
++        return None
++    return next(iter(_publisher_id_values(final, expected_pubid)), None)
++
+ CACHE: dict[str, tuple[float, str]] = {}
+ CACHE_TTL = 60 * 60 * 12  # 12h — successful EarnKaro links are stable
+ NEGATIVE_CACHE_TTL = 5 * 60  # retry unsupported/transient fallbacks soon
+@@ -161,7 +189,7 @@ def parse_ek_response(body: str, expected_pubid: str | None = None) -> str | Non
+         return None
+     result = _clean(result)
+     if expected_pubid:
+-        publisher_ids = _affextparam2_values(result)
++        publisher_ids = _publisher_id_values(result, expected_pubid)
+         if publisher_ids:
+             if any(publisher_id != expected_pubid for publisher_id in publisher_ids):
+                 # Link explicitly carries a different publisher ID — reject it.
+@@ -211,7 +239,11 @@ async def convert_one(session: aiohttp.ClientSession, url: str,
+         try:
+             async with session.post(
+                 config.EARNKARO_API_URL,
+-                json={"deal": api_deal_url},
++                # Verified contract of the Affiliaters/EarnKaro converter:
++                # {"deal": <clean merchant url>, "convert_option": "convert_only"}.
++                # A wrong body returns HTTP 200 with no link, which silently
++                # posted free (unpaid) merchant links.
++                json={"deal": api_deal_url, "convert_option": "convert_only"},
+                 headers={
+                     "Authorization": f"Bearer {effective_ek_key}",
+                     "Content-Type": "application/json",
+@@ -231,7 +263,9 @@ async def convert_one(session: aiohttp.ClientSession, url: str,
+                 # affExtParam2 directly, so follow the redirect (best-effort) and
+                 # confirm it lands on OUR publisher id. A mismatch -> reject.
+                 if effective_ek_pubid and _is_shortener(converted):
+-                    resolved_pubid = await _resolve_affextparam2(session, converted)
++                    resolved_pubid = await _resolve_publisher_id(
++                        session, converted, effective_ek_pubid
++                    )
+                     if resolved_pubid and resolved_pubid != effective_ek_pubid:
+                         _cache_set(key, url)
+                         return url
+@@ -298,7 +332,7 @@ async def verify_earnkaro(test_url: str = "https://www.flipkart.com/p/itmEXAMPLE
+         try:
+             async with session.post(
+                 config.EARNKARO_API_URL,
+-                json={"deal": test_url},
++                json={"deal": test_url, "convert_option": "convert_only"},
+                 headers={
+                     "Authorization": f"Bearer {effective_ek_key}",
+                     "Content-Type": "application/json",
+@@ -324,11 +358,13 @@ async def verify_earnkaro(test_url: str = "https://www.flipkart.com/p/itmEXAMPLE
+         provenance_verified: bool | None = None
+         if link and expected_pubid:
+             if _is_shortener(link):
+-                resolved_pubid = await _resolve_affextparam2(session, link)
++                resolved_pubid = await _resolve_publisher_id(
++                    session, link, expected_pubid
++                )
+                 if resolved_pubid is not None:
+                     provenance_verified = resolved_pubid == expected_pubid
+             else:
+-                publisher_ids = _affextparam2_values(link)
++                publisher_ids = _publisher_id_values(link, expected_pubid)
+                 provenance_verified = bool(publisher_ids) and all(
+                     publisher_id == expected_pubid for publisher_id in publisher_ids
+                 )
+diff --git a/influencer_hub/link_router.py b/influencer_hub/link_router.py
+index 89f9487..92258f8 100644
+--- a/influencer_hub/link_router.py
++++ b/influencer_hub/link_router.py
+@@ -128,6 +128,46 @@ def _is_domain(host: str, domain: str) -> bool:
+     return host == domain or host.endswith("." + domain)
+ 
+ 
++# Affiliaters/EarnKaro encode the publisher id in the query string. The API's
++# own parameter is `affExtParam2` (case-insensitive); converted links also
++# carry a plain `id`.
++PUBLISHER_PARAM_KEYS = ("affextparam2", "id")
++
++
++def _looks_like_publisher_id(value: str, expected_pubid: str = "") -> bool:
++    candidate = str(value or "").strip()
++    if not candidate:
++        return False
++    expected = str(expected_pubid or "").strip()
++    if expected and candidate.casefold() == expected.casefold():
++        return True
++    # A bare numeric id is a real publisher id; anything else (variant ids,
++    # session ids, slugs) is only trusted when it matches our own id.
++    return bool(re.fullmatch(r"\d{3,24}", candidate))
++
++
++def publisher_ids_in_url(url: str, expected_pubid: str = "") -> list[str]:
++    """Return the EarnKaro/Affiliaters publisher ids visible in a URL.
++
++    ``affExtParam2`` is always a publisher signal. ``id`` is weaker, so it only
++    counts when it matches the expected publisher or looks like a numeric
++    publisher id — unrelated merchant ``id=`` parameters must not be mistaken
++    for somebody else's publisher.
++    """
++    try:
++        pairs = parse_qsl(urlparse(url).query, keep_blank_values=True)
++    except (TypeError, ValueError):
++        return []
++    values: list[str] = []
++    for key, value in pairs:
++        name = key.casefold()
++        if name == "affextparam2":
++            values.append(value)
++        elif name == "id" and _looks_like_publisher_id(value, expected_pubid):
++            values.append(value)
++    return values
++
++
+ def _is_lehlah_meesho_affiliate(url: str) -> bool:
+     """Detect LehLah/AppsFlyer tracking so its existing affiliate attribution is kept."""
+     try:
+diff --git a/influencer_hub/money_radar.py b/influencer_hub/money_radar.py
+index 769eb28..4a60ac4 100644
+--- a/influencer_hub/money_radar.py
++++ b/influencer_hub/money_radar.py
+@@ -39,12 +39,10 @@ def _host_of(url: str) -> str:
+         return ""
+ 
+ 
+-def _publisher_ids(url: str) -> list[str]:
++def _publisher_ids(url: str, expected_pubid: str = "") -> list[str]:
++    """Publisher ids visible in a link (``affExtParam2`` and plain ``id``)."""
+     try:
+-        return [
+-            value for key, value in parse_qsl(urlparse(url).query, keep_blank_values=True)
+-            if key.casefold() == "affextparam2"
+-        ]
++        return link_router.publisher_ids_in_url(url, expected_pubid)
+     except Exception:
+         return []
+ 
+@@ -105,7 +103,7 @@ def classify_link(
+     # before the host-based classifier files them under "other".
+     if _is_earnkaro_short(url):
+         entry = {"url": url, "kind": "merchant", "state": STATE_EARNING, "reason": ""}
+-        ids = _publisher_ids(url)
++        ids = _publisher_ids(url, pubid)
+         if pubid and ids and any(value != pubid for value in ids):
+             entry["state"] = STATE_LEAK
+             entry["reason"] = f"EarnKaro link for another publisher (expected {pubid})"
+@@ -129,6 +127,14 @@ def classify_link(
+         if tag and advanced_shortener.is_our_amazon_link(url, tag):
+             entry["state"] = STATE_EARNING
+             entry["reason"] = f"Amazon with our tag {tag}"
++        elif tag and advanced_shortener.is_our_amazon_attribution(url, tag):
++            # Search pages and storefronts cannot be canonicalised to /dp/ASIN,
++            # but the tag carries the commission, so they still earn.
++            entry["state"] = STATE_EARNING
++            entry["reason"] = (
++                f"Amazon page with our tag {tag} kept as-is "
++                "(attribution by tag, not by the /dp/ path)"
++            )
+         elif not tags:
+             entry["state"] = STATE_LEAK
+             entry["reason"] = "Amazon link without a creator tag"
+@@ -148,7 +154,7 @@ def classify_link(
+ 
+     if kind == "merchant":
+         if _is_earnkaro_short(url):
+-            ids = _publisher_ids(url)
++            ids = _publisher_ids(url, pubid)
+             if pubid and ids and any(value != pubid for value in ids):
+                 entry["state"] = STATE_LEAK
+                 entry["reason"] = f"EarnKaro link for another publisher (expected {pubid})"
+@@ -220,17 +226,11 @@ def audit_text(
+ def _creator_routing(influencer: dict, channel: dict) -> tuple[str, str]:
+     from . import config
+ 
+-    tag = (
+-        str(channel.get("amazon_override_tag") or "").strip()
+-        or str(influencer.get("amazon_tag") or "").strip()
+-        or config.AMAZON_ASSOCIATE_TAG
+-    )
+-    store = (
+-        str(channel.get("hypd_store_id") or "").strip()
+-        or str(influencer.get("hypd_store_id") or "").strip()
+-        or config.HYPD_STORE_ID
+-    )
+-    return tag, store
++    from . import accounts
++
++    # Audit with exactly the accounts the pipeline posts with: the creator's own
++    # Amazon tag, and OUR central HYPD store (see influencer_hub/accounts.py).
++    return accounts.routing_for(influencer, channel)
+ 
+ 
+ def report(days: int = 7, limit: int = 2000) -> dict:
+diff --git a/influencer_hub/pipeline.py b/influencer_hub/pipeline.py
+index d9d8cd4..15afe00 100644
+--- a/influencer_hub/pipeline.py
++++ b/influencer_hub/pipeline.py
+@@ -17,6 +17,7 @@ import random
+ from typing import Iterable
+ 
+ from . import (
++    accounts,
+     amazon_shortlinks,
+     bitly_client,
+     config,
+@@ -263,16 +264,15 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+ 
+     results: dict[int, dict[int, str]] = {}
+     for inf in influencers:
+-        amazon_tag = inf.get("amazon_tag") or config.AMAZON_ASSOCIATE_TAG
+         channels = [c for c in db.list_channels(inf["id"])
+                     if str(c.get("status", "")).strip().lower() in ACTIVE_CHANNEL_STATUSES]
+         per_channel: dict[int, str] = {}
+         for ch in channels:
+             role = (ch.get("role") or "broadcast").strip().lower()
+             strip_amz = _setting_enabled(ch.get("strip_amazon"), default=False, unrestricted=False)
+-            effective_amz_tag = (
+-                ch.get("amazon_override_tag") or amazon_tag or config.AMAZON_ASSOCIATE_TAG
+-            )
++            # Account model (influencer_hub/accounts.py): Amazon posts are
++            # signed with THIS creator's own Associate tag.
++            effective_amz_tag = accounts.creator_amazon_tag(inf, ch)
+ 
+             # 1. Source Specification Filter (an empty/all/unrestricted value means no restriction)
+             allowed_sources = ch.get("allowed_sources") or inf.get("allowed_sources") or ""
+@@ -428,11 +428,9 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+                 else ""
+             )
+             effective_bitly_key = channel_key or influencer_key or global_key
+-            # Resolve HYPD Store ID priority: channel -> profile -> central setting -> configured default.
+-            global_hypd_store = db.get_global_setting("hypd_store_id", config.HYPD_STORE_ID)
+-            effective_hypd_store = (
+-                ch.get("hypd_store_id") or inf.get("hypd_store_id") or global_hypd_store or config.HYPD_STORE_ID
+-            ).strip()
++            # EarnKaro and Meesho/HYPD are OUR accounts: with central accounts
++            # on (default) the HYPD store is always ours, whatever the row says.
++            effective_hypd_store = accounts.hypd_store_for(inf, ch)
+             shortened_map = {}
+             # Money Radar switches (global, read once per channel).
+             try:
+@@ -540,7 +538,12 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+                             if host in {"bit.ly", "www.bit.ly", "bitly.com", "www.bitly.com"} or host.endswith(".bit.ly"):
+                                 has_affiliate = True
+                                 break
+-                            if kind == "amazon" and effective_amz_tag and advanced_shortener.is_our_amazon_link(u, effective_amz_tag):
++                            if kind == "amazon" and effective_amz_tag and (
++                                advanced_shortener.is_our_amazon_link(u, effective_amz_tag)
++                                or advanced_shortener.is_our_amazon_attribution(u, effective_amz_tag)
++                            ):
++                                # A tagged search/store page keeps our attribution
++                                # even though it is not a /dp/ASIN link.
+                                 has_affiliate = True
+                                 break
+                             if kind == "hypd" and effective_hypd_store and advanced_shortener.is_our_hypd_link(u, effective_hypd_store):

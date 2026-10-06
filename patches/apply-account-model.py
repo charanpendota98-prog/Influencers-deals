@@ -625,8 +625,8 @@ def main(argv: list[str] | None = None) -> int:
         "   pytest -q tests/test_account_model.py\n"
         "\n"
         "Verify on the dashboard:\n"
-        "   Easy Setup → the routing table now shows the \\\"Whose account earns\\\" rows\n"
-        "   (Amazon → the creator's tag, EarnKaro/HYPD → ours).\n"
+        '   Easy Setup now shows a "Whose account earns" table:\n'
+        "   Amazon -> the creator's tag, EarnKaro/HYPD -> ours.\n"
     )
     return 0
 
