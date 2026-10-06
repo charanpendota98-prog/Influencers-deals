@@ -226,17 +226,11 @@ def audit_text(
 def _creator_routing(influencer: dict, channel: dict) -> tuple[str, str]:
     from . import config
 
-    tag = (
-        str(channel.get("amazon_override_tag") or "").strip()
-        or str(influencer.get("amazon_tag") or "").strip()
-        or config.AMAZON_ASSOCIATE_TAG
-    )
-    store = (
-        str(channel.get("hypd_store_id") or "").strip()
-        or str(influencer.get("hypd_store_id") or "").strip()
-        or config.HYPD_STORE_ID
-    )
-    return tag, store
+    from . import accounts
+
+    # Audit with exactly the accounts the pipeline posts with: the creator's own
+    # Amazon tag, and OUR central HYPD store (see influencer_hub/accounts.py).
+    return accounts.routing_for(influencer, channel)
 
 
 def report(days: int = 7, limit: int = 2000) -> dict:

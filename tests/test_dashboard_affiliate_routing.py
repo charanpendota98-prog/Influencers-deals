@@ -250,7 +250,8 @@ def test_manual_channel_saves_selected_networks_and_hypd_id(dashboard_client):
     assert channel["hypd_store_id"] == "43210"
 
 
-def test_pipeline_uses_creator_amazon_tag_earnkaro_and_profile_hypd(monkeypatch, tmp_path):
+def test_pipeline_uses_creator_amazon_tag_and_our_central_hypd_store(monkeypatch, tmp_path):
+    """The account model: their Amazon tag, our EarnKaro and HYPD accounts."""
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "pipeline-affiliates.sqlite3")
     db.init()
     influencer_id = db.add_influencer(
@@ -289,7 +290,9 @@ def test_pipeline_uses_creator_amazon_tag_earnkaro_and_profile_hypd(monkeypatch,
     assert result[influencer_id][channel_id] == "posted"
     ek_convert.assert_awaited_once()
     assert "amazon.in" not in captured[0]
-    assert "https://hypd.store/77777/afflink/product-token" in captured[0]
+    # HYPD is OUR account: the profile's 77777 cannot move the commission.
+    assert f"https://hypd.store/{config.HYPD_STORE_ID}/afflink/product-token" in captured[0]
+    assert "https://hypd.store/77777/afflink/product-token" not in captured[0]
     assert converted in captured[0]
     assert flipkart not in captured[0]
 
@@ -603,7 +606,8 @@ def test_dashboard_preview_applies_selected_networks_without_posting(
     assert response.status_code == 200
     assert result["ok"] is True
     assert "amazon.in" not in result["rendered"]
-    assert "https://hypd.store/24680/afflink/product-token" in result["rendered"]
+    assert f"https://hypd.store/{config.HYPD_STORE_ID}/afflink/product-token" in result["rendered"]
+    assert "https://hypd.store/24680/afflink/product-token" not in result["rendered"]
     assert converted in result["rendered"]
     assert result["network_settings"] == {
         "amazon": False, "earnkaro": True, "hypd": True,
@@ -666,7 +670,7 @@ def test_dashboard_preview_amazon_routes_alongside_selected_networks(
     assert "tag=previewcreator-21" in result["rendered"]
     assert converted in result["rendered"]
     assert flipkart not in result["rendered"]
-    assert "https://hypd.store/24680/afflink/product-token" in result["rendered"]
+    assert f"https://hypd.store/{config.HYPD_STORE_ID}/afflink/product-token" in result["rendered"]
     assert result["network_settings"] == {
         "amazon": True, "earnkaro": True, "hypd": True, "only_amazon": False,
     }

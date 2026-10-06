@@ -17,6 +17,7 @@ import random
 from typing import Iterable
 
 from . import (
+    accounts,
     amazon_shortlinks,
     bitly_client,
     config,
@@ -263,16 +264,15 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
 
     results: dict[int, dict[int, str]] = {}
     for inf in influencers:
-        amazon_tag = inf.get("amazon_tag") or config.AMAZON_ASSOCIATE_TAG
         channels = [c for c in db.list_channels(inf["id"])
                     if str(c.get("status", "")).strip().lower() in ACTIVE_CHANNEL_STATUSES]
         per_channel: dict[int, str] = {}
         for ch in channels:
             role = (ch.get("role") or "broadcast").strip().lower()
             strip_amz = _setting_enabled(ch.get("strip_amazon"), default=False, unrestricted=False)
-            effective_amz_tag = (
-                ch.get("amazon_override_tag") or amazon_tag or config.AMAZON_ASSOCIATE_TAG
-            )
+            # Account model (influencer_hub/accounts.py): Amazon posts are
+            # signed with THIS creator's own Associate tag.
+            effective_amz_tag = accounts.creator_amazon_tag(inf, ch)
 
             # 1. Source Specification Filter (an empty/all/unrestricted value means no restriction)
             allowed_sources = ch.get("allowed_sources") or inf.get("allowed_sources") or ""
@@ -428,11 +428,9 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 else ""
             )
             effective_bitly_key = channel_key or influencer_key or global_key
-            # Resolve HYPD Store ID priority: channel -> profile -> central setting -> configured default.
-            global_hypd_store = db.get_global_setting("hypd_store_id", config.HYPD_STORE_ID)
-            effective_hypd_store = (
-                ch.get("hypd_store_id") or inf.get("hypd_store_id") or global_hypd_store or config.HYPD_STORE_ID
-            ).strip()
+            # EarnKaro and Meesho/HYPD are OUR accounts: with central accounts
+            # on (default) the HYPD store is always ours, whatever the row says.
+            effective_hypd_store = accounts.hypd_store_for(inf, ch)
             shortened_map = {}
             # Money Radar switches (global, read once per channel).
             try:

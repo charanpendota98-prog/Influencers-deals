@@ -208,9 +208,40 @@ def _form_flag(name: str, default: bool | None = None) -> bool | None:
 
 
 def _effective_hypd_store_id() -> str:
-    """Return the live central HYPD Store ID used for new profiles/channels."""
-    configured = db.get_global_setting("hypd_store_id", config.HYPD_STORE_ID)
-    return str(configured or config.HYPD_STORE_ID).strip() or config.HYPD_STORE_ID
+    """OUR central HYPD Store ID (vault/global setting, then environment).
+
+    Resolved through influencer_hub.accounts so the dashboard and the pipeline
+    can never disagree about which store earns.
+    """
+    try:
+        from influencer_hub import accounts
+
+        return accounts.central_hypd_store_id()
+    except Exception:  # pragma: no cover - defensive
+        configured = db.get_global_setting("hypd_store_id", config.HYPD_STORE_ID)
+        return str(configured or config.HYPD_STORE_ID).strip() or config.HYPD_STORE_ID
+
+
+def _routing_hypd_store(requested: str = "") -> str:
+    """The HYPD store a post will really carry.
+
+    With central accounts on (the default) that is always OUR store: a value
+    typed for one creator cannot move HYPD commission elsewhere. With the
+    setting off the requested/profile value is used, so the legacy per-creator
+    behaviour stays reachable.
+    """
+    try:
+        from influencer_hub import accounts, config as hub_config
+
+        if accounts.central_network_accounts_enabled():
+            return accounts.central_hypd_store_id()
+        requested = str(requested or "").strip()
+        if requested:
+            return requested
+        setting = db.get_global_setting("hypd_store_id", hub_config.HYPD_STORE_ID)
+        return str(setting or hub_config.HYPD_STORE_ID).strip() or hub_config.HYPD_STORE_ID
+    except Exception:  # pragma: no cover - defensive
+        return str(requested or "").strip() or _effective_hypd_store_id()
 
 
 def _effective_earnkaro_publisher_id() -> str:
@@ -1735,6 +1766,15 @@ def _routing_preview(
     tag = str(amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG
     store = str(hypd_store_id or "").strip() or _effective_hypd_store_id()
     ek_ready = _earnkaro_ready()
+    try:
+        from influencer_hub import accounts
+
+        model = accounts.model_rows(
+            amazon_tag=tag, hypd_store=store,
+            earnkaro_pubid=_effective_earnkaro_publisher_id(),
+        )
+    except Exception:  # pragma: no cover - defensive
+        model = []
 
     rows: list[dict] = []
     for label, sample, kind in ROUTING_SAMPLES:
@@ -1742,7 +1782,10 @@ def _routing_preview(
         if kind == "amazon":
             if amazon_on:
                 row["result"] = link_router.apply_amazon_tag(sample, tag)
-                row["note"] = f"Posted with this creator's tag ({tag}). Never shortened away from Amazon."
+                row["note"] = (
+                    f"Posted with this creator's OWN tag ({tag}) — Amazon commission is theirs. "
+                    "Never shortened away from Amazon."
+                )
             else:
                 row["state"] = "off"
                 row["note"] = "Amazon is OFF — this link is removed from the post."
@@ -1752,7 +1795,9 @@ def _routing_preview(
                 row["note"] = "EarnKaro is OFF — non-Amazon merchant links are removed from the post."
             elif ek_ready:
                 row["result"] = sample
-                row["note"] = "Converted to this creator's EarnKaro link at send time."
+                row["note"] = (
+                    "Converted at send time on OUR EarnKaro account — this link earns for us."
+                )
             else:
                 row["state"] = "warn"
                 row["result"] = sample
@@ -1774,7 +1819,7 @@ def _routing_preview(
         elif kind == "hypd":
             if hypd_on:
                 row["result"] = link_router.convert_hypd_store_link(sample, store)
-                row["note"] = f"Retagged to this creator's HYPD store {store}."
+                row["note"] = f"Retagged to OUR HYPD store {store} (our account, not the creator's)."
             else:
                 row["state"] = "off"
                 row["note"] = "HYPD (Meesho) is OFF — this link is removed from the post."
@@ -1785,13 +1830,14 @@ def _routing_preview(
 
     summary = " · ".join(
         part for part in (
-            f"Amazon → tag {tag}" if amazon_on else "Amazon off",
-            "Other merchants → EarnKaro" if ek_on else "Other merchants off",
-            f"Meesho → HYPD store {store}" if hypd_on else "Meesho off",
+            f"Amazon → creator's tag {tag}" if amazon_on else "Amazon off",
+            "Other merchants → our EarnKaro" if ek_on else "Other merchants off",
+            f"Meesho → our HYPD store {store}" if hypd_on else "Meesho off",
         )
     )
     return {
         "rows": rows,
+        "model": model,
         "summary": summary,
         "strict": strict,
         "amazon_on": amazon_on,
@@ -2160,16 +2206,16 @@ def routing_preview_api():
         "allow_earnkaro": str(request.args.get("allow_earnkaro", "1")).lower() in {"1", "true", "on"},
         "allow_hypd": str(request.args.get("allow_hypd", "1")).lower() in {"1", "true", "on"},
         "only_amazon": str(request.args.get("only_amazon", "0")).lower() in {"1", "true", "on"},
-        "hypd_store_id": request.args.get("hypd_store_id", "").strip() or _effective_hypd_store_id(),
+        "hypd_store_id": _routing_hypd_store(request.args.get("hypd_store_id", "")),
     })
     inf_id = request.args.get("inf_id", "").strip()
     if inf_id.isdigit():
         profile = db.get_influencer(int(inf_id))
         if profile:
             values["amazon_tag"] = str(profile.get("amazon_tag") or values["amazon_tag"])
-            values["hypd_store_id"] = (
-                str(profile.get("hypd_store_id") or "").strip() or values["hypd_store_id"]
-            )
+            # Our store stays ours: a creator's stored store id is not used for
+            # routing while central accounts are on (the default).
+            values["hypd_store_id"] = _routing_hypd_store(profile.get("hypd_store_id"))
     return jsonify({"ok": True, "preview": _routing_preview(**_routing_arguments(values))})
 
 
@@ -2671,7 +2717,7 @@ def api_test_render_deal():
     """
     sample_text = request.form.get("sample_text", "").strip()
     amz_tag = request.form.get("amazon_tag", config.AMAZON_ASSOCIATE_TAG).strip()
-    hypd_store = request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
+    hypd_store = _routing_hypd_store(request.form.get("hypd_store_id", ""))
     role = request.form.get("role", "broadcast").strip().lower()
     allow_amazon = _form_flag("allow_amazon", default=True)
     allow_earnkaro = _form_flag("allow_earnkaro", default=True)

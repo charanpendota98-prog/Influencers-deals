@@ -112,6 +112,11 @@ DEAL_WORKER_BATCH_SIZE = _int("DEAL_WORKER_BATCH_SIZE", 100)
 DEAL_WORKER_INITIAL_BATCH_SIZE = _int("DEAL_WORKER_INITIAL_BATCH_SIZE", 10)
 DEAL_WORKER_MAX_BACKOFF = _int("DEAL_WORKER_MAX_BACKOFF", 900)
 HYPD_STORE_ID = _env("HYPD_STORE_ID", "93944")
+# Account model: Amazon uses each creator's own Associate tag, while
+# EarnKaro and Meesho/HYPD use OUR central accounts. On (the default) a
+# per-creator or per-channel hypd_store_id cannot move HYPD commission
+# away from our store. See influencer_hub/accounts.py.
+CENTRAL_NETWORK_ACCOUNTS = _bool("CENTRAL_NETWORK_ACCOUNTS", True)
 # Optional branded first-party domain for shortening existing HYPD and LehLah
 # Meesho affiliate links (e.g. https://go.yourbrand.in). No API key is needed.
 MEESHO_SHORT_LINK_BASE_URL = _env("MEESHO_SHORT_LINK_BASE_URL", "").rstrip("/")
