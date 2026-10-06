@@ -1740,6 +1740,144 @@ ROUTING_SAMPLES = (
 )
 
 
+def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dict:
+    """Is posting still flowing from the sources? One honest answer.
+
+    Sources that have produced a deal before but nothing for `stall_seconds` are
+    marked stalled, channels show their last successful post, and the worker's
+    heartbeat says whether anything is pulling at all. Pure reads; no network.
+    """
+    now = time.time()
+    note_list: list[str] = []
+
+    worker = db.get_worker_heartbeat()
+    worker_age = None
+    if worker and worker.get("heartbeat_at"):
+        worker_age = max(0.0, now - float(worker["heartbeat_at"]))
+    worker_alive = worker_age is not None and worker_age <= max(
+        120, 3 * int(getattr(config, "DEAL_WORKER_POLL_INTERVAL", 30) or 30)
+    )
+    if worker is None:
+        note_list.append(
+            "The deal worker has never reported in. Posts cannot flow until the "
+            "influencer-deal-worker service is running."
+        )
+    elif not worker_alive:
+        note_list.append(
+            f"No fresh worker heartbeat ({int(worker_age or 0)}s ago). Check "
+            "systemctl status influencer-deal-worker."
+        )
+
+    try:
+        sources = db.list_sources(active_only=False)
+    except Exception:
+        sources = []
+    active_specs = [
+        str(source.get("spec") or "").strip()
+        for source in sources
+        if source.get("active")
+    ]
+    activity = {row["source_key"]: row for row in db.list_source_activity()}
+    flow_sources: list[dict] = []
+    for spec in active_specs:
+        row = activity.get(spec) or {}
+        last_seen = float(row.get("last_seen_at") or 0)
+        delivered = bool(row)
+        flow_sources.append({
+            "spec": spec,
+            "deals_seen": int(row.get("deals_seen") or 0),
+            "posts_dispatched": int(row.get("posts_dispatched") or 0),
+            "failures": int(row.get("failures") or 0),
+            "last_error": str(row.get("last_error") or ""),
+            "last_seen_at": last_seen or None,
+            "age_seconds": int(now - last_seen) if last_seen else None,
+            "never_delivered": not delivered,
+            "stalled": delivered and (now - last_seen) > stall_seconds,
+        })
+    flow_sources.sort(
+        key=lambda item: (
+            item["never_delivered"],
+            item["age_seconds"] if item["age_seconds"] is not None else 0,
+        ),
+        reverse=True,
+    )
+    stalled = [row for row in flow_sources if row["stalled"]]
+    never = [row for row in flow_sources if row["never_delivered"]]
+    if active_specs and never:
+        note_list.append(
+            f"{len(never)} of {len(active_specs)} active sources have not delivered a "
+            "deal yet — they may not be joined by the Telegram account, or the "
+            "source is quiet."
+        )
+    if stalled:
+        note_list.append(
+            f"{len(stalled)} source(s) delivered before but nothing for over "
+            f"{stall_seconds // 3600}h."
+        )
+
+    try:
+        channels = db.channel_post_activity(hours=window_hours)
+    except Exception:
+        channels = []
+    live_channels = [
+        channel for channel in channels
+        if str(channel.get("status") or "").strip().lower() in {"ready", "active"}
+    ]
+    posted_window = sum(int(channel.get("posted_in_window") or 0) for channel in channels)
+    failed_total = sum(int(channel.get("failed_total") or 0) for channel in channels)
+    try:
+        hourly_loot = str(db.get_global_setting("hourly_loot_enabled", "0")).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+    except Exception:
+        hourly_loot = False
+    only_earning = bool(getattr(config, "ONLY_EARNING_DEALS", False))
+    if live_channels and not posted_window and worker_alive:
+        note_list.append(
+            f"No post in the last {window_hours}h across {len(live_channels)} ready "
+            "channel(s): either the sources are quiet or every deal was filtered."
+        )
+        if not hourly_loot:
+            note_list.append(
+                "The hourly loot sweep is off (global setting hourly_loot_enabled=1 "
+                "turns on an extra hourly pass over the sources)."
+            )
+
+    return {
+        "ok": True,
+        "generated_at": now,
+        "worker": {
+            "state": (worker or {}).get("state") or "not_reporting",
+            "alive": worker_alive,
+            "age_seconds": int(worker_age) if worker_age is not None else None,
+            "last_poll_at": (worker or {}).get("last_poll_at") or None,
+            "last_error_code": (worker or {}).get("last_error_code") or "",
+            "poll_interval_seconds": int(getattr(config, "DEAL_WORKER_POLL_INTERVAL", 30) or 30),
+        },
+        "sources": {
+            "active": len(active_specs),
+            "paused": max(0, len(sources) - len(active_specs)),
+            "delivered": len([row for row in flow_sources if not row["never_delivered"]]),
+            "stalled": len(stalled),
+            "never_delivered": len(never),
+            "rows": flow_sources,
+        },
+        "channels": {
+            "ready": len(live_channels),
+            "posted_in_window": posted_window,
+            "failed_total": failed_total,
+            "window_hours": window_hours,
+            "rows": channels,
+        },
+        "settings": {
+            "hourly_loot_enabled": hourly_loot,
+            "only_earning_deals": only_earning,
+        },
+        "notes": note_list,
+        "stall_seconds": stall_seconds,
+    }
+
+
 def _earnkaro_ready() -> bool:
     return bool(db.get_global_setting("earnkaro_api_key", "") or config.EARNKARO_API_KEY)
 
@@ -2118,6 +2256,7 @@ def easy_setup():
         switches=ROUTING_SWITCHES,
         source_count=len(sources),
         active_source_count=active_sources,
+        flow=_flow_snapshot(),
     )
 
 
@@ -2194,6 +2333,20 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
         "existing_channels": len(channels),
         "active_sources": sum(1 for source in sources if source.get("active")),
     }
+
+
+@app.route("/api/flow")
+def api_flow():
+    """Read-only deal-flow status: worker, sources, channels (no network calls)."""
+    try:
+        stall_seconds = max(600, int(request.args.get("stall_seconds", 3 * 3600)))
+    except (TypeError, ValueError):
+        stall_seconds = 3 * 3600
+    try:
+        window_hours = max(1, min(168, int(request.args.get("window_hours", 24))))
+    except (TypeError, ValueError):
+        window_hours = 24
+    return jsonify(_flow_snapshot(stall_seconds=stall_seconds, window_hours=window_hours))
 
 
 @app.route("/api/routing-preview")

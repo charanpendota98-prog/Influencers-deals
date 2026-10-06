@@ -26,6 +26,42 @@ def _failed_delivery(results: dict) -> bool:
     )
 
 
+def _delivery_counts(results: dict) -> tuple[int, int]:
+    """Count posted and failed destinations across one pipeline result."""
+    posted = failed = 0
+    for per_channel in (results or {}).values():
+        for status in (per_channel or {}).values():
+            normalized = str(status).strip().lower()
+            if normalized.startswith("posted"):
+                posted += 1
+            elif normalized.startswith("failed"):
+                failed += 1
+    return posted, failed
+
+
+def _first_failure_reason(results: dict) -> str:
+    """The first failure detail, so the flow board can show why a source stalled."""
+    for per_channel in (results or {}).values():
+        for status in (per_channel or {}).values():
+            normalized = str(status).strip()
+            if normalized.lower().startswith("failed"):
+                return normalized[:300]
+    return ""
+
+
+def _record_source_activity(
+    source_key: str, *, message_id: int = 0, posted: int = 0, failed: int = 0,
+    error: str = "",
+) -> None:
+    """Per-source flow bookkeeping; never allowed to stop ingestion."""
+    try:
+        db.record_source_activity(
+            source_key, message_id=message_id, posted=posted, failed=failed, error=error
+        )
+    except Exception:
+        logger.warning("Could not record source activity", exc_info=True)
+
+
 def _record_heartbeat(state: str, *, poll_completed: bool = False, error_code: str = "") -> None:
     try:
         db.record_worker_heartbeat(
@@ -109,14 +145,21 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                     seen_sigs_this_batch.add(_sig)
                 except Exception:
                     pass
+            posted = failed = 0
+            failure_note = ""
             if text:
                 deal = {"text": text, "source": str(record.get("source") or "")}
                 try:
                     result = await pipeline.run_once([deal])
-                except Exception:
+                except Exception as exc:
                     logger.exception("Pipeline failed for source %s message %s", source_key, message_id)
+                    _record_source_activity(
+                        source_key, message_id=message_id, failed=1,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
                     retried += 1
                     break
+                posted, failed = _delivery_counts(result)
                 if _failed_delivery(result):
                     # Some target(s) may have succeeded; pipeline dedup makes
                     # their retry idempotent. Keep this source cursor unchanged
@@ -125,8 +168,16 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                         "Delivery failure for source %s message %s; cursor held for retry",
                         source_key, message_id,
                     )
+                    failure_note = _first_failure_reason(result)
+                    _record_source_activity(
+                        source_key, message_id=message_id, posted=posted,
+                        failed=max(1, failed), error=failure_note,
+                    )
                     retried += 1
                     break
+                _record_source_activity(
+                    source_key, message_id=message_id, posted=posted, failed=failed
+                )
 
             # Empty/media-only Telegram posts have no text parser input; mark
             # them handled so they cannot block later deals forever.

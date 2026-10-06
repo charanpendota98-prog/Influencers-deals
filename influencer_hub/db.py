@@ -122,6 +122,21 @@ CREATE TABLE IF NOT EXISTS worker_offsets (
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Per-source deal flow: when a source last produced a deal, how many were
+-- dispatched, and how many failed. This is what makes "is posting still
+-- flowing?" answerable per source instead of guessing from logs.
+CREATE TABLE IF NOT EXISTS source_activity (
+    source_key        TEXT PRIMARY KEY,
+    last_seen_at      REAL NOT NULL DEFAULT 0,
+    last_message_at   REAL NOT NULL DEFAULT 0,
+    last_message_id   INTEGER NOT NULL DEFAULT 0,
+    deals_seen        INTEGER NOT NULL DEFAULT 0,
+    posts_dispatched  INTEGER NOT NULL DEFAULT 0,
+    failures          INTEGER NOT NULL DEFAULT 0,
+    last_error        TEXT NOT NULL DEFAULT '',
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- First-party, auditable Amazon redirects. The short public URL still carries
 -- the creator's Associates tag; targets are restricted in the redirect route.
 CREATE TABLE IF NOT EXISTS amazon_short_links (
@@ -1284,6 +1299,99 @@ def set_worker_offset(source_key: str, last_message_id: int) -> None:
             (key, message_id, _now()),
         )
         con.commit()
+    finally:
+        con.close()
+
+
+def record_source_activity(
+    source_key: str,
+    *,
+    message_id: int = 0,
+    posted: int = 0,
+    failed: int = 0,
+    error: str = "",
+    now: float | None = None,
+) -> None:
+    """Record that one source produced a deal and what happened to it.
+
+    Called by the worker for every handled message, so the dashboard can show a
+    per-source flow instead of a single global heartbeat.
+    """
+    key = str(source_key or "").strip()
+    if not key:
+        return
+    stamp = time.time() if now is None else float(now)
+    message_id = int(message_id or 0)
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO source_activity (source_key, last_seen_at, last_message_at, "
+            "last_message_id, deals_seen, posts_dispatched, failures, last_error, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(source_key) DO UPDATE SET "
+            "last_seen_at=excluded.last_seen_at, "
+            "last_message_at=CASE WHEN excluded.last_message_id > source_activity.last_message_id "
+            "THEN excluded.last_message_at ELSE source_activity.last_message_at END, "
+            "last_message_id=MAX(source_activity.last_message_id, excluded.last_message_id), "
+            "deals_seen=source_activity.deals_seen + excluded.deals_seen, "
+            "posts_dispatched=source_activity.posts_dispatched + excluded.posts_dispatched, "
+            "failures=source_activity.failures + excluded.failures, "
+            "last_error=CASE WHEN excluded.last_error <> '' THEN excluded.last_error "
+            "ELSE source_activity.last_error END, "
+            "updated_at=excluded.updated_at",
+            (key, stamp, stamp if message_id else 0.0, message_id, 1,
+             int(posted or 0), int(failed or 0), str(error or "")[:300], _now()),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def list_source_activity() -> list[dict]:
+    """Every source that has produced at least one deal, newest activity last."""
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT source_key, last_seen_at, last_message_at, last_message_id, "
+            "deals_seen, posts_dispatched, failures, last_error, updated_at "
+            "FROM source_activity ORDER BY last_seen_at ASC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        con.close()
+
+
+def channel_post_activity(hours: int = 24) -> list[dict]:
+    """Per channel: the last successful post, posts in the window, failures.
+
+    ``posts.posted_at`` is only stamped for successful posts, so failures are
+    reported all-time (``failed_total``) rather than pretending they are dated.
+    """
+    try:
+        window = max(1, int(hours))
+    except (TypeError, ValueError):
+        window = 24
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=window)).isoformat(
+        timespec="seconds"
+    )
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT c.id AS channel_id, c.influencer_id, c.platform, c.identifier, "
+            "c.status, c.role, i.name AS influencer_name, "
+            "MAX(p.posted_at) AS last_posted_at, "
+            "COALESCE(SUM(CASE WHEN p.status='posted' AND p.posted_at >= ? THEN 1 ELSE 0 END), 0) "
+            "AS posted_in_window, "
+            "COALESCE(SUM(CASE WHEN p.status='failed' THEN 1 ELSE 0 END), 0) "
+            "AS failed_total "
+            "FROM channels c LEFT JOIN influencers i ON i.id = c.influencer_id "
+            "LEFT JOIN posts p ON p.channel_id = c.id "
+            "GROUP BY c.id ORDER BY c.influencer_id, c.id",
+            (cutoff,),
+        ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         con.close()
 
