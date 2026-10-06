@@ -1,16 +1,16 @@
 # `patches/` — verified, replayable fixes
 
-Four ways to move this work into another checkout. All of them are verified to
-land on **exactly** the same code and tests.
+Four ways to move this work into another checkout, verified to land on
+**exactly** the same code, tests and handoff.
 
 | # | path | use it when |
 | --- | --- | --- |
-| 1 | `patches/*.patch` | a clean `0bf913f` checkout: `git apply` all four, done |
+| 1 | `patches/*.patch` | a clean `0bf913f` checkout: `git apply` all five, done |
 | 2 | `patches/apply-*.py` | a VM that already has part of the work (surgical, exact-text) |
 | 3 | `patches/tests/` | the verified test files `--with-tests` installs |
 | 4 | `patches/HANDOFF.md` | a byte-identical copy of the root handoff, so the bundle is self-contained (guarded by `tests/test_patch_bundle.py`) |
 
-## 1. The four git patches
+## 1. The five git patches
 
 ```bash
 cd ~/Influencers-deals
@@ -18,7 +18,8 @@ git apply patches/commission-leaks.patch   # influencer_hub/
 git apply patches/password-policy.patch    # dashboard/
 git apply patches/tests.patch              # tests/
 git apply patches/deal-flow.patch          # influencer_hub/ + dashboard/ (flow board)
-pytest -q                                  # 301 passed
+git apply patches/docs.patch               # HANDOFF.md
+pytest -q                                  # 302 passed
 ```
 
 | patch | lines | covers |
@@ -27,13 +28,14 @@ pytest -q                                  # 301 passed
 | `password-policy.patch` | 666 | `dashboard/` — password only for removals + the who-earns table |
 | `tests.patch` | 1524 | `tests/` — every changed and new test file, at this revision |
 | `deal-flow.patch` | 474 | `influencer_hub/` + `dashboard/` — per-source deal flow, `/api/flow`, the Easy Setup card |
+| `docs.patch` | 217 | `HANDOFF.md` — the handoff itself, so a patched checkout is complete |
 
 `commission-leaks.patch`, `password-policy.patch` and `tests.patch` cover
 `0bf913f..77acbe7`; `deal-flow.patch` covers `77acbe7..HEAD` for the two code
-directories only, so the tests always come from the single `tests.patch`. Apply
-them in the order above on a clean `main` (`0bf913f`) and the tree matches this
-branch down to the byte — the only file not reconstructed is `HANDOFF.md`
-(documentation, not code).
+directories only, so the tests always come from the single `tests.patch`, and
+`docs.patch` adds `HANDOFF.md`. Apply them in the order above on a clean `main`
+(`0bf913f`) and the tree matches this branch down to the byte — nothing is
+missing.
 
 ## 2. The four appliers
 
@@ -157,12 +159,13 @@ applier no longer reports the branch state.
 
 ## Verified end-to-end
 
-* clean `0bf913f` + the four `.patch` files → **300 passed**, every code/test file
-  byte-identical (only `HANDOFF.md` is not in the patches; 13 of those tests are
-  the bundle guards in `tests/test_patch_bundle.py`)
+* clean `0bf913f` + the five `.patch` files → **302 passed**, every file
+  byte-identical (15 of those tests are the bundle guards in
+  `tests/test_patch_bundle.py`)
 * clean `0bf913f` + the four appliers (`--with-tests`) → **287 passed**, every
-  code/test file byte-identical. The 14 bundle guards are deliberately **not**
-  installed by `--with-tests`: they only make sense on the branch that ships the
-  bundle.
+  code and test file byte-identical. `--with-tests` never installs
+  `tests/test_patch_bundle.py` (15 guards): they only make sense on the branch
+  that ships the bundle. The appliers also do not write the root `HANDOFF.md`;
+  the bundle's own `patches/HANDOFF.md` is its copy.
 * a second run of every applier → exit `1`, nothing written
 * baseline on `main` before any of this: **234 passed**

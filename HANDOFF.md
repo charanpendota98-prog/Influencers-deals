@@ -17,7 +17,7 @@ inside the repo — and this branch is pushed, so a fetch is enough.
 | `origin/main` | `0bf913f` "Merge PR #6" — PRs #1–#6 all merged, none open |
 | PR #6 content | Password login, ⚡ Easy Setup, 💰 Money Radar, gunicorn `0.0.0.0:5000`, Telegram ingestion — **already on `main`, do not redo** |
 | branch `arena/a54d6a1d-influencers-deals` | commission fixes + password policy + account model + deal-flow board + the patch bundle |
-| tests | `main` = **234 passed**, this branch = **301 passed** (`--with-tests` replay: **287**, see §1) |
+| tests | `main` = **234 passed**, this branch = **302 passed** (`--with-tests` replay: **287**, see §1) |
 | VM | commission fixes live; password policy + account model + deal-flow board still to apply |
 
 Fastest path into a new session:
@@ -37,7 +37,7 @@ self-contained.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -q pytest aiohttp flask
-.venv/bin/python -m pytest -q      # 301 passed here, 234 on main
+.venv/bin/python -m pytest -q      # 302 passed here, 234 on main
 ```
 
 From a **clean `main`** checkout, either replay path reproduces this branch
@@ -49,6 +49,7 @@ git apply patches/commission-leaks.patch
 git apply patches/password-policy.patch
 git apply patches/tests.patch
 git apply patches/deal-flow.patch
+git apply patches/docs.patch
 
 # B. surgical appliers (for a VM that already has some of the work)
 python3 patches/apply-commission-fixes.py --with-tests
@@ -56,13 +57,14 @@ python3 patches/apply-password-policy.py  --with-tests
 python3 patches/apply-account-model.py    --with-tests
 python3 patches/apply-deal-flow.py        --with-tests
 
-.venv/bin/python -m pytest -q      # expect 287 passed via B, 300 via A
+.venv/bin/python -m pytest -q      # expect 287 passed via B, 302 via A
 ```
 
-(`301` is the count **on this branch**: it includes the 14 guards in
+(`302` is the count **on this branch**: it includes the 15 guards in
 `tests/test_patch_bundle.py`, which `--with-tests` intentionally does not
-install — hence `287` on path B. Path A installs them through `tests.patch`.
-The only file no patch carries is this `HANDOFF.md`.)
+install — hence `287` on path B. Path A installs them through `tests.patch` and
+`docs.patch` carries this file, so path A is complete. Path B installs code and
+tests only — the copy you are reading travels as `patches/HANDOFF.md`.)
 
 `patches/conftest.py` keeps pytest out of `patches/tests/`; `pytest.ini` is not
 needed. `tests/test_patch_bundle.py` fails if the bundle ever drifts from the
@@ -206,6 +208,6 @@ curl -s localhost:5000/api/flow | head -c 400
   2–4 unless you replay `patches/`.
 * Python is externally managed (PEP 668): `pip install` needs a venv.
 * Test counts in older notes (244 / 251) do not match this tree; the real
-  numbers are **234 on `main`**, **301 on this branch** and **287 via the
-  `--with-tests` applier path** (the bundle's own 13 guards are not installed
+  numbers are **234 on `main`**, **302 on this branch** and **287 via the
+  `--with-tests` applier path** (the bundle's own 15 guards are not installed
   there).
