@@ -93,25 +93,17 @@ WA_SESSION_KEY = lambda influencer_id: f"inf-{influencer_id}-wa"
 _LOGIN_FAILURES: dict[str, list[float]] = defaultdict(list)
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES = 5
-# One password confirmation unlocks every sensitive setup change below for a
-# rolling idle window (see config.DASHBOARD_SETUP_UNLOCK_SECONDS). The first
-# change asks for the password; the rest of the session does not ask again
-# until the dashboard has been idle (or is locked manually).
+# Password policy: the password is asked only at sign-in and before a REMOVAL
+# (delete a channel, a creator, or a deal source) for a rolling idle window
+# (see config.DASHBOARD_SETUP_UNLOCK_SECONDS). Adding, saving, toggling and
+# polling cost no extra confirmation; a removal asks once per window.
 DEFAULT_SETUP_UNLOCK_SECONDS = 30 * 60
 MIN_SETUP_UNLOCK_SECONDS = 60
 SETUP_UNLOCK_AT_KEY = "_setup_unlock_at"
 SETUP_UNLOCK_IP_KEY = "_setup_unlock_ip"
 UNDO_CHANNEL_KEY = "_undo_channel"
 REAUTH_REQUIRED_ENDPOINTS = frozenset({
-    "seed_default_sources", "add_deal_source", "delete_deal_source",
-    "toggle_deal_source", "update_global_settings", "quick_add",
-    "update_profile", "update_channel_route", "add_manual_channel",
-    "bulk_import", "delete_channel", "undo_channel_delete", "easy_setup",
-    "toggle_influencer_active",
-    "toggle_channel_status", "onboard", "set_flags", "onboard_tg",
-    "toggle_money_switch",
-    "onboard_wa", "create_tg", "pair_wa", "create_group",
-    "wa_connect_chat", "create_newsletter", "send_test_message", "send_poll",
+    "delete_channel", "delete_influencer", "delete_deal_source",
 })
 
 DEFAULT_SOURCE_CATALOG = [
@@ -412,7 +404,7 @@ def _get_csrf_token() -> str:
 
 
 # --------------------------------------------------------------------------
-# Setup unlock: one password confirmation, then a rolling idle window.
+# Removal unlock: one password confirmation, then a rolling idle window.
 # --------------------------------------------------------------------------
 def _setup_unlock_window_seconds() -> int:
     """Length of the unlock window, configurable and clamped to sane values."""
@@ -452,7 +444,7 @@ def _grant_setup_unlock() -> None:
 
 
 def _renew_setup_unlock() -> None:
-    """Sliding window: each confirmed change restarts the idle timer."""
+    """Sliding window: each confirmed removal restarts the idle timer."""
     if _setup_unlocked():
         session[SETUP_UNLOCK_AT_KEY] = time.time()
 
@@ -583,9 +575,10 @@ def protect_dashboard_routes():
                     "unlock_url": url_for("reauthenticate_setup_change"),
                 }), 428
             flash(
-                "Setup changes are locked. Confirm the dashboard password once, "
-                "then every add / save / delete stays unlocked for "
-                f"{_setup_unlock_window_seconds() // 60} minutes.",
+                "Removals are locked. Confirm the dashboard password once, "
+                "then every delete stays unlocked for "
+                f"{_setup_unlock_window_seconds() // 60} minutes. "
+                "Adding and saving never ask.",
                 "warning",
             )
             return redirect(_reauth_return_url())
@@ -706,11 +699,11 @@ def logout():
 
 @app.route("/reauth", methods=["POST"])
 def reauthenticate_setup_change():
-    """Confirm the admin password once and unlock sensitive setup changes.
+    """Confirm the admin password once and unlock removals.
 
-    The unlock is a rolling idle window (default 30 minutes): the operator is
-    asked at the start of a work session and not again for every add / save /
-    delete, unless the dashboard goes idle, is locked manually, or signs out.
+    The unlock is a rolling idle window (default 30 minutes): the first delete
+    asks and later deletes do not, unless the dashboard goes idle, is locked
+    manually, or signs out. Adding and saving never ask at all.
     """
     if not session.get("dashboard_authenticated"):
         return jsonify({"ok": False, "error": "authentication_required"}), 401
@@ -729,7 +722,7 @@ def reauthenticate_setup_change():
     if not _password_matches(request.form.get("password", ""), config.DASHBOARD_ADMIN_PASSWORD):
         _LOGIN_FAILURES[bucket_key].append(now)
         if not _expects_json_response():
-            flash("Password did not match. Setup is still locked.", "error")
+            flash("Password did not match. Removals are still locked.", "error")
             return redirect(_reauth_return_url())
         return jsonify({"ok": False, "error": "password_confirmation_failed"}), 401
 
@@ -739,7 +732,7 @@ def reauthenticate_setup_change():
     if not _expects_json_response():
         # Works without JavaScript: the page reloads unlocked so the operator
         # can press the original button again.
-        flash(f"Setup unlocked for {minutes} minutes of work.", "success")
+        flash(f"Removals unlocked for {minutes} minutes of work.", "success")
         return redirect(_local_referrer(with_reauth=False) or url_for("index"))
     return jsonify({
         "ok": True,
@@ -751,7 +744,7 @@ def reauthenticate_setup_change():
 
 @app.route("/reauth/status")
 def setup_unlock_status():
-    """Tell the page whether the setup password will be asked right now."""
+    """Tell the page whether a removal will ask for the password right now."""
     if not session.get("dashboard_authenticated"):
         return jsonify({"ok": False, "error": "authentication_required"}), 401
     remaining = _setup_unlock_remaining_seconds()
@@ -765,13 +758,13 @@ def setup_unlock_status():
 
 @app.route("/reauth/lock", methods=["POST"])
 def lock_setup_changes():
-    """Lock setup changes immediately so the next change asks again."""
+    """Lock removals immediately so the next delete asks again."""
     if not session.get("dashboard_authenticated"):
         return jsonify({"ok": False, "error": "authentication_required"}), 401
     _clear_setup_unlock()
     if _expects_json_response():
         return jsonify({"ok": True, "unlocked": False, "remaining_seconds": 0})
-    flash("Locked. The next setup change will ask for the password again.", "success")
+    flash("Locked. The next removal will ask for the password again.", "success")
     return redirect(_local_referrer(with_reauth=False) or url_for("index"))
 
 
@@ -2348,9 +2341,9 @@ def toggle_channel_status(channel_id):
 
 @app.route("/influencer/<int:inf_id>/delete", methods=["POST"])
 def delete_influencer(inf_id):
-    pwd = request.form.get("admin_password", "").strip()
-    if not _password_matches(pwd, config.ADMIN_DELETE_PASSWORD):
-        return redirect(url_for("influencer_detail", inf_id=inf_id, err="invalid_password"))
+    # The shared unlock window already confirmed the operator's password for
+    # this removal (see REAUTH_REQUIRED_ENDPOINTS), so there is no second,
+    # separate password prompt here.
     db.delete_influencer(inf_id)
     return redirect(url_for("index"))
 

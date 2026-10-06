@@ -43,7 +43,7 @@
 {% if source_count == 0 %}
   <div class="dashboard-alert" role="status">
     <strong>No deal sources yet.</strong> Add the recommended loot sources once and every creator starts receiving deals.
-    <form method="post" action="{{ url_for('seed_default_sources') }}" style="display:inline; margin-left:8px;" data-require-reauth>
+    <form method="post" action="{{ url_for('seed_default_sources') }}" style="display:inline; margin-left:8px;">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
       <button type="submit" class="btn btn-primary">📡 Add recommended sources</button>
     </form>
@@ -52,7 +52,7 @@
   <div class="dashboard-alert" role="status"><strong>Sources are paused.</strong> Turn them on in <a class="text-link" href="{{ url_for('secret_vault_tab') }}">Vault &amp; Sources</a>.</div>
 {% endif %}
 
-<form method="post" action="{{ url_for('easy_setup') }}" class="easy-form" id="easy-setup-form" data-require-reauth>
+<form method="post" action="{{ url_for('easy_setup') }}" class="easy-form" id="easy-setup-form">
   <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
 
   <section class="easy-card">
@@ -124,7 +124,7 @@
 
   <div class="easy-actions">
     <button type="submit" class="btn btn-primary">💾 Save &amp; start posting</button>
-    <span class="hint">One password confirmation unlocks setup for {{ setup_unlock_window_minutes }} minutes.</span>
+    <span class="hint">Easy Setup saves immediately — no password. Only removals (delete a channel, a creator or a deal source) ask for the password, once per unlock window.</span>
   </div>
 </form>
 {% endblock %}

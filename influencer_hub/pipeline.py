@@ -540,7 +540,12 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                             if host in {"bit.ly", "www.bit.ly", "bitly.com", "www.bitly.com"} or host.endswith(".bit.ly"):
                                 has_affiliate = True
                                 break
-                            if kind == "amazon" and effective_amz_tag and advanced_shortener.is_our_amazon_link(u, effective_amz_tag):
+                            if kind == "amazon" and effective_amz_tag and (
+                                advanced_shortener.is_our_amazon_link(u, effective_amz_tag)
+                                or advanced_shortener.is_our_amazon_attribution(u, effective_amz_tag)
+                            ):
+                                # A tagged search/store page keeps our attribution
+                                # even though it is not a /dp/ASIN link.
                                 has_affiliate = True
                                 break
                             if kind == "hypd" and effective_hypd_store and advanced_shortener.is_our_hypd_link(u, effective_hypd_store):

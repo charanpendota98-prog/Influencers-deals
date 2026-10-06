@@ -38,6 +38,30 @@ def is_our_amazon_link(url: str, amazon_tag: str) -> bool:
         return False
 
 
+def is_our_amazon_attribution(url: str, amazon_tag: str) -> bool:
+    """True when an Amazon URL carries OUR Associate tag, whatever its route.
+
+    Amazon attribution travels in the ``tag`` query parameter, not in the path.
+    A search page (``/s?k=...``), a storefront or an ``amzn.to`` short link that
+    carries exactly one tag equal to ours earns exactly like a ``/dp/ASIN``
+    product page — so the audit must keep the page instead of deleting it.
+    ``is_our_amazon_link`` stays the stricter check used before we shorten or
+    re-mint a link ourselves.
+    """
+    try:
+        tag = str(amazon_tag or "").strip()
+        if not tag or link_router.classify_url(url) != "amazon":
+            return False
+        parsed = urlparse(url)
+        tags = [
+            value for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.casefold() == "tag" and value
+        ]
+        return len(tags) == 1 and tags[0] == tag
+    except Exception:
+        return False
+
+
 def is_our_hypd_link(url: str, hypd_store_id: str) -> bool:
     """Check if URL is OUR HYPD affiliate link with the exact store ID."""
     try:

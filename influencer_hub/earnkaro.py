@@ -1,8 +1,8 @@
 """EarnKaro converter client.
 
-The configured integration posts a cleaned merchant URL to the EarnKaro
-converter endpoint with a Bearer credential and parses a returned affiliate
-link. When a publisher ID is configured, direct results must include a matching
+The configured integration posts a cleaned merchant URL plus
+`"convert_option": "convert_only"` to the EarnKaro converter endpoint with a
+Bearer credential and parses a returned affiliate link. When a publisher ID is configured, direct results must include a matching
 ID; known shorteners receive a best-effort redirect check. If credentials are
 absent, conversion fails, or the result cannot be validated, the original
 merchant URL is returned so the deal is not dropped. This code cannot guarantee
@@ -44,19 +44,47 @@ def _affextparam2_values(link: str) -> list[str]:
     ]
 
 
-async def _resolve_affextparam2(session: aiohttp.ClientSession, link: str,
-                                 timeout: float = 8.0) -> str | None:
-    """Follow redirects and return the affExtParam2 of the final URL (best-effort)."""
+def _publisher_id_values(link: str, expected_pubid: str = "") -> list[str]:
+    """Publisher IDs visible on a link: ``affExtParam2`` and plain ``id``.
+
+    The converter sometimes returns a merchant URL that carries our publisher
+    id as ``id=`` instead of ``affExtParam2=``. Both are checked, and a link
+    that carries somebody else's id is rejected back to the raw URL.
+    """
+    return link_router.publisher_ids_in_url(link, expected_pubid)
+
+
+async def _resolve_final_url(session: aiohttp.ClientSession, link: str,
+                             timeout: float = 8.0) -> str | None:
+    """Follow redirects and return the final URL (best-effort)."""
     try:
         async with session.get(
             link, allow_redirects=True,
             timeout=aiohttp.ClientTimeout(total=timeout),
             headers={"User-Agent": "Mozilla/5.0"},
         ) as resp:
-            final = str(resp.url)
+            return str(resp.url)
     except Exception:
         return None
+
+
+async def _resolve_affextparam2(session: aiohttp.ClientSession, link: str,
+                                timeout: float = 8.0) -> str | None:
+    """Follow redirects and return the affExtParam2 of the final URL (best-effort)."""
+    final = await _resolve_final_url(session, link, timeout=timeout)
+    if final is None:
+        return None
     return next(iter(_affextparam2_values(final)), None)
+
+
+async def _resolve_publisher_id(session: aiohttp.ClientSession, link: str,
+                                expected_pubid: str = "",
+                                timeout: float = 8.0) -> str | None:
+    """Follow redirects and return the publisher id the landing page carries."""
+    final = await _resolve_final_url(session, link, timeout=timeout)
+    if final is None:
+        return None
+    return next(iter(_publisher_id_values(final, expected_pubid)), None)
 
 CACHE: dict[str, tuple[float, str]] = {}
 CACHE_TTL = 60 * 60 * 12  # 12h — successful EarnKaro links are stable
@@ -161,7 +189,7 @@ def parse_ek_response(body: str, expected_pubid: str | None = None) -> str | Non
         return None
     result = _clean(result)
     if expected_pubid:
-        publisher_ids = _affextparam2_values(result)
+        publisher_ids = _publisher_id_values(result, expected_pubid)
         if publisher_ids:
             if any(publisher_id != expected_pubid for publisher_id in publisher_ids):
                 # Link explicitly carries a different publisher ID — reject it.
@@ -211,7 +239,11 @@ async def convert_one(session: aiohttp.ClientSession, url: str,
         try:
             async with session.post(
                 config.EARNKARO_API_URL,
-                json={"deal": api_deal_url},
+                # Verified contract of the Affiliaters/EarnKaro converter:
+                # {"deal": <clean merchant url>, "convert_option": "convert_only"}.
+                # A wrong body returns HTTP 200 with no link, which silently
+                # posted free (unpaid) merchant links.
+                json={"deal": api_deal_url, "convert_option": "convert_only"},
                 headers={
                     "Authorization": f"Bearer {effective_ek_key}",
                     "Content-Type": "application/json",
@@ -231,7 +263,9 @@ async def convert_one(session: aiohttp.ClientSession, url: str,
                 # affExtParam2 directly, so follow the redirect (best-effort) and
                 # confirm it lands on OUR publisher id. A mismatch -> reject.
                 if effective_ek_pubid and _is_shortener(converted):
-                    resolved_pubid = await _resolve_affextparam2(session, converted)
+                    resolved_pubid = await _resolve_publisher_id(
+                        session, converted, effective_ek_pubid
+                    )
                     if resolved_pubid and resolved_pubid != effective_ek_pubid:
                         _cache_set(key, url)
                         return url
@@ -298,7 +332,7 @@ async def verify_earnkaro(test_url: str = "https://www.flipkart.com/p/itmEXAMPLE
         try:
             async with session.post(
                 config.EARNKARO_API_URL,
-                json={"deal": test_url},
+                json={"deal": test_url, "convert_option": "convert_only"},
                 headers={
                     "Authorization": f"Bearer {effective_ek_key}",
                     "Content-Type": "application/json",
@@ -324,11 +358,13 @@ async def verify_earnkaro(test_url: str = "https://www.flipkart.com/p/itmEXAMPLE
         provenance_verified: bool | None = None
         if link and expected_pubid:
             if _is_shortener(link):
-                resolved_pubid = await _resolve_affextparam2(session, link)
+                resolved_pubid = await _resolve_publisher_id(
+                    session, link, expected_pubid
+                )
                 if resolved_pubid is not None:
                     provenance_verified = resolved_pubid == expected_pubid
             else:
-                publisher_ids = _affextparam2_values(link)
+                publisher_ids = _publisher_id_values(link, expected_pubid)
                 provenance_verified = bool(publisher_ids) and all(
                     publisher_id == expected_pubid for publisher_id in publisher_ids
                 )

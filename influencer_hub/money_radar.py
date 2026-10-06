@@ -39,12 +39,10 @@ def _host_of(url: str) -> str:
         return ""
 
 
-def _publisher_ids(url: str) -> list[str]:
+def _publisher_ids(url: str, expected_pubid: str = "") -> list[str]:
+    """Publisher ids visible in a link (``affExtParam2`` and plain ``id``)."""
     try:
-        return [
-            value for key, value in parse_qsl(urlparse(url).query, keep_blank_values=True)
-            if key.casefold() == "affextparam2"
-        ]
+        return link_router.publisher_ids_in_url(url, expected_pubid)
     except Exception:
         return []
 
@@ -105,7 +103,7 @@ def classify_link(
     # before the host-based classifier files them under "other".
     if _is_earnkaro_short(url):
         entry = {"url": url, "kind": "merchant", "state": STATE_EARNING, "reason": ""}
-        ids = _publisher_ids(url)
+        ids = _publisher_ids(url, pubid)
         if pubid and ids and any(value != pubid for value in ids):
             entry["state"] = STATE_LEAK
             entry["reason"] = f"EarnKaro link for another publisher (expected {pubid})"
@@ -129,6 +127,14 @@ def classify_link(
         if tag and advanced_shortener.is_our_amazon_link(url, tag):
             entry["state"] = STATE_EARNING
             entry["reason"] = f"Amazon with our tag {tag}"
+        elif tag and advanced_shortener.is_our_amazon_attribution(url, tag):
+            # Search pages and storefronts cannot be canonicalised to /dp/ASIN,
+            # but the tag carries the commission, so they still earn.
+            entry["state"] = STATE_EARNING
+            entry["reason"] = (
+                f"Amazon page with our tag {tag} kept as-is "
+                "(attribution by tag, not by the /dp/ path)"
+            )
         elif not tags:
             entry["state"] = STATE_LEAK
             entry["reason"] = "Amazon link without a creator tag"
@@ -148,7 +154,7 @@ def classify_link(
 
     if kind == "merchant":
         if _is_earnkaro_short(url):
-            ids = _publisher_ids(url)
+            ids = _publisher_ids(url, pubid)
             if pubid and ids and any(value != pubid for value in ids):
                 entry["state"] = STATE_LEAK
                 entry["reason"] = f"EarnKaro link for another publisher (expected {pubid})"

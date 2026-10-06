@@ -27,7 +27,7 @@
     <h2 style="color: #60a5fa; margin-top:0; font-size:18px;">✨ Influencer Details &amp; Channel Preferences</h2>
     <p class="hint">Save the profile and selected network switches. Telegram channels are created when Telegram is enabled; WhatsApp starts a QR session when enabled. Connect or create WhatsApp destinations after pairing. External platform access is required.</p>
     
-    <form method="post" action="{{ url_for('onboard') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 14px;" data-require-reauth>
+    <form method="post" action="{{ url_for('onboard') }}" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 14px;">
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
       <div>
         <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#cbd5e1;">Influencer Name *</label>

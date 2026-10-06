@@ -62,8 +62,7 @@
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
             <input type="hidden" name="setting" value="{{ action.setting }}" />
             <input type="hidden" name="value" value="on" />
-            <button type="submit" class="btn btn-primary"
-                    data-require-reauth>{{ action.action }} →</button>
+            <button type="submit" class="btn btn-primary">{{ action.action }} →</button>
           </form>
         {% elif action.href %}
           <a class="btn btn-secondary" href="{{ action.href }}">{{ action.action }} →</a>
@@ -76,7 +75,7 @@
 <section class="card money-card">
   <div class="setup-section-title">
     <h2>Money switches</h2>
-    <span class="hint">These change what the pipeline posts — password confirmed.</span>
+    <span class="hint">These change what the pipeline posts — saved immediately, no password.</span>
   </div>
   <div class="money-switches">
     {% for switch in switches %}
@@ -92,8 +91,7 @@
           <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
           <input type="hidden" name="setting" value="{{ switch.key }}" />
           <input type="hidden" name="value" value="{{ 'off' if switch.on else 'on' }}" />
-          <button type="submit" class="btn {{ 'btn-secondary' if switch.on else 'btn-primary' }}"
-                  data-require-reauth>{% if switch.on %}Turn off{% else %}Turn on{% endif %}</button>
+          <button type="submit" class="btn {{ 'btn-secondary' if switch.on else 'btn-primary' }}">{% if switch.on %}Turn off{% else %}Turn on{% endif %}</button>
         </form>
       </div>
     {% endfor %}
