@@ -1206,10 +1206,10 @@ index f8e23e1..d511127 100644
  def test_routing_preview_shows_off_states_and_informational_links(hub):
 diff --git a/tests/test_patch_bundle.py b/tests/test_patch_bundle.py
 new file mode 100644
-index 0000000..7255120
+index 0000000..237afc5
 --- /dev/null
 +++ b/tests/test_patch_bundle.py
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,139 @@
 +"""The `patches/` bundle must stay in step with the tree it describes.
 +
 +Three ways to hand this work to another checkout, and all three have to agree:
@@ -1332,6 +1332,16 @@ index 0000000..7255120
 +            f"patches/tests/{copy.name} drifted from tests/{copy.name}; "
 +            "re-copy it so --with-tests cannot install stale tests"
 +        )
++
++
++def test_handoff_doc_copy_matches_the_branch():
++    """`patches/` must be self-contained: the handoff ships inside it too."""
++    copy = PATCH_DIR / "HANDOFF.md"
++    assert copy.is_file(), "patches/HANDOFF.md is missing"
++    real = (REPO_ROOT / "HANDOFF.md").read_text(encoding="utf-8")
++    assert copy.read_text(encoding="utf-8") == real, (
++        "patches/HANDOFF.md drifted from HANDOFF.md; re-copy it"
++    )
 +
 +
 +def test_bundle_keeps_itself_out_of_the_suite():

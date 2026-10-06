@@ -122,6 +122,16 @@ def test_test_copies_are_byte_identical_to_the_real_tests():
         )
 
 
+def test_handoff_doc_copy_matches_the_branch():
+    """`patches/` must be self-contained: the handoff ships inside it too."""
+    copy = PATCH_DIR / "HANDOFF.md"
+    assert copy.is_file(), "patches/HANDOFF.md is missing"
+    real = (REPO_ROOT / "HANDOFF.md").read_text(encoding="utf-8")
+    assert copy.read_text(encoding="utf-8") == real, (
+        "patches/HANDOFF.md drifted from HANDOFF.md; re-copy it"
+    )
+
+
 def test_bundle_keeps_itself_out_of_the_suite():
     """patches/tests/ must never be collected twice."""
     conftest = (PATCH_DIR / "conftest.py").read_text(encoding="utf-8")

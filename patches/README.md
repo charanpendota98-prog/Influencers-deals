@@ -8,7 +8,7 @@ land on **exactly** the same code and tests.
 | 1 | `patches/*.patch` | a clean `0bf913f` checkout: `git apply` all four, done |
 | 2 | `patches/apply-*.py` | a VM that already has part of the work (surgical, exact-text) |
 | 3 | `patches/tests/` | the verified test files `--with-tests` installs |
-| 4 | `HANDOFF.md` | the human handoff (not part of the patches — prose ships with the branch) |
+| 4 | `patches/HANDOFF.md` | a byte-identical copy of the root handoff, so the bundle is self-contained (guarded by `tests/test_patch_bundle.py`) |
 
 ## 1. The four git patches
 
@@ -18,7 +18,7 @@ git apply patches/commission-leaks.patch   # influencer_hub/
 git apply patches/password-policy.patch    # dashboard/
 git apply patches/tests.patch              # tests/
 git apply patches/deal-flow.patch          # influencer_hub/ + dashboard/ (flow board)
-pytest -q                                  # 300 passed
+pytest -q                                  # 301 passed
 ```
 
 | patch | lines | covers |
@@ -161,7 +161,7 @@ applier no longer reports the branch state.
   byte-identical (only `HANDOFF.md` is not in the patches; 13 of those tests are
   the bundle guards in `tests/test_patch_bundle.py`)
 * clean `0bf913f` + the four appliers (`--with-tests`) → **287 passed**, every
-  code/test file byte-identical. The 13 bundle guards are deliberately **not**
+  code/test file byte-identical. The 14 bundle guards are deliberately **not**
   installed by `--with-tests`: they only make sense on the branch that ships the
   bundle.
 * a second run of every applier → exit `1`, nothing written
