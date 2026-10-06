@@ -1206,10 +1206,10 @@ index f8e23e1..d511127 100644
  def test_routing_preview_shows_off_states_and_informational_links(hub):
 diff --git a/tests/test_patch_bundle.py b/tests/test_patch_bundle.py
 new file mode 100644
-index 0000000..237afc5
+index 0000000..4452b06
 --- /dev/null
 +++ b/tests/test_patch_bundle.py
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,140 @@
 +"""The `patches/` bundle must stay in step with the tree it describes.
 +
 +Three ways to hand this work to another checkout, and all three have to agree:
@@ -1240,6 +1240,7 @@ index 0000000..237afc5
 +    "password-policy.patch",
 +    "tests.patch",
 +    "deal-flow.patch",
++    "docs.patch",
 +)
 +APPLIERS = (
 +    "apply-commission-fixes.py",

@@ -28,6 +28,7 @@ PATCH_FILES = (
     "password-policy.patch",
     "tests.patch",
     "deal-flow.patch",
+    "docs.patch",
 )
 APPLIERS = (
     "apply-commission-fixes.py",
