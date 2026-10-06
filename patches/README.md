@@ -127,6 +127,9 @@ applier no longer reports the branch state.
 ## Verified end-to-end
 
 * clean `0bf913f` + the three `.patch` files → **285 passed**, byte-identical tree
-* clean `0bf913f` + the three appliers (`--with-tests`) → **285 passed**, byte-identical tree
+  (that count includes the 11 guards in `tests/test_patch_bundle.py`)
+* clean `0bf913f` + the three appliers (`--with-tests`) → **274 passed**,
+  byte-identical tree. The 11 bundle guards are deliberately **not** installed by
+  `--with-tests`: they only make sense on the branch that ships the bundle.
 * a second run of every applier → exit `1`, nothing written
 * baseline on `main` before any of this: **234 passed**

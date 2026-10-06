@@ -52,8 +52,12 @@ python3 patches/apply-commission-fixes.py --with-tests
 python3 patches/apply-password-policy.py  --with-tests
 python3 patches/apply-account-model.py    --with-tests
 
-.venv/bin/python -m pytest -q      # expect 285 passed
+.venv/bin/python -m pytest -q      # expect 274 passed
 ```
+
+(`285` is the count **on this branch**: it includes the 11 guards in
+`tests/test_patch_bundle.py`, which `--with-tests` intentionally does not
+install. Via path A the number is 285 too, because `tests.patch` carries them.)
 
 `patches/conftest.py` keeps pytest out of `patches/tests/`; `pytest.ini` is not
 needed. `tests/test_patch_bundle.py` fails if the bundle ever drifts from the
