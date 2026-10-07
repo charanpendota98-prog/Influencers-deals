@@ -1,8 +1,10 @@
 # `patches/` — verified, replayable fixes
 
-The first five patches reproduce the earlier release on its historical base;
-`private-source-fallback.patch` is the follow-up for the current `c6fa901`
-release. The applier validates this follow-up before writing anything.
+The first five patches reproduce the earlier release on its historical base.
+`private-source-fallback.patch` is the source-visibility follow-up for the
+current `c6fa901` release, and `link-conversion-fixes.patch` (diffed against that
+state, so apply it **second**) carries the link-conversion audit fixes and the
+conversion retry queue. Each applier validates its own patch before writing.
 
 | # | path | use it when |
 | --- | --- | --- |
@@ -24,12 +26,16 @@ git apply patches/tests.patch
 git apply patches/deal-flow.patch
 git apply patches/docs.patch
 git apply patches/private-source-fallback.patch
+git apply patches/link-conversion-fixes.patch
 python3 patches/apply-private-source-fallback.py --with-tests
-python3 -m pytest -q                         # 320 passed on this revision
+python3 patches/apply-link-conversion-fixes.py --with-tests
+python3 -m pytest -q                         # 342 passed on this revision
 ```
 
-On a VM already at the merged `c6fa901` release, only the last applier is
-needed. It validates the exact patch first and writes nothing on mismatch.
+On a VM already at the merged `c6fa901` release, only the two appliers are
+needed, in this order: `apply-private-source-fallback.py` then
+`apply-link-conversion-fixes.py`. Each one validates its exact patch first and
+writes nothing on mismatch; the second one tells you if the first is missing.
 
 | patch | lines | covers |
 | --- | --- | --- |
@@ -39,11 +45,14 @@ needed. It validates the exact patch first and writes nothing on mismatch.
 | `deal-flow.patch` | 474 | `influencer_hub/` + `dashboard/` — per-source deal flow, `/api/flow`, the Easy Setup card |
 | `docs.patch` | 217 | `HANDOFF.md` — the historical handoff at the previous release |
 | `private-source-fallback.patch` | follow-up | named private-invite fallback, diagnostics and current handoff updates |
+| `link-conversion-fixes.patch` | follow-up 2 | Amazon short coverage (`amzn.eu`/`amzn.asia`/`a.co`), conversion retry queue, approval dedup, guard/flow-board updates, README + HANDOFF |
 
 The first five patch files are the historical replay path (`0bf913f` to the
 merged pre-fallback release). The source-fallback patch is based on that merged
-release (`c6fa901`) and must be applied last. The live repo's guard tests verify
-that every patch exists and every copied test stays byte-identical.
+release (`c6fa901`); the conversion patch is based on the source-fallback state
+and must be applied after it. The live repo's guard tests verify that every
+patch exists, that every applier reports the branch as patched, and that every
+copied test stays byte-identical.
 
 ## 2. Appliers
 
@@ -51,7 +60,11 @@ that every patch exists and every copied test stays byte-identical.
 python3 patches/apply-private-source-fallback.py --check
 python3 patches/apply-private-source-fallback.py --dry-run
 python3 patches/apply-private-source-fallback.py --with-tests
+python3 patches/apply-link-conversion-fixes.py --check
+python3 patches/apply-link-conversion-fixes.py --dry-run
+python3 patches/apply-link-conversion-fixes.py --with-tests
 python3 -m influencer_hub.cli doctor --telegram-sources
+python3 -m pytest -q                          # 342 passed
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
 curl -s localhost:5000/api/flow | head -c 400

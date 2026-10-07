@@ -30,6 +30,7 @@ PATCH_FILES = (
     "deal-flow.patch",
     "docs.patch",
     "private-source-fallback.patch",
+    "link-conversion-fixes.patch",
 )
 APPLIERS = (
     "apply-commission-fixes.py",
@@ -37,6 +38,7 @@ APPLIERS = (
     "apply-account-model.py",
     "apply-deal-flow.py",
     "apply-private-source-fallback.py",
+    "apply-link-conversion-fixes.py",
 )
 
 

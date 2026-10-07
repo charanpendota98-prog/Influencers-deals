@@ -1,10 +1,13 @@
 # HANDOFF — Influencers-deals
 
-**Updated:** 2026-10-07 (UTC)
+**Updated:** 2026-10-08 (UTC)
 
 **Session branch:** `arena/9056711b-influencers-deals`
 
 **Checkout base:** `c6fa901` — PR #7 merged to `main`
+
+**Branch commits:** `fb70433` (source fallback, PR #8) and `f46f165` (link
+conversion audit — see section 1b).
 
 Read this before deploying. This handoff describes the current checkout; older
 notes referring to `0bf913f`, an unmerged branch, or the earlier VM rollout are
@@ -64,6 +67,57 @@ before calling production delivery verified.
 
 ---
 
+## 1b. Link conversion — every shape becomes OUR link, none posts for free
+
+A deep offline audit (23 link shapes through the real `render_for_influencer` +
+`commission_guard`, 16 deals through the real `pipeline.run_once` with a stubbed
+EarnKaro, temp DBs, no network) confirmed the main conversion paths were already
+exact and found four real defects. All four are fixed in `f46f165`:
+
+1. **Opaque Amazon shorts were only known on `amzn.to`/`amzn.in`.** A deal with
+   `amzn.eu`, `amzn.asia`, `a.co`, an upper-case host or an `http://` short was
+   classified as an *informational link* and posted **untagged** (zero
+   commission). Now every Amazon shortener host is resolved over the network
+   into `https://www.amazon.in/dp/<ASIN>?tag=<OURS>` on the marketplace the
+   short pointed at; if it cannot be resolved the run logs
+   `UNRESOLVED AMAZON SHORT` instead of staying quiet.
+2. **EarnKaro down meant a raw merchant URL was posted silently** — the guard
+   reported `ok=True`, the process exited 0, the link earned nothing. Now the
+   guard asks "does this post contain at least one link that pays us?" after
+   every render. When the only links are merchant URLs EarnKaro should have
+   converted (known merchant + credentials configured), the deal is parked in
+   the new `deferred_deals` table and the worker retries it every
+   `DEFERRED_RETRY_DELAY_SECONDS` (300 s) up to `DEFERRED_MAX_ATTEMPTS` (6)
+   times, then posts it anyway with a warning. A converter outage delays a deal
+   instead of dropping it or posting it free.
+   Switch: `ALLOW_UNCONVERTED_POSTS=1` (or the Money page switch
+   `allow_unconverted_posts`) restores the old "post the raw link now" behaviour.
+   Raw Meesho and stores EarnKaro does not cover keep the documented retention
+   behaviour and are logged as `ZERO-COMMISSION post`.
+3. **The approval renderer printed the same canonical Amazon link twice** when a
+   post carried both the short and the long link for one product.
+4. **Opaque shorts were invisible to the guard and Money Radar**, so
+   `amzn.eu`/`a.co` links were filed as neutral instead of being audited.
+
+Unchanged and verified: Amazon `/dp/`, `/gp/product/`, `?asin=`, search and
+storefront pages → one canonical link with exactly our tag; short + long in the
+same post → one canonical link; Flipkart/Shopsy/Myntra/Ajio/Nykaa/Croma/TataCliq
+→ EarnKaro short verified by following the redirect; HYPD afflinks retagged to
+our store; LehLah preserved; informational links untouched.
+
+`/api/flow` reports the retry queue as
+`deferred: {waiting, retry_seconds, allow_unconverted_posts}` and adds
+"*N deal(s) are waiting for an EarnKaro conversion*" to the flow notes. The
+README documents the per-link-shape outcome table and the retry queue.
+
+Two-cycle proof on a temp DB: cycle 1 with EarnKaro down → merchant-only deals
+parked (`deferred queue: 2`), Amazon and raw-Meesho deals posted; cycle 2 with
+EarnKaro recovered → `drain: 2`, posts carry
+`fktr.in/ek402049?affExtParam2=5478322` and `ekaro.in/ek352378?affExtParam2=5478322`,
+queue `0`.
+
+---
+
 ## 2. Test and audit commands
 
 From the repo root:
@@ -75,7 +129,7 @@ python3 -m venv .venv
 python3 -m influencer_hub.cli doctor --telegram-sources
 ```
 
-The test suite on this revision is expected to report **320 passed**. The
+The test suite on this revision is expected to report **342 passed**. The
 source doctor is read-only: it enumerates joined dialogs, checks the same
 selection rules as the worker, does not read message history, and does not
 check or join invites. It requires valid Telegram credentials/session on the
@@ -95,14 +149,27 @@ procedure. Never copy secrets into Git or chat. From the deployed checkout:
 
 ```bash
 cd ~/Influencers-deals
+# 1) source fallback + live source visibility (skip if already applied)
 python3 patches/apply-private-source-fallback.py --check
 python3 patches/apply-private-source-fallback.py --dry-run
 python3 patches/apply-private-source-fallback.py --with-tests
+# 2) link conversion fixes, retry queue, flow board (diffed against state 1)
+python3 patches/apply-link-conversion-fixes.py --check
+python3 patches/apply-link-conversion-fixes.py --dry-run
+python3 patches/apply-link-conversion-fixes.py --with-tests
 python3 -m influencer_hub.cli doctor --telegram-sources
+python3 -m pytest -q            # expect 342 passed
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
 journalctl -u influencer-deal-worker -n 100 --no-pager
+curl -s localhost:5000/api/flow | head -c 400
 ```
+
+The second applier validates its bundled exact patch with `git apply --check`
+before writing anything and refuses to run on a checkout that does not have the
+first bundle installed (it prints that hint). Both are idempotent reporters:
+`--check` exits 0 when the work is already in place and a plain repeat run exits
+1 without touching a file.
 
 The applier validates its bundled exact patch before writing. It aborts without
 writing if the VM checkout differs; inspect the diff rather than forcing it.
@@ -135,7 +202,12 @@ appear:
 1. Read the source fallback / selector result in Setup Center or the CLI doctor.
 2. Check worker state, source activity, destination readiness, and failures on
    `/api/flow`.
-3. Check the worker log for pipeline filtering or delivery errors.
+3. Check the worker log for pipeline filtering or delivery errors. After this
+   branch, a quiet channel can also mean deals are parked for a conversion
+   retry: read `deferred.waiting` on `/api/flow` and look for
+   `EARNKARO UNCONVERTED` / `EARNKARO CONVERSION FAILED` lines, which name the
+   links and tell you whether `EARNKARO_API_KEY` or the publisher id needs
+   attention.
 4. Confirm the EarnKaro token/publisher ID in Vault and run
    `python -m influencer_hub.cli verify-earnkaro` when eligible merchant links
    must earn. Amazon attribution uses each creator's configured tag; HYPD and
@@ -153,10 +225,13 @@ named private invites.
 
 ## 5. Replayable work and safety
 
-- `patches/private-source-fallback.patch` contains the follow-up patch for the
-  merged `c6fa901` release.
-- `patches/apply-private-source-fallback.py` supports `--check`, `--dry-run`, and
-  `--with-tests`; it uses `git apply --check` and never resets the checkout.
+- `patches/private-source-fallback.patch` contains the source-visibility patch for
+  the merged `c6fa901` release; `patches/link-conversion-fixes.patch` (diffed
+  against that state) contains the conversion fixes, retry queue and docs.
+- `patches/apply-private-source-fallback.py` and
+  `patches/apply-link-conversion-fixes.py` support `--check`, `--dry-run`, and
+  `--with-tests`; they use `git apply --check`, never reset the checkout, and
+  never touch `.env`, the Telegram session or the SQLite DB.
 - `patches/tests/` carries byte-identical test copies; `tests/test_patch_bundle.py`
   checks copies, patch presence, and applier state.
 - The original commission/account/password/deal-flow work and its four
