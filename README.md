@@ -179,7 +179,14 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
   it never sends `CheckChatInviteRequest` or joins invite URLs. Use
   `TELEGRAM_OUTPUT_CHANNELS` and registered Telegram destination channels to
   keep output/ops dialogs out of source ingestion. Public source selectors match
-  by username; private invite hashes are never resolved.
+  by username/ID. A private invite hash is never resolved; its optional label
+  only matches an exact normalized joined-dialog title. If a private label does
+  not match, the worker logs a warning and falls back to eligible already-joined
+  dialogs (output dialogs and unconfigured account-owned channels stay excluded).
+  The live check in Setup Center shows this fallback; run
+  `python -m influencer_hub.cli doctor --telegram-sources` on the VM for the same
+  read-only selection audit. To keep ingestion narrow, add public usernames or
+  use the exact title of the joined private dialog as its source label.
 - `deploy/start_services.sh` starts supervised `deal-worker`, WhatsApp hub,
   dashboard, and VM watcher processes. Each service writes to `logs/` and is
   restarted by its launcher if it exits; `worker.py` additionally retries

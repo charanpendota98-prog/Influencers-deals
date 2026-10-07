@@ -1,26 +1,35 @@
 # `patches/` — verified, replayable fixes
 
-Four ways to move this work into another checkout, verified to land on
-**exactly** the same code, tests and handoff.
+The first five patches reproduce the earlier release on its historical base;
+`private-source-fallback.patch` is the follow-up for the current `c6fa901`
+release. The applier validates this follow-up before writing anything.
 
 | # | path | use it when |
 | --- | --- | --- |
-| 1 | `patches/*.patch` | a clean `0bf913f` checkout: `git apply` all five, done |
-| 2 | `patches/apply-*.py` | a VM that already has part of the work (surgical, exact-text) |
-| 3 | `patches/tests/` | the verified test files `--with-tests` installs |
+| 1 | `patches/*.patch` | replaying the earlier release, then applying the source-fallback patch |
+| 2 | `patches/apply-*.py` | a VM that already has part of the work (exact-match appliers) |
+| 3 | `patches/tests/` | the verified test files and DB-isolating conftest `--with-tests` installs |
 | 4 | `patches/HANDOFF.md` | a byte-identical copy of the root handoff, so the bundle is self-contained (guarded by `tests/test_patch_bundle.py`) |
 
-## 1. The five git patches
+## 1. Earlier release patches + the current source fix
+
+On a clean historical `0bf913f` checkout, replay the original five patches in
+order, then apply the new source fix:
 
 ```bash
 cd ~/Influencers-deals
-git apply patches/commission-leaks.patch   # influencer_hub/
-git apply patches/password-policy.patch    # dashboard/
-git apply patches/tests.patch              # tests/
-git apply patches/deal-flow.patch          # influencer_hub/ + dashboard/ (flow board)
-git apply patches/docs.patch               # HANDOFF.md
-pytest -q                                  # 302 passed
+git apply patches/commission-leaks.patch
+git apply patches/password-policy.patch
+git apply patches/tests.patch
+git apply patches/deal-flow.patch
+git apply patches/docs.patch
+git apply patches/private-source-fallback.patch
+python3 patches/apply-private-source-fallback.py --with-tests
+python3 -m pytest -q                         # 320 passed on this revision
 ```
+
+On a VM already at the merged `c6fa901` release, only the last applier is
+needed. It validates the exact patch first and writes nothing on mismatch.
 
 | patch | lines | covers |
 | --- | --- | --- |
@@ -28,26 +37,28 @@ pytest -q                                  # 302 passed
 | `password-policy.patch` | 666 | `dashboard/` — password only for removals + the who-earns table |
 | `tests.patch` | 1524 | `tests/` — every changed and new test file, at this revision |
 | `deal-flow.patch` | 474 | `influencer_hub/` + `dashboard/` — per-source deal flow, `/api/flow`, the Easy Setup card |
-| `docs.patch` | 217 | `HANDOFF.md` — the handoff itself, so a patched checkout is complete |
+| `docs.patch` | 217 | `HANDOFF.md` — the historical handoff at the previous release |
+| `private-source-fallback.patch` | follow-up | named private-invite fallback, diagnostics and current handoff updates |
 
-`commission-leaks.patch`, `password-policy.patch` and `tests.patch` cover
-`0bf913f..77acbe7`; `deal-flow.patch` covers `77acbe7..HEAD` for the two code
-directories only, so the tests always come from the single `tests.patch`, and
-`docs.patch` adds `HANDOFF.md`. Apply them in the order above on a clean `main`
-(`0bf913f`) and the tree matches this branch down to the byte — nothing is
-missing.
+The first five patch files are the historical replay path (`0bf913f` to the
+merged pre-fallback release). The source-fallback patch is based on that merged
+release (`c6fa901`) and must be applied last. The live repo's guard tests verify
+that every patch exists and every copied test stays byte-identical.
 
-## 2. The four appliers
+## 2. Appliers
 
 ```bash
-python3 patches/apply-commission-fixes.py --with-tests
-python3 patches/apply-password-policy.py  --with-tests
-python3 patches/apply-account-model.py    --with-tests
-python3 patches/apply-deal-flow.py        --with-tests
+python3 patches/apply-private-source-fallback.py --check
+python3 patches/apply-private-source-fallback.py --dry-run
+python3 patches/apply-private-source-fallback.py --with-tests
+python3 -m influencer_hub.cli doctor --telegram-sources
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
 curl -s localhost:5000/api/flow | head -c 400
 ```
+
+The four original appliers below remain useful for VMs missing those earlier
+changes; do not rerun them on a release where their checks say already applied.
 
 | applier | touches | what it fixes |
 | --- | --- | --- |
@@ -55,8 +66,11 @@ curl -s localhost:5000/api/flow | head -c 400
 | `apply-password-policy.py` | `dashboard/` | `REAUTH_REQUIRED_ENDPOINTS` 28 → 3, no `data-require-reauth` on adds/saves, one shared unlock dialog |
 | `apply-account-model.py` | both | installs `influencer_hub/accounts.py` + wires it in (their Amazon id, our EarnKaro/HYPD) |
 | `apply-deal-flow.py` | both | `source_activity` bookkeeping, `_flow_snapshot()`, `GET /api/flow`, the Easy Setup flow card |
+| `apply-private-source-fallback.py` | puller + dashboard + docs | unmatched named private invites fall back to eligible joined dialogs; Setup and CLI diagnostics explain why |
 
-Each supports `--check`, `--dry-run`, `--with-tests` and stops a second run:
+The four original appliers support `--check`, `--dry-run`, `--with-tests` and
+stop a second run. The new applier validates its bundled `git apply` patch and
+also supports `--check`, `--dry-run`, and `--with-tests`:
 
 | flag | meaning |
 | --- | --- |
@@ -69,12 +83,11 @@ Exit codes: `0` applied / already in place with `--check`, `1` already applied
 (stop — never double-edit), `2` the file did not match the verified revision
 (nothing was written).
 
-**On the VM, apply only what is missing.** The commission fixes are already
-live there; `apply-password-policy.py`, `apply-account-model.py` and
-`apply-deal-flow.py` are the ones it still needs. The appliers touch different
-functions, so they can run in any order. Without `--with-tests` an applier
-changes only its own code files — the tests it installs assume **all four**
-policies are in place.
+**For the VM:** the merged `c6fa901` release already contains the commission,
+account, password and deal-flow work. Apply only
+`apply-private-source-fallback.py` for this follow-up. It never resets files or
+joins channels; if its exact patch does not match, it exits without writing.
+Use `--with-tests` only when refreshing the test suite on the VM.
 
 ## 3. What each policy actually does
 
@@ -123,6 +136,24 @@ that would post on the fallback tag.
 * Easy Setup ends with a **"Deal flow — sources → posts"** card; the per-source
   table and the channel table live in its Advanced section.
 
+### Private Telegram source fallback (`influencer_hub/puller.py`)
+
+* A private invite is never checked or joined. Its friendly name is only a hint
+  for an **exact normalized joined-dialog title** match.
+* If one or more private invite hints do not match, selection falls back to all
+  eligible dialogs already joined by the Telegram account. Configured output
+  channels and unconfigured account-owned channels are excluded. The worker
+  logs one warning per source configuration; invite hashes are not logged.
+* This fallback may read many joined groups/channels. Use public usernames or
+  the exact private-dialog title to narrow selection. The Setup Center and
+  `doctor --telegram-sources` show when fallback is active.
+* The flow board proves the selection: `/api/flow` gains `live` (mode, counts
+  and a capped list of the dialogs the worker would read now) and per-source
+  rows gain `source_name`, the joined dialog's title recorded by the worker.
+  The probe is read-only, cached ~45 s, and skippable with `?live=0`.
+* `tests/conftest.py` redirects every test to a fresh temporary SQLite DB, so
+  tests without a local DB fixture cannot touch a VM/operator database.
+
 ### Password policy (`dashboard/`)
 
 * `REAUTH_REQUIRED_ENDPOINTS`: 28 endpoints → `delete_channel`,
@@ -135,37 +166,35 @@ that would post on the fallback tag.
 
 ## `patches/tests/` + `conftest.py`
 
-`patches/tests/` holds byte-identical copies of the test files the policies
-touched (including `test_reauth_policy.py`, `test_amazon_tag_attribution.py`,
-`test_account_model.py` and `test_deal_flow.py`). `patches/conftest.py` keeps
-pytest from collecting the bundle, so a receiving checkout needs no extra
-config.
+`patches/tests/` carries byte-identical copies for the patched test files and a
+copy of `tests/conftest.py`. The root conftest gives each pytest case a fresh
+`tmp_path` SQLite DB; `patches/conftest.py` separately prevents pytest from
+collecting the bundle copies twice.
 
-`tests/test_patch_bundle.py` is the drift guard for all of this: it fails if a
-`.patch` is malformed, if `patches/tests/` copies diverge from `tests/`, or if an
-applier no longer reports the branch state.
+`tests/test_patch_bundle.py` is the drift guard: it checks patch presence and
+format, copied-test parity, root DB isolation, and that every applier recognizes
+the current tree.
 
 ## Traps (learned the hard way)
 
-* **Never** `git checkout -- <file>` on the VM — the VM holds fixes that are not
-  in `origin/main`, so a checkout silently reverts them.
-* `patch -U0` mis-applies these bundles. Use `git apply` or the appliers.
-* Keep artifacts **inside** the repo: a sandbox restart wipes `/home/user/*.patch`
-  and anything else outside the checkout.
-* Don't mix paths casually — a `.patch` expects a clean `0bf913f`; an applier
-  expects the mix of fixes the VM actually has.
-* `patches/tests/` copies go stale the moment a test changes. Re-copy, then let
-  `tests/test_patch_bundle.py` prove they match.
+* The current follow-up expects the merged `c6fa901` release. The original five
+  patches are only for the historical `0bf913f` replay path.
+* Do not use `git checkout -- <file>` or force a patch on a VM with a mismatch.
+  The new applier validates first and exits without writing when context differs.
+* Private-invite fallback scans eligible joined dialogs; it does not join the
+  invite. Narrow with usernames or exact dialog titles if a broad joined set is
+  not intended.
+* Keep artifacts inside the repo. Test copies go stale when tests change; run
+  the full suite so `test_patch_bundle.py` catches drift.
 
-## Verified end-to-end
+## Verified in this session
 
-* clean `0bf913f` + the five `.patch` files → **302 passed**, every file
-  byte-identical (15 of those tests are the bundle guards in
-  `tests/test_patch_bundle.py`)
-* clean `0bf913f` + the four appliers (`--with-tests`) → **287 passed**, every
-  code and test file byte-identical. `--with-tests` never installs
-  `tests/test_patch_bundle.py` (15 guards): they only make sense on the branch
-  that ships the bundle. The appliers also do not write the root `HANDOFF.md`;
-  the bundle's own `patches/HANDOFF.md` is its copy.
-* a second run of every applier → exit `1`, nothing written
-* baseline on `main` before any of this: **234 passed**
+* Clean checkout baseline `c6fa901`: **302 passed** before the follow-up.
+* Working tree after the source-selection fix, live flow-board source
+  visibility, DB-isolated tests, docs and bundle guard: **320 passed**.
+* `tests/test_private_source_fallback.py` simulates 236 joined dialogs, checks
+  warning behavior, exclusions and capped dialog summaries, confirms live
+  diagnostics make no invite or history requests, and exercises the worker pull
+  path; `tests/test_deal_flow.py` pins the live `/api/flow` selection view and
+  the recorded joined-dialog title per source.
+* The full suite has not been run against a live Telegram account or deployed VM.

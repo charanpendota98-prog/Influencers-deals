@@ -152,6 +152,17 @@
     {{ flow.channels.failed_total }} failed (all-time).
     Hourly loot sweep: <strong>{{ 'on' if flow.settings.hourly_loot_enabled else 'off' }}</strong>.
   </p>
+  {% if flow.live and flow.live.checked %}
+    <p class="hint">
+      📡 Live Telegram check: <strong>{{ flow.live.selected_sources }}</strong> dialog(s) will be read
+      from {{ flow.live.configured_sources }} configured selector(s)
+      ({{ flow.live.eligible_joined_dialogs }} eligible of {{ flow.live.joined_group_channels }} joined group/channel dialog(s);
+      selection mode <strong>{{ flow.live.selection_mode }}</strong>).
+      Invites are never checked or joined.
+    </p>
+  {% elif flow.live and flow.live.reason and flow.live.reason != 'probe_disabled' %}
+    <p class="hint">📡 Live Telegram check unavailable ({{ flow.live.reason|replace('_', ' ') }}); showing configured selectors only. Add <code>?live=1</code> to retry.</p>
+  {% endif %}
   {% for note in flow.notes %}
     <p class="routing-note is-warn">⚠️ {{ note }}</p>
   {% endfor %}
@@ -165,7 +176,7 @@
       <tbody>
         {% for row in flow.sources.rows %}
           <tr class="routing-row is-{{ 'warn' if row.stalled or row.never_delivered else 'ok' }}">
-            <td><code>{{ row.spec }}</code></td>
+            <td>{% if row.source_name %}<strong>{{ row.source_name }}</strong><br />{% endif %}<code>{{ row.spec }}</code></td>
             <td>{% if row.age_seconds is not none %}{{ (row.age_seconds // 3600) }}h {{ ((row.age_seconds % 3600) // 60) }}m ago{% else %}—{% endif %}</td>
             <td>{{ row.deals_seen }}</td>
             <td>{{ row.posts_dispatched }}</td>
@@ -197,6 +208,17 @@
         {% endfor %}
       </tbody>
     </table>
+    {% if flow.live and flow.live.dialogs %}
+      <h3 style="margin:12px 0 4px;">Joined dialogs the worker reads now ({{ flow.live.selected_sources }})</h3>
+      <ul class="routing-note">
+        {% for dialog in flow.live.dialogs %}
+          <li>{{ dialog.name }}{% if dialog.username %} · @{{ dialog.username }}{% endif %} <span class="routing-note">({{ dialog.kind }} {{ dialog.id }})</span></li>
+        {% endfor %}
+        {% if flow.live.dialogs_truncated %}
+          <li>… and {{ flow.live.dialogs_truncated }} more.</li>
+        {% endif %}
+      </ul>
+    {% endif %}
     <p class="hint">Machine-readable: <code>/api/flow</code> (add <code>?stall_seconds=</code> or <code>?window_hours=</code>).</p>
   </details>
 </section>

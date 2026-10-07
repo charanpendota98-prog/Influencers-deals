@@ -50,13 +50,18 @@ def _first_failure_reason(results: dict) -> str:
 
 
 def _record_source_activity(
-    source_key: str, *, message_id: int = 0, posted: int = 0, failed: int = 0,
-    error: str = "",
+    source_key: str, *, source_name: str = "", message_id: int = 0, posted: int = 0,
+    failed: int = 0, error: str = "",
 ) -> None:
-    """Per-source flow bookkeeping; never allowed to stop ingestion."""
+    """Per-source flow bookkeeping; never allowed to stop ingestion.
+
+    ``source_name`` is the joined dialog's live title, so the flow board can
+    show which real group/channel a selected source actually read.
+    """
     try:
         db.record_source_activity(
-            source_key, message_id=message_id, posted=posted, failed=failed, error=error
+            source_key, source_name=source_name, message_id=message_id,
+            posted=posted, failed=failed, error=error,
         )
     except Exception:
         logger.warning("Could not record source activity", exc_info=True)
@@ -132,6 +137,7 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                 continue
 
             text = str(record.get("text") or "").strip()
+            source_name = str(record.get("source") or "").strip()
             # Early batch dedup: if same product already handled in this pull cycle from another source, skip but advance cursor
             if text:
                 try:
@@ -139,6 +145,9 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                     _sig = _sig_for_batch(text)
                     if _sig in seen_sigs_this_batch:
                         logger.info("Batch dedup: skipping duplicate deal from source %s message %s sig %s", source_key, message_id, _sig[:8])
+                        _record_source_activity(
+                            source_key, source_name=source_name, message_id=message_id
+                        )
                         db.set_worker_offset(source_key, message_id)
                         handled += 1
                         continue
@@ -154,7 +163,7 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                 except Exception as exc:
                     logger.exception("Pipeline failed for source %s message %s", source_key, message_id)
                     _record_source_activity(
-                        source_key, message_id=message_id, failed=1,
+                        source_key, source_name=source_name, message_id=message_id, failed=1,
                         error=f"{type(exc).__name__}: {exc}",
                     )
                     retried += 1
@@ -170,13 +179,14 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                     )
                     failure_note = _first_failure_reason(result)
                     _record_source_activity(
-                        source_key, message_id=message_id, posted=posted,
-                        failed=max(1, failed), error=failure_note,
+                        source_key, source_name=source_name, message_id=message_id,
+                        posted=posted, failed=max(1, failed), error=failure_note,
                     )
                     retried += 1
                     break
                 _record_source_activity(
-                    source_key, message_id=message_id, posted=posted, failed=failed
+                    source_key, source_name=source_name, message_id=message_id,
+                    posted=posted, failed=failed,
                 )
 
             # Empty/media-only Telegram posts have no text parser input; mark

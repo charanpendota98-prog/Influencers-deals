@@ -13,10 +13,10 @@
 {% if sources_added is not none %}
   <div class="alert alert-success" role="status">Source catalog updated: {{ sources_added }} source{{ '' if sources_added == 1 else 's' }} added. Invite links were not checked or joined.</div>
 {% endif %}
-{% if source_saved %}<div class="alert alert-success" role="status">Source selector saved. It will match already-joined Telegram dialogs only.</div>{% endif %}
+{% if source_saved %}<div class="alert alert-success" role="status">Source selector saved. Telegram invites are never checked or joined; private labels are matched to exact joined-dialog titles, with a warning-backed joined-dialog fallback if they do not match.</div>{% endif %}
 {% if source_updated %}<div class="alert alert-success" role="status">Source selector status updated.</div>{% endif %}
 {% if source_deleted %}<div class="alert alert-success" role="status">Source selector removed.</div>{% endif %}
-{% if source_error == 'private_name_required' %}<div class="dashboard-alert" role="alert">Add the joined Telegram dialog's display name for a private invite selector. The invite will not be checked or joined.</div>{% endif %}
+{% if source_error == 'invalid_spec' %}<div class="dashboard-alert" role="alert">Enter a Telegram username, numeric ID, or t.me selector up to 512 characters.</div>{% endif %}
 {% if imported is not none %}
   <div class="alert alert-success" role="status">{{ imported }} creator profile{{ '' if imported == 1 else 's' }} imported.</div>
 {% endif %}
@@ -65,7 +65,7 @@
 
 <section id="source-pool" class="card" style="margin-top:16px;">
   <div class="setup-section-title" style="margin-top:0;">
-    <div><h2>📡 Source pool</h2><p class="hint">Add your own Telegram sources or the suggested catalog. This stores selectors only: it never checks invite links or joins channels. The Telegram account must already be a member.</p></div>
+    <div><h2>📡 Source pool</h2><p class="hint">Add Telegram sources or the suggested catalog. This stores selectors only: it never checks invite links or joins channels. The Telegram account must already be a member. For private invite links, a label is optional; if it is not an exact match for a joined dialog title, the worker warns and reads only already-joined eligible groups/channels. Known output channels are excluded. Public usernames are the most precise selectors.</p></div>
     <form method="post" action="{{ url_for('seed_default_sources') }}">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
       <button type="submit" class="btn btn-primary">Add suggested selectors</button>
@@ -78,8 +78,8 @@
   <form method="post" action="{{ url_for('add_deal_source') }}" class="source-add-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
     <input type="hidden" name="from_setup" value="1" />
-    <label><span>Source label</span><input name="name" maxlength="120" placeholder="Required for private invites; e.g. Shopsy Deals" /></label>
-    <label class="source-spec-field"><span>Telegram username, numeric ID, or t.me selector</span><input name="spec" maxlength="512" required placeholder="@channelname or https://t.me/channelname" /></label>
+    <label><span>Friendly label (optional)</span><input name="name" maxlength="120" placeholder="e.g. Priority Source — a label, not an invite identity" /></label>
+    <label class="source-spec-field"><span>Telegram username, numeric ID, or t.me selector</span><input name="spec" maxlength="512" required placeholder="@channelname or https://t.me/+private-invite" /></label>
     <label><span>Environment</span><select name="kind"><option value="production">Production</option><option value="dummy">Staging / test</option></select></label>
     <button type="submit" class="btn btn-primary">Save source</button>
   </form>

@@ -1,213 +1,169 @@
 # HANDOFF — Influencers-deals
 
-Read this first. It documents what exists where, how to get it into a new
-session, and the traps that already cost a session once.
+**Updated:** 2026-10-07 (UTC)
+
+**Session branch:** `arena/9056711b-influencers-deals`
+
+**Checkout base:** `c6fa901` — PR #7 merged to `main`
+
+Read this before deploying. This handoff describes the current checkout; older
+notes referring to `0bf913f`, an unmerged branch, or the earlier VM rollout are
+historical and are not the current source of truth.
 
 ---
 
-## 0. Reality check (do this before believing anything)
+## 1. Current state
 
-An earlier session's notes claimed a `patches/` folder and a `HANDOFF.md` were
-committed to `main`. **They never were.** A new session starting from `main`
-(`0bf913f`) gets none of the work below. Everything that matters therefore lives
-inside the repo — and this branch is pushed, so a fetch is enough.
+The merged `c6fa901` release already includes the commission-leak fixes,
+creator/central-account model, dashboard password policy, worker heartbeat,
+`/api/flow`, and the Easy Setup flow card. Do not replay those older patches on
+top of this release.
 
-| item | state |
-| --- | --- |
-| `origin/main` | `0bf913f` "Merge PR #6" — PRs #1–#6 all merged, none open |
-| PR #6 content | Password login, ⚡ Easy Setup, 💰 Money Radar, gunicorn `0.0.0.0:5000`, Telegram ingestion — **already on `main`, do not redo** |
-| branch `arena/a54d6a1d-influencers-deals` | commission fixes + password policy + account model + deal-flow board + the patch bundle |
-| tests | `main` = **234 passed**, this branch = **302 passed** (`--with-tests` replay: **287**, see §1) |
-| VM | commission fixes live; password policy + account model + deal-flow board still to apply |
+This follow-up fixes a separate ingestion bug: named private Telegram invite
+links such as a source labelled **“Priority Source”** could fail matching when
+the label was not the joined group's exact title. The old fallback only ran for
+unnamed invites, leaving `selected_sources = 0` and no messages to process.
 
-Fastest path into a new session:
+The fix in this branch:
+
+- treats a private invite name as a title hint, not as the invite's identity;
+- matches private invite hints only to an exact normalized title;
+- if a private invite hint is unmatched, logs one warning per configuration and
+  reads the eligible dialogs the Telegram account has already joined;
+- never checks an invite or joins a channel; known output channels and
+  unconfigured account-owned channels remain excluded;
+- explains the fallback in Setup Center live checks and in
+  `python -m influencer_hub.cli doctor --telegram-sources`;
+- shows the **live** selection on the deal-flow board: `/api/flow` (and the
+  Easy Setup card) name the dialogs the worker would read right now, with the
+  selection mode, counts and a capped dialog list. The probe is read-only,
+  cached ~45 s and can be skipped with `?live=0`;
+- records each source's joined-dialog title in `source_activity.source_name`
+  (auto-migrated), so per-source rows show the real group name, not just the
+  configured selector;
+- lets operators save a private invite without inventing a required label; and
+  uses `Private Telegram source` rather than displaying the invite hash as its
+  label;
+- adds an autouse pytest fixture that redirects every test to a new temporary
+  SQLite database, protecting the real operator DB.
+
+The requested `236 → 236` result is reproduced by a unit test with 236 eligible
+joined dialogs. The actual number on a VM depends on which eligible dialogs are
+joined and which known output/owned channels are excluded.
+
+**Important scope note:** when a private invite label does not match, fallback
+means all eligible joined groups/channels, not a Telegram join of the private
+invite and not only the three private links. Use public usernames or the exact
+joined-dialog title when you want a narrower, deterministic source set. The
+worker will then poll the selected dialogs and may post their deals according
+to the configured creator/channel filters and affiliate routes.
+
+No live Telegram account or VM was available to this checkout. The live
+fallback and warning are covered by fake-client tests; run the VM checks below
+before calling production delivery verified.
+
+---
+
+## 2. Test and audit commands
+
+From the repo root:
 
 ```bash
-git fetch origin arena/a54d6a1d-influencers-deals
-git checkout -b arena/a54d6a1d-influencers-deals origin/arena/a54d6a1d-influencers-deals
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest -q
+python3 -m influencer_hub.cli doctor --telegram-sources
 ```
 
-If the branch cannot be fetched, use `patches/` (upload it from the workspace);
-`patches/HANDOFF.md` is a byte-identical copy of this file, so the bundle is
-self-contained.
+The test suite on this revision is expected to report **320 passed**. The
+source doctor is read-only: it enumerates joined dialogs, checks the same
+selection rules as the worker, does not read message history, and does not
+check or join invites. It requires valid Telegram credentials/session on the
+VM. Its fallback warning is not a delivery guarantee.
+
+The dashboard has the same bounded check under **Setup Center → Launch
+readiness → Run live checks**. With the sample 3-source/236-dialog situation,
+expect 3 unmatched private invite labels, fallback mode, and up to 236 eligible
+joined dialogs selected (subject to output exclusions).
 
 ---
 
-## 1. Bootstrap a session
+## 3. Apply on the VM
 
-```bash
-python3 -m venv .venv && .venv/bin/pip install -q pytest aiohttp flask
-.venv/bin/python -m pytest -q      # 302 passed here, 234 on main
-```
-
-From a **clean `main`** checkout, either replay path reproduces this branch
-byte for byte:
-
-```bash
-# A. git patches (recommended for a fresh clone)
-git apply patches/commission-leaks.patch
-git apply patches/password-policy.patch
-git apply patches/tests.patch
-git apply patches/deal-flow.patch
-git apply patches/docs.patch
-
-# B. surgical appliers (for a VM that already has some of the work)
-python3 patches/apply-commission-fixes.py --with-tests
-python3 patches/apply-password-policy.py  --with-tests
-python3 patches/apply-account-model.py    --with-tests
-python3 patches/apply-deal-flow.py        --with-tests
-
-.venv/bin/python -m pytest -q      # expect 287 passed via B, 302 via A
-```
-
-(`302` is the count **on this branch**: it includes the 15 guards in
-`tests/test_patch_bundle.py`, which `--with-tests` intentionally does not
-install — hence `287` on path B. Path A installs them through `tests.patch` and
-`docs.patch` carries this file, so path A is complete. Path B installs code and
-tests only — the copy you are reading travels as `patches/HANDOFF.md`.)
-
-`patches/conftest.py` keeps pytest out of `patches/tests/`; `pytest.ini` is not
-needed. `tests/test_patch_bundle.py` fails if the bundle ever drifts from the
-tree.
-
----
-
-## 2. Commission leaks (done)
-
-| # | Leak | Fix |
-| --- | --- | --- |
-| 1 | Amazon **search / storefront** pages carrying OUR tag were deleted as "not OUR canonical" | attribution now follows the tag: `advanced_shortener.is_our_amazon_attribution()` keeps any Amazon URL with exactly one tag equal to ours (guard, Money Radar, pipeline "still earns?" check) |
-| 2 | Wrong EarnKaro body → HTTP 200 with no link → Flipkart/Myntra/Ajio/Nykaa/Croma/Shopsy posted free | payload is `{"deal": <clean url>, "convert_option": "convert_only"}` + Bearer token, in `convert_one` **and** the live verifier |
-| 3 | Another publisher's EarnKaro link accepted as ours | `link_router.publisher_ids_in_url()` reads `affExtParam2` **and** numeric `id=`; a mismatch falls back to the raw URL (direct results and after redirect resolution) |
-
-Verify on the VM (needs the configured token):
-
-```bash
-python3 -m influencer_hub.cli verify-earnkaro
-# expect: ok: True, publisher_id: '5478322', publisher_provenance_verified: True
-```
-
-Tests: `tests/test_amazon_tag_attribution.py` (new), `tests/test_earnkaro_live.py`,
-`tests/test_earnkaro_provenance.py`.
-
----
-
-## 3. Account model (done) — their Amazon id, our EarnKaro/HYPD
-
-`influencer_hub/accounts.py` is the single source of truth:
-
-| network | who earns | rule |
-| --- | --- | --- |
-| **Amazon** | the **creator** | `creator_amazon_tag()` = channel override → the creator's own tag → configured fallback; `amazon_tag_source()` reports `fallback` so profiles missing their own id are visible (`creators_missing_own_tag()`) |
-| **EarnKaro** | **us** | vault API token + publisher id (`central_earnkaro_api_key()`, `central_earnkaro_publisher_id()`) |
-| **Meesho / HYPD** | **us** | `hypd_store_for()` returns OUR store; with `central_network_accounts` on (default, `CENTRAL_NETWORK_ACCOUNTS=1`) a per-creator or per-channel `hypd_store_id` cannot move HYPD commission |
-| LehLah | the source | attribution preserved |
-
-Pipeline, Money Radar and both dashboard previews resolve the pair through this
-module, so what we post and what we audit are the same accounts. Easy Setup's
-routing table now shows a **"whose account earns"** section.
-
-Turn the central half off only if a creator must keep their own HYPD store:
-
-```bash
-python3 -c "from influencer_hub import db; db.init(); db.set_global_setting('central_network_accounts','0')"
-```
-
----
-
-## 4. Password policy (done) — first login + removals only
-
-* `REAUTH_REQUIRED_ENDPOINTS`: 28 → 3 (`delete_channel`, `delete_influencer`,
-  `delete_deal_source`).
-* `data-require-reauth` removed from the 20 add / save / toggle / poll /
-  Easy-Setup / money-switch forms; kept on the four removal tags.
-* Delete-Influencer lost its separate `prompt()` + hidden `admin_password` and
-  uses the shared unlock dialog. Copy says **Removals** everywhere.
-* The Vault tab keeps its own password gate (it stores credentials) — unchanged.
-* `tests/test_reauth_policy.py` pins the gated set, the tags, the copy and that
-  add/toggle/save never ask.
-
----
-
-## 5. Deal flow (done) — sources keep feeding posts, and you can see it
-
-The engine was already self-healing (`worker.py`: a source cursor advances only
-after a message is handled, the heartbeat is refreshed every loop, backoff is
-capped, the poll queue is separate). What was missing was *evidence*:
-
-* `db.source_activity` + `worker._record_source_activity()` record, per source:
-  deals seen, posts dispatched, failures and the failure reason. A cursor is
-  still held on a failed delivery — and now the retry is visible instead of
-  only being in logs.
-* `GET /api/flow` (read-only, no network) returns the worker heartbeat, per
-  source last-seen / stalled / never-delivered, per channel last post and
-  posted/failed counts, plus `hourly_loot_enabled` and `only_earning_deals` and
-  plain-language notes ("3 of 7 active sources have not delivered a deal yet").
-* Easy Setup ends with a **Deal flow — sources → posts** card; per-source and
-  per-channel tables sit in its Advanced section.
-* Tests: `tests/test_deal_flow.py` (13) — including "a failed delivery holds the
-  cursor and is counted", "a crash is a failure, not a lost cursor", "media-only
-  messages advance so they cannot block the queue" and "a stalled source is
-  reported as stalled".
-
-Two honest gaps in ingestion as it stands:
-
-1. **Hourly loot is off unless asked for**: `scheduler.py` runs the extra hourly
-   sweep only when the global setting `hourly_loot_enabled=1`. `/api/flow` now
-   says so when a day is idle.
-2. **Priority sources are hardcoded** in `puller.py` (`PRIORITY_SOURCE_SPECS`,
-   three invite links) and the puller reads only dialogs the Telegram account
-   has already joined — it never joins. A source that is not joined looks
-   "never delivered" on the flow card.
-
----
-
-## 6. Apply on the VM (what is still missing there)
+First back up the private `.env` and SQLite DB using the VM's normal backup
+procedure. Never copy secrets into Git or chat. From the deployed checkout:
 
 ```bash
 cd ~/Influencers-deals
-python3 patches/apply-password-policy.py --with-tests
-python3 patches/apply-account-model.py   --with-tests
-python3 patches/apply-deal-flow.py       --with-tests
+python3 patches/apply-private-source-fallback.py --check
+python3 patches/apply-private-source-fallback.py --dry-run
+python3 patches/apply-private-source-fallback.py --with-tests
+python3 -m influencer_hub.cli doctor --telegram-sources
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
-curl -s localhost:5000/api/flow | head -c 400
+journalctl -u influencer-deal-worker -n 100 --no-pager
 ```
 
-* The commission fixes are **already live** on the VM, so
-  `apply-commission-fixes.py` and the `.patch` files are not needed there.
-* Each applier stops with exit `1` on a second run and exit `2` (writing nothing)
-  if a file does not match the verified revision.
-* `--check` reports; `--dry-run` validates.
+The applier validates its bundled exact patch before writing. It aborts without
+writing if the VM checkout differs; inspect the diff rather than forcing it.
+If the code is already applied, `--check` exits successfully and a normal
+second run is refused. `--with-tests` refreshes the verified tests and installs
+the test-only DB-isolating conftest.
+
+After restart, use Setup Center's live check and `/api/flow`. Confirm that the
+worker is alive, source selection is non-zero, source `last_seen` advances, and
+ready destinations show posts or explain failures. Check worker logs for the
+one-time private-invite fallback warning. A warning is expected when the label
+is only a label. It is not evidence that a deal was successfully delivered.
+
+The worker can scan many joined dialogs sequentially. On a 236-dialog fallback,
+monitor Telegram flood-wait logs, worker poll duration, and channel posting
+filters. If only the three intended sources should be read, replace private
+invites with public usernames where possible, or save each exact joined group
+title as its label so fallback is not needed.
 
 ---
 
-## 7. Next decisions, in order
+## 4. Affiliate and delivery verification
 
-1. **EarnKaro / Affiliaters token vault — biggest earning gap.** Until a valid
-   token + publisher id sit in the Vault tab, every non-Amazon link earns
-   nothing. Confirm with `verify-earnkaro`.
-2. Then open **`/money`** and decide whether to turn on `ONLY_EARNING_DEALS`
-   (config default `False`) so no post is spent on a link that pays zero.
-3. **Give every creator their own Amazon tag** — check
-   `python3 -c "from influencer_hub import accounts; print(accounts.creators_missing_own_tag())"`.
-   Those profiles currently post Amazon under the fallback tag.
-4. VM hygiene: remove `dashboard/app.py.save`; decide on the legacy
-   `new-deals-bot-zip-main (1).zip` (1.2 MB) in the repo root.
+The source fix only addresses source selection. It does not repair missing
+Telegram authorization, inactive sources, no ready destination channels,
+creator/channel source filters, categories/schedules, disabled networks, or a
+missing affiliate credential. If sources are selected but posts still do not
+appear:
+
+1. Read the source fallback / selector result in Setup Center or the CLI doctor.
+2. Check worker state, source activity, destination readiness, and failures on
+   `/api/flow`.
+3. Check the worker log for pipeline filtering or delivery errors.
+4. Confirm the EarnKaro token/publisher ID in Vault and run
+   `python -m influencer_hub.cli verify-earnkaro` when eligible merchant links
+   must earn. Amazon attribution uses each creator's configured tag; HYPD and
+   EarnKaro use the configured central accounts per the existing account model.
+5. Use a deliberate test post to verify destination permissions; the read-only
+   source doctor does not send a post.
+
+No software can guarantee a “perfect” stream: Telegram group content, account
+permissions, external affiliate conversion, filtering, rate limits and network
+availability are outside the app's control. The code now makes the source
+selection failure visible and avoids silently returning zero for unmatched
+named private invites.
 
 ---
 
-## 8. Traps — do not relearn these
+## 5. Replayable work and safety
 
-* **Never** `git checkout -- <file>` on the VM: it reverts fixes that are not in
-  `origin/main`.
-* **`patch -U0` will not apply these bundles** — use `git apply` or the appliers.
-* **Keep artifacts inside the repo.** `/home/user/*.patch` and anything outside
-  the checkout are lost when the sandbox restarts.
-* `git pull` on a new session gives you `main` (`0bf913f`) — none of sections
-  2–4 unless you replay `patches/`.
-* Python is externally managed (PEP 668): `pip install` needs a venv.
-* Test counts in older notes (244 / 251) do not match this tree; the real
-  numbers are **234 on `main`**, **302 on this branch** and **287 via the
-  `--with-tests` applier path** (the bundle's own 15 guards are not installed
-  there).
+- `patches/private-source-fallback.patch` contains the follow-up patch for the
+  merged `c6fa901` release.
+- `patches/apply-private-source-fallback.py` supports `--check`, `--dry-run`, and
+  `--with-tests`; it uses `git apply --check` and never resets the checkout.
+- `patches/tests/` carries byte-identical test copies; `tests/test_patch_bundle.py`
+  checks copies, patch presence, and applier state.
+- The original commission/account/password/deal-flow work and its four
+  historical appliers remain documented in `patches/README.md`; they are
+  already in the current base release.
+- This checkout did not contain a reachable `6b6c1a8` commit despite the earlier
+  handoff message. The fix here was recreated on the session's required branch;
+  verify `git status` before committing or opening a PR.
+- Never run pytest against a provisioned/live DB: root `tests/conftest.py`
+  redirects every test to `tmp_path`.

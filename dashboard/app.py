@@ -1239,22 +1239,32 @@ def setup_live_checks():
                     "state": "connected",
                     "message": "Telegram account authorization succeeded. No message was sent.",
                 }
+                configured_sources = int(source_report.get("configured_sources", 0) or 0)
+                selected_sources = int(source_report.get("selected_sources", 0) or 0)
+                selection_mode = str(source_report.get("selection_mode") or "")
                 source_state = (
-                    "fallback" if source_report.get("selected_sources")
-                    and source_report.get("selection_mode") == "joined_dialog_fallback" else
-                    "matched" if source_report.get("selected_sources") else
-                    "no_matches" if source_report.get("configured_sources") else
-                    "no_sources"
+                    "no_sources" if not configured_sources else
+                    "fallback" if selected_sources and selection_mode == "joined_dialog_fallback" else
+                    "matched" if selected_sources else
+                    "no_matches"
                 )
                 details = (
-                    f"{source_report.get('selected_sources', 0)} joined dialog(s) selected from "
-                    f"{source_report.get('configured_sources', 0)} production selector(s); "
+                    f"{selected_sources} joined dialog(s) selected from "
+                    f"{configured_sources} production selector(s); "
                     f"{source_report.get('joined_group_channels', 0)} joined group/channel dialog(s) were visible."
                 )
-                if source_report.get("unresolved_private_invites"):
+                if selection_mode == "joined_dialog_fallback":
                     details += (
-                        " Some private invite selectors have no display name; the worker's safe fallback uses already-joined dialogs only."
+                        f" {source_report.get('unresolved_private_invites', 0)} private invite label(s) "
+                        "did not match an exact joined-dialog title; the worker falls back to the "
+                        "already-joined eligible dialog allowlist, with output channels excluded."
                     )
+                    if not selected_sources:
+                        details += " No eligible joined dialogs were found, so there is nothing to read."
+                elif source_state == "no_sources":
+                    details += " No production source selectors are configured; add a source to avoid broad joined-dialog ingestion."
+                elif source_state == "no_matches":
+                    details += " Join the configured source with the Telegram account, or verify its public username / exact private-dialog title."
                 details += " No invite was checked or joined, and no history was read."
                 checks["sources"] = {"state": source_state, "message": details}
         except asyncio.TimeoutError:
@@ -1323,13 +1333,15 @@ def add_deal_source():
     from_setup = request.form.get("from_setup") == "1"
     if kind not in {"production", "dummy"}:
         kind = "production"
-    if spec and len(spec) <= 512:
-        _, _, is_private_invite = puller._source_parts(spec)
-        if is_private_invite and not name:
-            return redirect(url_for("setup", source_error="private_name_required"))
-        if not name:
-            name = spec.split("/")[-1].replace("+", "").replace("@", "")
-        db.add_source(name[:120], spec, kind=kind)
+    if not spec or len(spec) > 512:
+        return redirect(url_for("setup", source_error="invalid_spec"))
+    _, _, is_private_invite = puller._source_parts(spec)
+    if not name:
+        # Invite hashes are secrets/identifiers, not useful display names. A
+        # generic label is fine because private invites are resolved only by
+        # an exact joined-dialog title; otherwise puller.py uses safe fallback.
+        name = "Private Telegram source" if is_private_invite else spec.split("/")[-1].replace("+", "").replace("@", "")
+    db.add_source(name[:120], spec, kind=kind)
     if from_setup:
         return redirect(url_for("setup", source_saved=1))
     if from_vault:
@@ -1740,12 +1752,76 @@ ROUTING_SAMPLES = (
 )
 
 
-def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dict:
+_LIVE_SELECTION_CACHE: dict = {"checked_at": 0.0, "report": None}
+LIVE_SELECTION_TTL_SECONDS = 45
+
+
+def _live_source_selection(ttl: int = LIVE_SELECTION_TTL_SECONDS) -> dict:
+    """Which joined dialogs would the worker read right now? Cached, read-only.
+
+    This calls the same inspect_source_selection() the Setup Center uses, so the
+    flow board can prove the *real* selection instead of only repeating the
+    configured selectors. It never joins or checks an invite, never reads
+    message history and never sends anything. Results are cached briefly so
+    opening the dashboard cannot hammer Telegram; when the check is unavailable
+    the board simply reports the last known state.
+    """
+    if not (config.TELEGRAM_API_ID and config.TELEGRAM_API_HASH):
+        return {"checked": False, "reason": "telegram_not_configured"}
+    if _running_under_pytest():
+        # Tests monkeypatch the inspector; a cached mock must not leak onward.
+        ttl = 0
+    now = time.time()
+    cached = _LIVE_SELECTION_CACHE.get("report")
+    if cached is not None and ttl > 0 and (
+        now - float(_LIVE_SELECTION_CACHE.get("checked_at") or 0)
+    ) < ttl:
+        return cached
+    try:
+        report = _run(asyncio.wait_for(
+            puller.inspect_source_selection(include_dialog_names=True), timeout=20
+        ))
+    except Exception as exc:
+        if cached is not None:
+            return {**cached, "stale": True, "error": type(exc).__name__}
+        return {"checked": False, "reason": "inspection_failed", "error": type(exc).__name__}
+
+    result = {
+        "checked": True,
+        "authorized": bool(report.get("authorized")),
+        "selection_mode": str(report.get("selection_mode") or ""),
+        "fallback_reason": str(report.get("fallback_reason") or ""),
+        "configured_sources": int(report.get("configured_sources", 0) or 0),
+        "matched_source_selectors": int(report.get("matched_source_selectors", 0) or 0),
+        "joined_group_channels": int(report.get("joined_group_channels", 0) or 0),
+        "eligible_joined_dialogs": int(report.get("eligible_joined_dialogs", 0) or 0),
+        "selected_sources": int(report.get("selected_sources", 0) or 0),
+        "unresolved_private_invites": int(report.get("unresolved_private_invites", 0) or 0),
+        "dialogs": list(report.get("selected_dialogs") or []),
+        "dialogs_truncated": int(report.get("selected_dialogs_truncated", 0) or 0),
+        "stale": False,
+        "error": "",
+    }
+    if ttl > 0:
+        _LIVE_SELECTION_CACHE.update({"checked_at": now, "report": result})
+    return result
+
+
+def _wants_live_probe() -> bool:
+    """The Telegram selection probe runs unless the caller opts out (?live=0)."""
+    value = str(request.args.get("live", "1")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _flow_snapshot(
+    stall_seconds: int = 3 * 3600, window_hours: int = 24, live_probe: bool = True
+) -> dict:
     """Is posting still flowing from the sources? One honest answer.
 
     Sources that have produced a deal before but nothing for `stall_seconds` are
     marked stalled, channels show their last successful post, and the worker's
-    heartbeat says whether anything is pulling at all. Pure reads; no network.
+    heartbeat says whether anything is pulling at all. Database reads are local;
+    the optional Telegram selection probe is read-only and briefly cached.
     """
     now = time.time()
     note_list: list[str] = []
@@ -1785,6 +1861,7 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
         delivered = bool(row)
         flow_sources.append({
             "spec": spec,
+            "source_name": str(row.get("source_name") or ""),
             "deals_seen": int(row.get("deals_seen") or 0),
             "posts_dispatched": int(row.get("posts_dispatched") or 0),
             "failures": int(row.get("failures") or 0),
@@ -1813,6 +1890,32 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
         note_list.append(
             f"{len(stalled)} source(s) delivered before but nothing for over "
             f"{stall_seconds // 3600}h."
+        )
+
+    live = _live_source_selection() if live_probe else {
+        "checked": False, "reason": "probe_disabled"
+    }
+    if live.get("checked"):
+        if live.get("selection_mode") == "joined_dialog_fallback":
+            note_list.append(
+                f"Live check: {live.get('unresolved_private_invites', 0)} private invite label(s) did "
+                f"not match an exact joined-dialog title, so the worker reads "
+                f"{live.get('selected_sources', 0)} eligible already-joined dialog(s) instead. "
+                "Invites are never checked or joined."
+            )
+        if not live.get("selected_sources"):
+            note_list.append(
+                "Live check: the worker currently has no joined dialog to read. Join the configured "
+                "source with the Telegram account or use its exact dialog title."
+            )
+        if live.get("stale"):
+            note_list.append(
+                f"Live check is showing the last good result ({live.get('error') or 'inspection error'}); "
+                "the Telegram selection probe could not run just now."
+            )
+    elif live.get("reason") == "inspection_failed":
+        note_list.append(
+            "Live Telegram selection probe failed; the configured selectors above are the last known state."
         )
 
     try:
@@ -1862,6 +1965,7 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
             "never_delivered": len(never),
             "rows": flow_sources,
         },
+        "live": live,
         "channels": {
             "ready": len(live_channels),
             "posted_in_window": posted_window,
@@ -2256,7 +2360,7 @@ def easy_setup():
         switches=ROUTING_SWITCHES,
         source_count=len(sources),
         active_source_count=active_sources,
-        flow=_flow_snapshot(),
+        flow=_flow_snapshot(live_probe=_wants_live_probe()),
     )
 
 
@@ -2346,7 +2450,9 @@ def api_flow():
         window_hours = max(1, min(168, int(request.args.get("window_hours", 24))))
     except (TypeError, ValueError):
         window_hours = 24
-    return jsonify(_flow_snapshot(stall_seconds=stall_seconds, window_hours=window_hours))
+    return jsonify(_flow_snapshot(
+        stall_seconds=stall_seconds, window_hours=window_hours, live_probe=_wants_live_probe(),
+    ))
 
 
 @app.route("/api/routing-preview")

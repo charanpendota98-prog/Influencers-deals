@@ -18,9 +18,11 @@ import asyncio
 import json
 import pathlib
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
+import dashboard.app as dashboard_module
 from dashboard.app import app
 from influencer_hub import config, db, worker
 
@@ -262,3 +264,87 @@ def test_flow_api_is_read_only_and_json(hub):
     assert response.status_code == 200
     assert response.headers["Content-Type"].startswith("application/json")
     assert json.loads(response.get_data(as_text=True))["ok"] is True
+
+
+# --------------------------------------------------------------------------
+# live source visibility: prove WHICH dialogs are actually read
+# --------------------------------------------------------------------------
+def test_flow_api_reports_the_live_telegram_selection(hub, monkeypatch):
+    db.add_source("Priority Source", "https://t.me/+privatehash")
+    report = {
+        "ok": True,
+        "authorized": True,
+        "configured_sources": 3,
+        "matched_source_selectors": 0,
+        "joined_group_channels": 236,
+        "eligible_joined_dialogs": 236,
+        "selected_sources": 236,
+        "unresolved_private_invites": 3,
+        "selection_mode": "joined_dialog_fallback",
+        "fallback_reason": "private_invite_label_unmatched",
+        "selected_dialogs": [{"name": "Loot Group One", "id": "42", "username": "loot_one", "kind": "group"}],
+        "selected_dialogs_truncated": 235,
+    }
+    monkeypatch.setattr(config, "TELEGRAM_API_HASH", "test-api-hash")
+    monkeypatch.setattr(
+        dashboard_module.puller, "inspect_source_selection",
+        AsyncMock(return_value=report),
+    )
+    monkeypatch.setattr(dashboard_module, "_run", lambda coro: asyncio.run(coro))
+
+    flow = hub.get("/api/flow").get_json()
+
+    live = flow["live"]
+    assert live["checked"] is True
+    assert live["selection_mode"] == "joined_dialog_fallback"
+    assert live["selected_sources"] == 236
+    assert live["dialogs"][0]["name"] == "Loot Group One"
+    assert live["dialogs_truncated"] == 235
+    assert any("private invite label(s)" in note for note in flow["notes"])
+    assert any("Live check" in note for note in flow["notes"])
+
+
+def test_flow_api_pins_the_live_selection_when_nothing_is_readable(hub, monkeypatch):
+    db.add_source("Missing source", "@not_joined")
+    monkeypatch.setattr(config, "TELEGRAM_API_HASH", "test-api-hash")
+    monkeypatch.setattr(
+        dashboard_module.puller, "inspect_source_selection",
+        AsyncMock(return_value={
+            "ok": False,
+            "authorized": True,
+            "configured_sources": 1,
+            "selected_sources": 0,
+            "selection_mode": "configured_selectors",
+        }),
+    )
+    monkeypatch.setattr(dashboard_module, "_run", lambda coro: asyncio.run(coro))
+
+    flow = hub.get("/api/flow").get_json()
+
+    assert flow["live"]["selected_sources"] == 0
+    assert any("no joined dialog to read" in note for note in flow["notes"])
+
+
+def test_flow_api_skips_the_live_probe_on_request(hub, monkeypatch):
+    def explode(*_args, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("live probe must be skipped with ?live=0")
+
+    monkeypatch.setattr(config, "TELEGRAM_API_HASH", "test-api-hash")
+    monkeypatch.setattr(dashboard_module.puller, "inspect_source_selection", explode)
+
+    flow = hub.get("/api/flow?live=0").get_json()
+
+    assert flow["live"] == {"checked": False, "reason": "probe_disabled"}
+
+
+def test_flow_card_names_the_dialog_a_source_actually_read(hub):
+    db.add_source("Priority Source", "https://t.me/+privatehash")
+    db.record_source_activity(
+        "https://t.me/+privatehash", source_name="Real Loot Group", message_id=9, posted=1,
+    )
+    flow = hub.get("/api/flow?live=0").get_json()
+    row = flow["sources"]["rows"][0]
+
+    assert row["source_name"] == "Real Loot Group"
+    page = hub.get("/easy-setup?live=0").get_data(as_text=True)
+    assert "Real Loot Group" in page

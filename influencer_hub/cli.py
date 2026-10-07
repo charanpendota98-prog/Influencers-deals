@@ -315,9 +315,45 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
         db_ok = False
     checks.append(("Database OK", db_ok))
 
+    source_note = ""
+    if getattr(args, "telegram_sources", False):
+        from . import puller
+
+        try:
+            timeout = max(1, int(getattr(args, "timeout", 30)))
+            report = asyncio.run(asyncio.wait_for(puller.inspect_source_selection(), timeout=timeout))
+            source_ok = bool(report.get("ok"))
+            checks.append((
+                "Telegram source selection "
+                f"({report.get('selected_sources', 0)} selected / "
+                f"{report.get('configured_sources', 0)} configured)",
+                source_ok,
+            ))
+            if report.get("selection_mode") == "joined_dialog_fallback":
+                source_note = (
+                    f"{report.get('unresolved_private_invites', 0)} private invite label(s) did not match "
+                    "an exact joined-dialog title. The worker is using eligible already-joined dialogs "
+                    "only; it did not check or join invites."
+                )
+            elif not report.get("configured_sources"):
+                source_note = "No production source selectors are configured."
+            elif not report.get("selected_sources"):
+                source_note = (
+                    "No joined dialogs matched. Join the sources with this Telegram account and "
+                    "verify public usernames or exact private-dialog titles."
+                )
+        except asyncio.TimeoutError:
+            checks.append(("Telegram live source selection finished before timeout", False))
+            source_note = "Telegram source inspection timed out; check the session, network and worker logs."
+        except Exception as exc:
+            checks.append((f"Telegram live source selection ({type(exc).__name__})", False))
+            source_note = "Telegram source inspection failed; check API credentials and session authorization."
+
     print("=== Influencer Hub configuration checks ===")
     for name, ok in checks:
         print(f"  [{'OK' if ok else 'XX'}] {name}")
+    if source_note:
+        print(f"  [WARN] {source_note}")
     all_ok = all(o for _, o in checks)
     verdict = (
         "selected checks passed (this is not an end-to-end delivery test)"
@@ -406,6 +442,12 @@ def build_parser() -> argparse.ArgumentParser:
     amz.set_defaults(func=_cmd_amazon_items)
 
     d = sub.add_parser("doctor", help="check selected local configuration and service health")
+    d.add_argument(
+        "--telegram-sources",
+        action="store_true",
+        help="also run a read-only Telegram source-selection check; never checks invites or reads history",
+    )
+    d.add_argument("--timeout", type=int, default=30, help="live Telegram source-check timeout in seconds")
     d.set_defaults(func=_cmd_doctor)
 
     sub.add_parser("status", help="overview of everything").set_defaults(func=_cmd_status)

@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS worker_offsets (
 -- flowing?" answerable per source instead of guessing from logs.
 CREATE TABLE IF NOT EXISTS source_activity (
     source_key        TEXT PRIMARY KEY,
+    source_name       TEXT NOT NULL DEFAULT '',
     last_seen_at      REAL NOT NULL DEFAULT 0,
     last_message_at   REAL NOT NULL DEFAULT 0,
     last_message_id   INTEGER NOT NULL DEFAULT 0,
@@ -308,6 +309,14 @@ def migrate() -> None:
         if "deal_text" not in posts_cols:
             try:
                 con.execute("ALTER TABLE posts ADD COLUMN deal_text TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+
+        activity_cols = {r["name"] for r in con.execute("PRAGMA table_info(source_activity)")}
+        if activity_cols and "source_name" not in activity_cols:
+            try:
+                con.execute("ALTER TABLE source_activity ADD COLUMN source_name TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
@@ -1306,6 +1315,7 @@ def set_worker_offset(source_key: str, last_message_id: int) -> None:
 def record_source_activity(
     source_key: str,
     *,
+    source_name: str = "",
     message_id: int = 0,
     posted: int = 0,
     failed: int = 0,
@@ -1325,10 +1335,12 @@ def record_source_activity(
     con = _connect()
     try:
         con.execute(
-            "INSERT INTO source_activity (source_key, last_seen_at, last_message_at, "
+            "INSERT INTO source_activity (source_key, source_name, last_seen_at, last_message_at, "
             "last_message_id, deals_seen, posts_dispatched, failures, last_error, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(source_key) DO UPDATE SET "
+            "source_name=CASE WHEN excluded.source_name <> '' THEN excluded.source_name "
+            "ELSE source_activity.source_name END, "
             "last_seen_at=excluded.last_seen_at, "
             "last_message_at=CASE WHEN excluded.last_message_id > source_activity.last_message_id "
             "THEN excluded.last_message_at ELSE source_activity.last_message_at END, "
@@ -1339,8 +1351,8 @@ def record_source_activity(
             "last_error=CASE WHEN excluded.last_error <> '' THEN excluded.last_error "
             "ELSE source_activity.last_error END, "
             "updated_at=excluded.updated_at",
-            (key, stamp, stamp if message_id else 0.0, message_id, 1,
-             int(posted or 0), int(failed or 0), str(error or "")[:300], _now()),
+            (key, str(source_name or "").strip()[:200], stamp, stamp if message_id else 0.0,
+             message_id, 1, int(posted or 0), int(failed or 0), str(error or "")[:300], _now()),
         )
         con.commit()
     finally:
@@ -1352,7 +1364,7 @@ def list_source_activity() -> list[dict]:
     con = _connect()
     try:
         rows = con.execute(
-            "SELECT source_key, last_seen_at, last_message_at, last_message_id, "
+            "SELECT source_key, source_name, last_seen_at, last_message_at, last_message_id, "
             "deals_seen, posts_dispatched, failures, last_error, updated_at "
             "FROM source_activity ORDER BY last_seen_at ASC"
         ).fetchall()

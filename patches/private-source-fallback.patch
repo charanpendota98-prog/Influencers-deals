@@ -1,0 +1,2003 @@
+diff --git a/HANDOFF.md b/HANDOFF.md
+index fb4c2cc..43668bd 100644
+--- a/HANDOFF.md
++++ b/HANDOFF.md
+@@ -1,213 +1,169 @@
+ # HANDOFF — Influencers-deals
+ 
+-Read this first. It documents what exists where, how to get it into a new
+-session, and the traps that already cost a session once.
++**Updated:** 2026-10-07 (UTC)
+ 
+----
+-
+-## 0. Reality check (do this before believing anything)
+-
+-An earlier session's notes claimed a `patches/` folder and a `HANDOFF.md` were
+-committed to `main`. **They never were.** A new session starting from `main`
+-(`0bf913f`) gets none of the work below. Everything that matters therefore lives
+-inside the repo — and this branch is pushed, so a fetch is enough.
++**Session branch:** `arena/9056711b-influencers-deals`
+ 
+-| item | state |
+-| --- | --- |
+-| `origin/main` | `0bf913f` "Merge PR #6" — PRs #1–#6 all merged, none open |
+-| PR #6 content | Password login, ⚡ Easy Setup, 💰 Money Radar, gunicorn `0.0.0.0:5000`, Telegram ingestion — **already on `main`, do not redo** |
+-| branch `arena/a54d6a1d-influencers-deals` | commission fixes + password policy + account model + deal-flow board + the patch bundle |
+-| tests | `main` = **234 passed**, this branch = **302 passed** (`--with-tests` replay: **287**, see §1) |
+-| VM | commission fixes live; password policy + account model + deal-flow board still to apply |
++**Checkout base:** `c6fa901` — PR #7 merged to `main`
+ 
+-Fastest path into a new session:
+-
+-```bash
+-git fetch origin arena/a54d6a1d-influencers-deals
+-git checkout -b arena/a54d6a1d-influencers-deals origin/arena/a54d6a1d-influencers-deals
+-```
+-
+-If the branch cannot be fetched, use `patches/` (upload it from the workspace);
+-`patches/HANDOFF.md` is a byte-identical copy of this file, so the bundle is
+-self-contained.
++Read this before deploying. This handoff describes the current checkout; older
++notes referring to `0bf913f`, an unmerged branch, or the earlier VM rollout are
++historical and are not the current source of truth.
+ 
+ ---
+ 
+-## 1. Bootstrap a session
+-
+-```bash
+-python3 -m venv .venv && .venv/bin/pip install -q pytest aiohttp flask
+-.venv/bin/python -m pytest -q      # 302 passed here, 234 on main
+-```
+-
+-From a **clean `main`** checkout, either replay path reproduces this branch
+-byte for byte:
+-
+-```bash
+-# A. git patches (recommended for a fresh clone)
+-git apply patches/commission-leaks.patch
+-git apply patches/password-policy.patch
+-git apply patches/tests.patch
+-git apply patches/deal-flow.patch
+-git apply patches/docs.patch
+-
+-# B. surgical appliers (for a VM that already has some of the work)
+-python3 patches/apply-commission-fixes.py --with-tests
+-python3 patches/apply-password-policy.py  --with-tests
+-python3 patches/apply-account-model.py    --with-tests
+-python3 patches/apply-deal-flow.py        --with-tests
+-
+-.venv/bin/python -m pytest -q      # expect 287 passed via B, 302 via A
+-```
+-
+-(`302` is the count **on this branch**: it includes the 15 guards in
+-`tests/test_patch_bundle.py`, which `--with-tests` intentionally does not
+-install — hence `287` on path B. Path A installs them through `tests.patch` and
+-`docs.patch` carries this file, so path A is complete. Path B installs code and
+-tests only — the copy you are reading travels as `patches/HANDOFF.md`.)
+-
+-`patches/conftest.py` keeps pytest out of `patches/tests/`; `pytest.ini` is not
+-needed. `tests/test_patch_bundle.py` fails if the bundle ever drifts from the
+-tree.
++## 1. Current state
++
++The merged `c6fa901` release already includes the commission-leak fixes,
++creator/central-account model, dashboard password policy, worker heartbeat,
++`/api/flow`, and the Easy Setup flow card. Do not replay those older patches on
++top of this release.
++
++This follow-up fixes a separate ingestion bug: named private Telegram invite
++links such as a source labelled **“Priority Source”** could fail matching when
++the label was not the joined group's exact title. The old fallback only ran for
++unnamed invites, leaving `selected_sources = 0` and no messages to process.
++
++The fix in this branch:
++
++- treats a private invite name as a title hint, not as the invite's identity;
++- matches private invite hints only to an exact normalized title;
++- if a private invite hint is unmatched, logs one warning per configuration and
++  reads the eligible dialogs the Telegram account has already joined;
++- never checks an invite or joins a channel; known output channels and
++  unconfigured account-owned channels remain excluded;
++- explains the fallback in Setup Center live checks and in
++  `python -m influencer_hub.cli doctor --telegram-sources`;
++- shows the **live** selection on the deal-flow board: `/api/flow` (and the
++  Easy Setup card) name the dialogs the worker would read right now, with the
++  selection mode, counts and a capped dialog list. The probe is read-only,
++  cached ~45 s and can be skipped with `?live=0`;
++- records each source's joined-dialog title in `source_activity.source_name`
++  (auto-migrated), so per-source rows show the real group name, not just the
++  configured selector;
++- lets operators save a private invite without inventing a required label; and
++  uses `Private Telegram source` rather than displaying the invite hash as its
++  label;
++- adds an autouse pytest fixture that redirects every test to a new temporary
++  SQLite database, protecting the real operator DB.
++
++The requested `236 → 236` result is reproduced by a unit test with 236 eligible
++joined dialogs. The actual number on a VM depends on which eligible dialogs are
++joined and which known output/owned channels are excluded.
++
++**Important scope note:** when a private invite label does not match, fallback
++means all eligible joined groups/channels, not a Telegram join of the private
++invite and not only the three private links. Use public usernames or the exact
++joined-dialog title when you want a narrower, deterministic source set. The
++worker will then poll the selected dialogs and may post their deals according
++to the configured creator/channel filters and affiliate routes.
++
++No live Telegram account or VM was available to this checkout. The live
++fallback and warning are covered by fake-client tests; run the VM checks below
++before calling production delivery verified.
+ 
+ ---
+ 
+-## 2. Commission leaks (done)
++## 2. Test and audit commands
+ 
+-| # | Leak | Fix |
+-| --- | --- | --- |
+-| 1 | Amazon **search / storefront** pages carrying OUR tag were deleted as "not OUR canonical" | attribution now follows the tag: `advanced_shortener.is_our_amazon_attribution()` keeps any Amazon URL with exactly one tag equal to ours (guard, Money Radar, pipeline "still earns?" check) |
+-| 2 | Wrong EarnKaro body → HTTP 200 with no link → Flipkart/Myntra/Ajio/Nykaa/Croma/Shopsy posted free | payload is `{"deal": <clean url>, "convert_option": "convert_only"}` + Bearer token, in `convert_one` **and** the live verifier |
+-| 3 | Another publisher's EarnKaro link accepted as ours | `link_router.publisher_ids_in_url()` reads `affExtParam2` **and** numeric `id=`; a mismatch falls back to the raw URL (direct results and after redirect resolution) |
+-
+-Verify on the VM (needs the configured token):
++From the repo root:
+ 
+ ```bash
+-python3 -m influencer_hub.cli verify-earnkaro
+-# expect: ok: True, publisher_id: '5478322', publisher_provenance_verified: True
++python3 -m venv .venv
++.venv/bin/pip install -r requirements.txt
++.venv/bin/python -m pytest -q
++python3 -m influencer_hub.cli doctor --telegram-sources
+ ```
+ 
+-Tests: `tests/test_amazon_tag_attribution.py` (new), `tests/test_earnkaro_live.py`,
+-`tests/test_earnkaro_provenance.py`.
++The test suite on this revision is expected to report **320 passed**. The
++source doctor is read-only: it enumerates joined dialogs, checks the same
++selection rules as the worker, does not read message history, and does not
++check or join invites. It requires valid Telegram credentials/session on the
++VM. Its fallback warning is not a delivery guarantee.
+ 
+----
+-
+-## 3. Account model (done) — their Amazon id, our EarnKaro/HYPD
+-
+-`influencer_hub/accounts.py` is the single source of truth:
+-
+-| network | who earns | rule |
+-| --- | --- | --- |
+-| **Amazon** | the **creator** | `creator_amazon_tag()` = channel override → the creator's own tag → configured fallback; `amazon_tag_source()` reports `fallback` so profiles missing their own id are visible (`creators_missing_own_tag()`) |
+-| **EarnKaro** | **us** | vault API token + publisher id (`central_earnkaro_api_key()`, `central_earnkaro_publisher_id()`) |
+-| **Meesho / HYPD** | **us** | `hypd_store_for()` returns OUR store; with `central_network_accounts` on (default, `CENTRAL_NETWORK_ACCOUNTS=1`) a per-creator or per-channel `hypd_store_id` cannot move HYPD commission |
+-| LehLah | the source | attribution preserved |
+-
+-Pipeline, Money Radar and both dashboard previews resolve the pair through this
+-module, so what we post and what we audit are the same accounts. Easy Setup's
+-routing table now shows a **"whose account earns"** section.
+-
+-Turn the central half off only if a creator must keep their own HYPD store:
+-
+-```bash
+-python3 -c "from influencer_hub import db; db.init(); db.set_global_setting('central_network_accounts','0')"
+-```
++The dashboard has the same bounded check under **Setup Center → Launch
++readiness → Run live checks**. With the sample 3-source/236-dialog situation,
++expect 3 unmatched private invite labels, fallback mode, and up to 236 eligible
++joined dialogs selected (subject to output exclusions).
+ 
+ ---
+ 
+-## 4. Password policy (done) — first login + removals only
++## 3. Apply on the VM
+ 
+-* `REAUTH_REQUIRED_ENDPOINTS`: 28 → 3 (`delete_channel`, `delete_influencer`,
+-  `delete_deal_source`).
+-* `data-require-reauth` removed from the 20 add / save / toggle / poll /
+-  Easy-Setup / money-switch forms; kept on the four removal tags.
+-* Delete-Influencer lost its separate `prompt()` + hidden `admin_password` and
+-  uses the shared unlock dialog. Copy says **Removals** everywhere.
+-* The Vault tab keeps its own password gate (it stores credentials) — unchanged.
+-* `tests/test_reauth_policy.py` pins the gated set, the tags, the copy and that
+-  add/toggle/save never ask.
+-
+----
+-
+-## 5. Deal flow (done) — sources keep feeding posts, and you can see it
+-
+-The engine was already self-healing (`worker.py`: a source cursor advances only
+-after a message is handled, the heartbeat is refreshed every loop, backoff is
+-capped, the poll queue is separate). What was missing was *evidence*:
+-
+-* `db.source_activity` + `worker._record_source_activity()` record, per source:
+-  deals seen, posts dispatched, failures and the failure reason. A cursor is
+-  still held on a failed delivery — and now the retry is visible instead of
+-  only being in logs.
+-* `GET /api/flow` (read-only, no network) returns the worker heartbeat, per
+-  source last-seen / stalled / never-delivered, per channel last post and
+-  posted/failed counts, plus `hourly_loot_enabled` and `only_earning_deals` and
+-  plain-language notes ("3 of 7 active sources have not delivered a deal yet").
+-* Easy Setup ends with a **Deal flow — sources → posts** card; per-source and
+-  per-channel tables sit in its Advanced section.
+-* Tests: `tests/test_deal_flow.py` (13) — including "a failed delivery holds the
+-  cursor and is counted", "a crash is a failure, not a lost cursor", "media-only
+-  messages advance so they cannot block the queue" and "a stalled source is
+-  reported as stalled".
+-
+-Two honest gaps in ingestion as it stands:
+-
+-1. **Hourly loot is off unless asked for**: `scheduler.py` runs the extra hourly
+-   sweep only when the global setting `hourly_loot_enabled=1`. `/api/flow` now
+-   says so when a day is idle.
+-2. **Priority sources are hardcoded** in `puller.py` (`PRIORITY_SOURCE_SPECS`,
+-   three invite links) and the puller reads only dialogs the Telegram account
+-   has already joined — it never joins. A source that is not joined looks
+-   "never delivered" on the flow card.
+-
+----
+-
+-## 6. Apply on the VM (what is still missing there)
++First back up the private `.env` and SQLite DB using the VM's normal backup
++procedure. Never copy secrets into Git or chat. From the deployed checkout:
+ 
+ ```bash
+ cd ~/Influencers-deals
+-python3 patches/apply-password-policy.py --with-tests
+-python3 patches/apply-account-model.py   --with-tests
+-python3 patches/apply-deal-flow.py       --with-tests
++python3 patches/apply-private-source-fallback.py --check
++python3 patches/apply-private-source-fallback.py --dry-run
++python3 patches/apply-private-source-fallback.py --with-tests
++python3 -m influencer_hub.cli doctor --telegram-sources
+ sudo systemctl restart influencer-deal-worker influencer-dashboard
+ systemctl is-active influencer-deal-worker influencer-dashboard
+-curl -s localhost:5000/api/flow | head -c 400
++journalctl -u influencer-deal-worker -n 100 --no-pager
+ ```
+ 
+-* The commission fixes are **already live** on the VM, so
+-  `apply-commission-fixes.py` and the `.patch` files are not needed there.
+-* Each applier stops with exit `1` on a second run and exit `2` (writing nothing)
+-  if a file does not match the verified revision.
+-* `--check` reports; `--dry-run` validates.
++The applier validates its bundled exact patch before writing. It aborts without
++writing if the VM checkout differs; inspect the diff rather than forcing it.
++If the code is already applied, `--check` exits successfully and a normal
++second run is refused. `--with-tests` refreshes the verified tests and installs
++the test-only DB-isolating conftest.
+ 
+----
++After restart, use Setup Center's live check and `/api/flow`. Confirm that the
++worker is alive, source selection is non-zero, source `last_seen` advances, and
++ready destinations show posts or explain failures. Check worker logs for the
++one-time private-invite fallback warning. A warning is expected when the label
++is only a label. It is not evidence that a deal was successfully delivered.
+ 
+-## 7. Next decisions, in order
++The worker can scan many joined dialogs sequentially. On a 236-dialog fallback,
++monitor Telegram flood-wait logs, worker poll duration, and channel posting
++filters. If only the three intended sources should be read, replace private
++invites with public usernames where possible, or save each exact joined group
++title as its label so fallback is not needed.
++
++---
+ 
+-1. **EarnKaro / Affiliaters token vault — biggest earning gap.** Until a valid
+-   token + publisher id sit in the Vault tab, every non-Amazon link earns
+-   nothing. Confirm with `verify-earnkaro`.
+-2. Then open **`/money`** and decide whether to turn on `ONLY_EARNING_DEALS`
+-   (config default `False`) so no post is spent on a link that pays zero.
+-3. **Give every creator their own Amazon tag** — check
+-   `python3 -c "from influencer_hub import accounts; print(accounts.creators_missing_own_tag())"`.
+-   Those profiles currently post Amazon under the fallback tag.
+-4. VM hygiene: remove `dashboard/app.py.save`; decide on the legacy
+-   `new-deals-bot-zip-main (1).zip` (1.2 MB) in the repo root.
++## 4. Affiliate and delivery verification
++
++The source fix only addresses source selection. It does not repair missing
++Telegram authorization, inactive sources, no ready destination channels,
++creator/channel source filters, categories/schedules, disabled networks, or a
++missing affiliate credential. If sources are selected but posts still do not
++appear:
++
++1. Read the source fallback / selector result in Setup Center or the CLI doctor.
++2. Check worker state, source activity, destination readiness, and failures on
++   `/api/flow`.
++3. Check the worker log for pipeline filtering or delivery errors.
++4. Confirm the EarnKaro token/publisher ID in Vault and run
++   `python -m influencer_hub.cli verify-earnkaro` when eligible merchant links
++   must earn. Amazon attribution uses each creator's configured tag; HYPD and
++   EarnKaro use the configured central accounts per the existing account model.
++5. Use a deliberate test post to verify destination permissions; the read-only
++   source doctor does not send a post.
++
++No software can guarantee a “perfect” stream: Telegram group content, account
++permissions, external affiliate conversion, filtering, rate limits and network
++availability are outside the app's control. The code now makes the source
++selection failure visible and avoids silently returning zero for unmatched
++named private invites.
+ 
+ ---
+ 
+-## 8. Traps — do not relearn these
+-
+-* **Never** `git checkout -- <file>` on the VM: it reverts fixes that are not in
+-  `origin/main`.
+-* **`patch -U0` will not apply these bundles** — use `git apply` or the appliers.
+-* **Keep artifacts inside the repo.** `/home/user/*.patch` and anything outside
+-  the checkout are lost when the sandbox restarts.
+-* `git pull` on a new session gives you `main` (`0bf913f`) — none of sections
+-  2–4 unless you replay `patches/`.
+-* Python is externally managed (PEP 668): `pip install` needs a venv.
+-* Test counts in older notes (244 / 251) do not match this tree; the real
+-  numbers are **234 on `main`**, **302 on this branch** and **287 via the
+-  `--with-tests` applier path** (the bundle's own 15 guards are not installed
+-  there).
++## 5. Replayable work and safety
++
++- `patches/private-source-fallback.patch` contains the follow-up patch for the
++  merged `c6fa901` release.
++- `patches/apply-private-source-fallback.py` supports `--check`, `--dry-run`, and
++  `--with-tests`; it uses `git apply --check` and never resets the checkout.
++- `patches/tests/` carries byte-identical test copies; `tests/test_patch_bundle.py`
++  checks copies, patch presence, and applier state.
++- The original commission/account/password/deal-flow work and its four
++  historical appliers remain documented in `patches/README.md`; they are
++  already in the current base release.
++- This checkout did not contain a reachable `6b6c1a8` commit despite the earlier
++  handoff message. The fix here was recreated on the session's required branch;
++  verify `git status` before committing or opening a PR.
++- Never run pytest against a provisioned/live DB: root `tests/conftest.py`
++  redirects every test to `tmp_path`.
+diff --git a/README.md b/README.md
+index 30d05ed..1c0662f 100644
+--- a/README.md
++++ b/README.md
+@@ -179,7 +179,14 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
+   it never sends `CheckChatInviteRequest` or joins invite URLs. Use
+   `TELEGRAM_OUTPUT_CHANNELS` and registered Telegram destination channels to
+   keep output/ops dialogs out of source ingestion. Public source selectors match
+-  by username; private invite hashes are never resolved.
++  by username/ID. A private invite hash is never resolved; its optional label
++  only matches an exact normalized joined-dialog title. If a private label does
++  not match, the worker logs a warning and falls back to eligible already-joined
++  dialogs (output dialogs and unconfigured account-owned channels stay excluded).
++  The live check in Setup Center shows this fallback; run
++  `python -m influencer_hub.cli doctor --telegram-sources` on the VM for the same
++  read-only selection audit. To keep ingestion narrow, add public usernames or
++  use the exact title of the joined private dialog as its source label.
+ - `deploy/start_services.sh` starts supervised `deal-worker`, WhatsApp hub,
+   dashboard, and VM watcher processes. Each service writes to `logs/` and is
+   restarted by its launcher if it exits; `worker.py` additionally retries
+diff --git a/dashboard/app.py b/dashboard/app.py
+index c0f7364..3d00119 100644
+--- a/dashboard/app.py
++++ b/dashboard/app.py
+@@ -1239,22 +1239,32 @@ def setup_live_checks():
+                     "state": "connected",
+                     "message": "Telegram account authorization succeeded. No message was sent.",
+                 }
++                configured_sources = int(source_report.get("configured_sources", 0) or 0)
++                selected_sources = int(source_report.get("selected_sources", 0) or 0)
++                selection_mode = str(source_report.get("selection_mode") or "")
+                 source_state = (
+-                    "fallback" if source_report.get("selected_sources")
+-                    and source_report.get("selection_mode") == "joined_dialog_fallback" else
+-                    "matched" if source_report.get("selected_sources") else
+-                    "no_matches" if source_report.get("configured_sources") else
+-                    "no_sources"
++                    "no_sources" if not configured_sources else
++                    "fallback" if selected_sources and selection_mode == "joined_dialog_fallback" else
++                    "matched" if selected_sources else
++                    "no_matches"
+                 )
+                 details = (
+-                    f"{source_report.get('selected_sources', 0)} joined dialog(s) selected from "
+-                    f"{source_report.get('configured_sources', 0)} production selector(s); "
++                    f"{selected_sources} joined dialog(s) selected from "
++                    f"{configured_sources} production selector(s); "
+                     f"{source_report.get('joined_group_channels', 0)} joined group/channel dialog(s) were visible."
+                 )
+-                if source_report.get("unresolved_private_invites"):
++                if selection_mode == "joined_dialog_fallback":
+                     details += (
+-                        " Some private invite selectors have no display name; the worker's safe fallback uses already-joined dialogs only."
++                        f" {source_report.get('unresolved_private_invites', 0)} private invite label(s) "
++                        "did not match an exact joined-dialog title; the worker falls back to the "
++                        "already-joined eligible dialog allowlist, with output channels excluded."
+                     )
++                    if not selected_sources:
++                        details += " No eligible joined dialogs were found, so there is nothing to read."
++                elif source_state == "no_sources":
++                    details += " No production source selectors are configured; add a source to avoid broad joined-dialog ingestion."
++                elif source_state == "no_matches":
++                    details += " Join the configured source with the Telegram account, or verify its public username / exact private-dialog title."
+                 details += " No invite was checked or joined, and no history was read."
+                 checks["sources"] = {"state": source_state, "message": details}
+         except asyncio.TimeoutError:
+@@ -1323,13 +1333,15 @@ def add_deal_source():
+     from_setup = request.form.get("from_setup") == "1"
+     if kind not in {"production", "dummy"}:
+         kind = "production"
+-    if spec and len(spec) <= 512:
+-        _, _, is_private_invite = puller._source_parts(spec)
+-        if is_private_invite and not name:
+-            return redirect(url_for("setup", source_error="private_name_required"))
+-        if not name:
+-            name = spec.split("/")[-1].replace("+", "").replace("@", "")
+-        db.add_source(name[:120], spec, kind=kind)
++    if not spec or len(spec) > 512:
++        return redirect(url_for("setup", source_error="invalid_spec"))
++    _, _, is_private_invite = puller._source_parts(spec)
++    if not name:
++        # Invite hashes are secrets/identifiers, not useful display names. A
++        # generic label is fine because private invites are resolved only by
++        # an exact joined-dialog title; otherwise puller.py uses safe fallback.
++        name = "Private Telegram source" if is_private_invite else spec.split("/")[-1].replace("+", "").replace("@", "")
++    db.add_source(name[:120], spec, kind=kind)
+     if from_setup:
+         return redirect(url_for("setup", source_saved=1))
+     if from_vault:
+@@ -1740,12 +1752,76 @@ ROUTING_SAMPLES = (
+ )
+ 
+ 
+-def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dict:
++_LIVE_SELECTION_CACHE: dict = {"checked_at": 0.0, "report": None}
++LIVE_SELECTION_TTL_SECONDS = 45
++
++
++def _live_source_selection(ttl: int = LIVE_SELECTION_TTL_SECONDS) -> dict:
++    """Which joined dialogs would the worker read right now? Cached, read-only.
++
++    This calls the same inspect_source_selection() the Setup Center uses, so the
++    flow board can prove the *real* selection instead of only repeating the
++    configured selectors. It never joins or checks an invite, never reads
++    message history and never sends anything. Results are cached briefly so
++    opening the dashboard cannot hammer Telegram; when the check is unavailable
++    the board simply reports the last known state.
++    """
++    if not (config.TELEGRAM_API_ID and config.TELEGRAM_API_HASH):
++        return {"checked": False, "reason": "telegram_not_configured"}
++    if _running_under_pytest():
++        # Tests monkeypatch the inspector; a cached mock must not leak onward.
++        ttl = 0
++    now = time.time()
++    cached = _LIVE_SELECTION_CACHE.get("report")
++    if cached is not None and ttl > 0 and (
++        now - float(_LIVE_SELECTION_CACHE.get("checked_at") or 0)
++    ) < ttl:
++        return cached
++    try:
++        report = _run(asyncio.wait_for(
++            puller.inspect_source_selection(include_dialog_names=True), timeout=20
++        ))
++    except Exception as exc:
++        if cached is not None:
++            return {**cached, "stale": True, "error": type(exc).__name__}
++        return {"checked": False, "reason": "inspection_failed", "error": type(exc).__name__}
++
++    result = {
++        "checked": True,
++        "authorized": bool(report.get("authorized")),
++        "selection_mode": str(report.get("selection_mode") or ""),
++        "fallback_reason": str(report.get("fallback_reason") or ""),
++        "configured_sources": int(report.get("configured_sources", 0) or 0),
++        "matched_source_selectors": int(report.get("matched_source_selectors", 0) or 0),
++        "joined_group_channels": int(report.get("joined_group_channels", 0) or 0),
++        "eligible_joined_dialogs": int(report.get("eligible_joined_dialogs", 0) or 0),
++        "selected_sources": int(report.get("selected_sources", 0) or 0),
++        "unresolved_private_invites": int(report.get("unresolved_private_invites", 0) or 0),
++        "dialogs": list(report.get("selected_dialogs") or []),
++        "dialogs_truncated": int(report.get("selected_dialogs_truncated", 0) or 0),
++        "stale": False,
++        "error": "",
++    }
++    if ttl > 0:
++        _LIVE_SELECTION_CACHE.update({"checked_at": now, "report": result})
++    return result
++
++
++def _wants_live_probe() -> bool:
++    """The Telegram selection probe runs unless the caller opts out (?live=0)."""
++    value = str(request.args.get("live", "1")).strip().lower()
++    return value not in {"0", "false", "no", "off"}
++
++
++def _flow_snapshot(
++    stall_seconds: int = 3 * 3600, window_hours: int = 24, live_probe: bool = True
++) -> dict:
+     """Is posting still flowing from the sources? One honest answer.
+ 
+     Sources that have produced a deal before but nothing for `stall_seconds` are
+     marked stalled, channels show their last successful post, and the worker's
+-    heartbeat says whether anything is pulling at all. Pure reads; no network.
++    heartbeat says whether anything is pulling at all. Database reads are local;
++    the optional Telegram selection probe is read-only and briefly cached.
+     """
+     now = time.time()
+     note_list: list[str] = []
+@@ -1785,6 +1861,7 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
+         delivered = bool(row)
+         flow_sources.append({
+             "spec": spec,
++            "source_name": str(row.get("source_name") or ""),
+             "deals_seen": int(row.get("deals_seen") or 0),
+             "posts_dispatched": int(row.get("posts_dispatched") or 0),
+             "failures": int(row.get("failures") or 0),
+@@ -1815,6 +1892,32 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
+             f"{stall_seconds // 3600}h."
+         )
+ 
++    live = _live_source_selection() if live_probe else {
++        "checked": False, "reason": "probe_disabled"
++    }
++    if live.get("checked"):
++        if live.get("selection_mode") == "joined_dialog_fallback":
++            note_list.append(
++                f"Live check: {live.get('unresolved_private_invites', 0)} private invite label(s) did "
++                f"not match an exact joined-dialog title, so the worker reads "
++                f"{live.get('selected_sources', 0)} eligible already-joined dialog(s) instead. "
++                "Invites are never checked or joined."
++            )
++        if not live.get("selected_sources"):
++            note_list.append(
++                "Live check: the worker currently has no joined dialog to read. Join the configured "
++                "source with the Telegram account or use its exact dialog title."
++            )
++        if live.get("stale"):
++            note_list.append(
++                f"Live check is showing the last good result ({live.get('error') or 'inspection error'}); "
++                "the Telegram selection probe could not run just now."
++            )
++    elif live.get("reason") == "inspection_failed":
++        note_list.append(
++            "Live Telegram selection probe failed; the configured selectors above are the last known state."
++        )
++
+     try:
+         channels = db.channel_post_activity(hours=window_hours)
+     except Exception:
+@@ -1862,6 +1965,7 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
+             "never_delivered": len(never),
+             "rows": flow_sources,
+         },
++        "live": live,
+         "channels": {
+             "ready": len(live_channels),
+             "posted_in_window": posted_window,
+@@ -2256,7 +2360,7 @@ def easy_setup():
+         switches=ROUTING_SWITCHES,
+         source_count=len(sources),
+         active_source_count=active_sources,
+-        flow=_flow_snapshot(),
++        flow=_flow_snapshot(live_probe=_wants_live_probe()),
+     )
+ 
+ 
+@@ -2346,7 +2450,9 @@ def api_flow():
+         window_hours = max(1, min(168, int(request.args.get("window_hours", 24))))
+     except (TypeError, ValueError):
+         window_hours = 24
+-    return jsonify(_flow_snapshot(stall_seconds=stall_seconds, window_hours=window_hours))
++    return jsonify(_flow_snapshot(
++        stall_seconds=stall_seconds, window_hours=window_hours, live_probe=_wants_live_probe(),
++    ))
+ 
+ 
+ @app.route("/api/routing-preview")
+diff --git a/dashboard/templates/easy_setup.html b/dashboard/templates/easy_setup.html
+index 4b90063..9cfdd89 100644
+--- a/dashboard/templates/easy_setup.html
++++ b/dashboard/templates/easy_setup.html
+@@ -152,6 +152,17 @@
+     {{ flow.channels.failed_total }} failed (all-time).
+     Hourly loot sweep: <strong>{{ 'on' if flow.settings.hourly_loot_enabled else 'off' }}</strong>.
+   </p>
++  {% if flow.live and flow.live.checked %}
++    <p class="hint">
++      📡 Live Telegram check: <strong>{{ flow.live.selected_sources }}</strong> dialog(s) will be read
++      from {{ flow.live.configured_sources }} configured selector(s)
++      ({{ flow.live.eligible_joined_dialogs }} eligible of {{ flow.live.joined_group_channels }} joined group/channel dialog(s);
++      selection mode <strong>{{ flow.live.selection_mode }}</strong>).
++      Invites are never checked or joined.
++    </p>
++  {% elif flow.live and flow.live.reason and flow.live.reason != 'probe_disabled' %}
++    <p class="hint">📡 Live Telegram check unavailable ({{ flow.live.reason|replace('_', ' ') }}); showing configured selectors only. Add <code>?live=1</code> to retry.</p>
++  {% endif %}
+   {% for note in flow.notes %}
+     <p class="routing-note is-warn">⚠️ {{ note }}</p>
+   {% endfor %}
+@@ -165,7 +176,7 @@
+       <tbody>
+         {% for row in flow.sources.rows %}
+           <tr class="routing-row is-{{ 'warn' if row.stalled or row.never_delivered else 'ok' }}">
+-            <td><code>{{ row.spec }}</code></td>
++            <td>{% if row.source_name %}<strong>{{ row.source_name }}</strong><br />{% endif %}<code>{{ row.spec }}</code></td>
+             <td>{% if row.age_seconds is not none %}{{ (row.age_seconds // 3600) }}h {{ ((row.age_seconds % 3600) // 60) }}m ago{% else %}—{% endif %}</td>
+             <td>{{ row.deals_seen }}</td>
+             <td>{{ row.posts_dispatched }}</td>
+@@ -197,6 +208,17 @@
+         {% endfor %}
+       </tbody>
+     </table>
++    {% if flow.live and flow.live.dialogs %}
++      <h3 style="margin:12px 0 4px;">Joined dialogs the worker reads now ({{ flow.live.selected_sources }})</h3>
++      <ul class="routing-note">
++        {% for dialog in flow.live.dialogs %}
++          <li>{{ dialog.name }}{% if dialog.username %} · @{{ dialog.username }}{% endif %} <span class="routing-note">({{ dialog.kind }} {{ dialog.id }})</span></li>
++        {% endfor %}
++        {% if flow.live.dialogs_truncated %}
++          <li>… and {{ flow.live.dialogs_truncated }} more.</li>
++        {% endif %}
++      </ul>
++    {% endif %}
+     <p class="hint">Machine-readable: <code>/api/flow</code> (add <code>?stall_seconds=</code> or <code>?window_hours=</code>).</p>
+   </details>
+ </section>
+diff --git a/dashboard/templates/setup.html b/dashboard/templates/setup.html
+index aecc39e..05f79f0 100644
+--- a/dashboard/templates/setup.html
++++ b/dashboard/templates/setup.html
+@@ -13,10 +13,10 @@
+ {% if sources_added is not none %}
+   <div class="alert alert-success" role="status">Source catalog updated: {{ sources_added }} source{{ '' if sources_added == 1 else 's' }} added. Invite links were not checked or joined.</div>
+ {% endif %}
+-{% if source_saved %}<div class="alert alert-success" role="status">Source selector saved. It will match already-joined Telegram dialogs only.</div>{% endif %}
++{% if source_saved %}<div class="alert alert-success" role="status">Source selector saved. Telegram invites are never checked or joined; private labels are matched to exact joined-dialog titles, with a warning-backed joined-dialog fallback if they do not match.</div>{% endif %}
+ {% if source_updated %}<div class="alert alert-success" role="status">Source selector status updated.</div>{% endif %}
+ {% if source_deleted %}<div class="alert alert-success" role="status">Source selector removed.</div>{% endif %}
+-{% if source_error == 'private_name_required' %}<div class="dashboard-alert" role="alert">Add the joined Telegram dialog's display name for a private invite selector. The invite will not be checked or joined.</div>{% endif %}
++{% if source_error == 'invalid_spec' %}<div class="dashboard-alert" role="alert">Enter a Telegram username, numeric ID, or t.me selector up to 512 characters.</div>{% endif %}
+ {% if imported is not none %}
+   <div class="alert alert-success" role="status">{{ imported }} creator profile{{ '' if imported == 1 else 's' }} imported.</div>
+ {% endif %}
+@@ -65,7 +65,7 @@
+ 
+ <section id="source-pool" class="card" style="margin-top:16px;">
+   <div class="setup-section-title" style="margin-top:0;">
+-    <div><h2>📡 Source pool</h2><p class="hint">Add your own Telegram sources or the suggested catalog. This stores selectors only: it never checks invite links or joins channels. The Telegram account must already be a member.</p></div>
++    <div><h2>📡 Source pool</h2><p class="hint">Add Telegram sources or the suggested catalog. This stores selectors only: it never checks invite links or joins channels. The Telegram account must already be a member. For private invite links, a label is optional; if it is not an exact match for a joined dialog title, the worker warns and reads only already-joined eligible groups/channels. Known output channels are excluded. Public usernames are the most precise selectors.</p></div>
+     <form method="post" action="{{ url_for('seed_default_sources') }}">
+       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+       <button type="submit" class="btn btn-primary">Add suggested selectors</button>
+@@ -78,8 +78,8 @@
+   <form method="post" action="{{ url_for('add_deal_source') }}" class="source-add-form">
+     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+     <input type="hidden" name="from_setup" value="1" />
+-    <label><span>Source label</span><input name="name" maxlength="120" placeholder="Required for private invites; e.g. Shopsy Deals" /></label>
+-    <label class="source-spec-field"><span>Telegram username, numeric ID, or t.me selector</span><input name="spec" maxlength="512" required placeholder="@channelname or https://t.me/channelname" /></label>
++    <label><span>Friendly label (optional)</span><input name="name" maxlength="120" placeholder="e.g. Priority Source — a label, not an invite identity" /></label>
++    <label class="source-spec-field"><span>Telegram username, numeric ID, or t.me selector</span><input name="spec" maxlength="512" required placeholder="@channelname or https://t.me/+private-invite" /></label>
+     <label><span>Environment</span><select name="kind"><option value="production">Production</option><option value="dummy">Staging / test</option></select></label>
+     <button type="submit" class="btn btn-primary">Save source</button>
+   </form>
+diff --git a/influencer_hub/cli.py b/influencer_hub/cli.py
+index d769f92..1fb229b 100644
+--- a/influencer_hub/cli.py
++++ b/influencer_hub/cli.py
+@@ -315,9 +315,45 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
+         db_ok = False
+     checks.append(("Database OK", db_ok))
+ 
++    source_note = ""
++    if getattr(args, "telegram_sources", False):
++        from . import puller
++
++        try:
++            timeout = max(1, int(getattr(args, "timeout", 30)))
++            report = asyncio.run(asyncio.wait_for(puller.inspect_source_selection(), timeout=timeout))
++            source_ok = bool(report.get("ok"))
++            checks.append((
++                "Telegram source selection "
++                f"({report.get('selected_sources', 0)} selected / "
++                f"{report.get('configured_sources', 0)} configured)",
++                source_ok,
++            ))
++            if report.get("selection_mode") == "joined_dialog_fallback":
++                source_note = (
++                    f"{report.get('unresolved_private_invites', 0)} private invite label(s) did not match "
++                    "an exact joined-dialog title. The worker is using eligible already-joined dialogs "
++                    "only; it did not check or join invites."
++                )
++            elif not report.get("configured_sources"):
++                source_note = "No production source selectors are configured."
++            elif not report.get("selected_sources"):
++                source_note = (
++                    "No joined dialogs matched. Join the sources with this Telegram account and "
++                    "verify public usernames or exact private-dialog titles."
++                )
++        except asyncio.TimeoutError:
++            checks.append(("Telegram live source selection finished before timeout", False))
++            source_note = "Telegram source inspection timed out; check the session, network and worker logs."
++        except Exception as exc:
++            checks.append((f"Telegram live source selection ({type(exc).__name__})", False))
++            source_note = "Telegram source inspection failed; check API credentials and session authorization."
++
+     print("=== Influencer Hub configuration checks ===")
+     for name, ok in checks:
+         print(f"  [{'OK' if ok else 'XX'}] {name}")
++    if source_note:
++        print(f"  [WARN] {source_note}")
+     all_ok = all(o for _, o in checks)
+     verdict = (
+         "selected checks passed (this is not an end-to-end delivery test)"
+@@ -406,6 +442,12 @@ def build_parser() -> argparse.ArgumentParser:
+     amz.set_defaults(func=_cmd_amazon_items)
+ 
+     d = sub.add_parser("doctor", help="check selected local configuration and service health")
++    d.add_argument(
++        "--telegram-sources",
++        action="store_true",
++        help="also run a read-only Telegram source-selection check; never checks invites or reads history",
++    )
++    d.add_argument("--timeout", type=int, default=30, help="live Telegram source-check timeout in seconds")
+     d.set_defaults(func=_cmd_doctor)
+ 
+     sub.add_parser("status", help="overview of everything").set_defaults(func=_cmd_status)
+diff --git a/influencer_hub/db.py b/influencer_hub/db.py
+index b8af3ce..5076b9b 100644
+--- a/influencer_hub/db.py
++++ b/influencer_hub/db.py
+@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS worker_offsets (
+ -- flowing?" answerable per source instead of guessing from logs.
+ CREATE TABLE IF NOT EXISTS source_activity (
+     source_key        TEXT PRIMARY KEY,
++    source_name       TEXT NOT NULL DEFAULT '',
+     last_seen_at      REAL NOT NULL DEFAULT 0,
+     last_message_at   REAL NOT NULL DEFAULT 0,
+     last_message_id   INTEGER NOT NULL DEFAULT 0,
+@@ -312,6 +313,14 @@ def migrate() -> None:
+                 if "duplicate column name" not in str(exc).lower():
+                     raise
+ 
++        activity_cols = {r["name"] for r in con.execute("PRAGMA table_info(source_activity)")}
++        if activity_cols and "source_name" not in activity_cols:
++            try:
++                con.execute("ALTER TABLE source_activity ADD COLUMN source_name TEXT NOT NULL DEFAULT ''")
++            except sqlite3.OperationalError as exc:
++                if "duplicate column name" not in str(exc).lower():
++                    raise
++
+         con.commit()
+     finally:
+         con.close()
+@@ -1306,6 +1315,7 @@ def set_worker_offset(source_key: str, last_message_id: int) -> None:
+ def record_source_activity(
+     source_key: str,
+     *,
++    source_name: str = "",
+     message_id: int = 0,
+     posted: int = 0,
+     failed: int = 0,
+@@ -1325,10 +1335,12 @@ def record_source_activity(
+     con = _connect()
+     try:
+         con.execute(
+-            "INSERT INTO source_activity (source_key, last_seen_at, last_message_at, "
++            "INSERT INTO source_activity (source_key, source_name, last_seen_at, last_message_at, "
+             "last_message_id, deals_seen, posts_dispatched, failures, last_error, updated_at) "
+-            "VALUES (?,?,?,?,?,?,?,?,?) "
++            "VALUES (?,?,?,?,?,?,?,?,?,?) "
+             "ON CONFLICT(source_key) DO UPDATE SET "
++            "source_name=CASE WHEN excluded.source_name <> '' THEN excluded.source_name "
++            "ELSE source_activity.source_name END, "
+             "last_seen_at=excluded.last_seen_at, "
+             "last_message_at=CASE WHEN excluded.last_message_id > source_activity.last_message_id "
+             "THEN excluded.last_message_at ELSE source_activity.last_message_at END, "
+@@ -1339,8 +1351,8 @@ def record_source_activity(
+             "last_error=CASE WHEN excluded.last_error <> '' THEN excluded.last_error "
+             "ELSE source_activity.last_error END, "
+             "updated_at=excluded.updated_at",
+-            (key, stamp, stamp if message_id else 0.0, message_id, 1,
+-             int(posted or 0), int(failed or 0), str(error or "")[:300], _now()),
++            (key, str(source_name or "").strip()[:200], stamp, stamp if message_id else 0.0,
++             message_id, 1, int(posted or 0), int(failed or 0), str(error or "")[:300], _now()),
+         )
+         con.commit()
+     finally:
+@@ -1352,7 +1364,7 @@ def list_source_activity() -> list[dict]:
+     con = _connect()
+     try:
+         rows = con.execute(
+-            "SELECT source_key, last_seen_at, last_message_at, last_message_id, "
++            "SELECT source_key, source_name, last_seen_at, last_message_at, last_message_id, "
+             "deals_seen, posts_dispatched, failures, last_error, updated_at "
+             "FROM source_activity ORDER BY last_seen_at ASC"
+         ).fetchall()
+diff --git a/influencer_hub/puller.py b/influencer_hub/puller.py
+index e7271b7..37f7bbd 100644
+--- a/influencer_hub/puller.py
++++ b/influencer_hub/puller.py
+@@ -1,10 +1,10 @@
+ """Deal puller that reads only dialogs already present in the Telegram account.
+ 
+ No invite is resolved or joined here: in particular this module never sends a
+-CheckChatInviteRequest. Public source selectors are matched to the account's
+-joined dialogs; private invite links are treated as hints and resolved by title
+-when a source name is stored, otherwise the joined-group dialog allowlist is
+-used. Configured output channels are always excluded from ingestion.
++CheckChatInviteRequest. Public source selectors are matched to joined dialogs.
++A private invite's name is only a title hint; if it does not match an already-
++joined dialog, the puller falls back to eligible joined groups/channels and
++logs a warning. Configured output channels are always excluded from ingestion.
+ """
+ from __future__ import annotations
+ 
+@@ -24,6 +24,11 @@ PRIORITY_SOURCE_SPECS = [
+     "https://t.me/+6LA1ljXGlbNmMjA1",
+ ]
+ 
++# A polling worker may run every few seconds. Emit one warning for each
++# distinct private-invite configuration rather than filling its logs on every
++# pass. The key stays in memory and never includes invite hashes in log output.
++_WARNED_PRIVATE_FALLBACKS: set[tuple[tuple[str, str], ...]] = set()
++
+ 
+ async def _ensure_connected(client) -> None:
+     if not client.is_connected():
+@@ -158,32 +163,52 @@ def _is_group_or_channel(dialog) -> bool:
+     return bool(getattr(entity, "title", None))
+ 
+ 
+-def _dialog_matches_source(dialog, entries: list[dict[str, str]]) -> bool:
++def _dialog_matches_source_entry(dialog, entry: dict[str, str]) -> bool:
++    """Whether one configured selector identifies this already-joined dialog.
++
++    A private invite hash cannot be mapped to a Telegram entity without an
++    invite-check RPC (which this worker deliberately never makes). Its optional
++    source name is a *title hint*, not an invite identity. Require an exact
++    normalized title for private hints so a generic label such as "Priority
++    Source" cannot accidentally select a similarly named unrelated group.
++    """
+     username = _dialog_username(dialog)
+     title = _normal_name(_dialog_name(dialog))
+-    for entry in entries:
+-        source_name = entry.get("name", "")
+-        source_spec = entry.get("spec", "")
+-        spec_username, spec_id, _private = _source_parts(source_spec)
+-        if spec_username and username and spec_username == username:
+-            return True
+-        if spec_id and spec_id in _dialog_identifiers(dialog):
+-            return True
+-        if source_name:
+-            normalized = _normal_name(source_name)
+-            if normalized and title and (
+-                normalized == title
+-                or (min(len(normalized), len(title)) >= 5 and (normalized in title or title in normalized))
+-            ):
++    source_name = str(entry.get("name") or "").strip()
++    source_spec = str(entry.get("spec") or "").strip()
++    spec_username, spec_id, is_private = _source_parts(source_spec)
++
++    if spec_username and username and spec_username == username:
++        return True
++    if spec_id and spec_id in _dialog_identifiers(dialog):
++        return True
++
++    if source_name:
++        normalized = _normal_name(source_name)
++        if normalized and title:
++            if normalized == title:
+                 return True
+-        # A plain source selector can be a username or a visible dialog title.
+-        if not source_spec.startswith(("http://", "https://", "t.me/", "telegram.me/", "@")):
+-            normalized = _normal_name(source_spec)
+-            if normalized and title and normalized == title:
++            # Preserve the existing forgiving title hint for public/legacy
++            # selectors. Private invite names are often operator labels and
++            # must not be treated as identifiers unless they match exactly.
++            if not is_private and min(len(normalized), len(title)) >= 5 and (
++                normalized in title or title in normalized
++            ):
+                 return True
++
++    # A plain selector can be a username or a visible dialog title.
++    if not source_spec.startswith(("http://", "https://", "t.me/", "telegram.me/", "@")):
++        normalized = _normal_name(source_spec)
++        if normalized and title and normalized == title:
++            return True
+     return False
+ 
+ 
++def _dialog_matches_source(dialog, entries: list[dict[str, str]]) -> bool:
++    """Whether at least one source selector identifies a joined dialog."""
++    return any(_dialog_matches_source_entry(dialog, entry) for entry in entries)
++
++
+ def _excluded_output_keys() -> tuple[set[str], set[str]]:
+     usernames: set[str] = set()
+     identifiers: set[str] = set()
+@@ -214,7 +239,14 @@ def _excluded_output_keys() -> tuple[set[str], set[str]]:
+     return usernames, identifiers
+ 
+ 
+-def _joined_source_dialogs(dialogs: list, entries: list[dict[str, str]]) -> list:
++def _source_selection(dialogs: list, entries: list[dict[str, str]]) -> dict:
++    """Select eligible dialogs and explain whether private-invite fallback ran.
++
++    Private invites are intentionally not resolved or joined. When a private
++    invite label fails to match an already-joined dialog's exact title, use the
++    account's joined-dialog allowlist rather than silently selecting zero
++    sources. Output and non-source-owned dialogs are filtered before fallback.
++    """
+     username_excludes, id_excludes = _excluded_output_keys()
+     candidates = []
+     for dialog in dialogs:
+@@ -227,24 +259,75 @@ def _joined_source_dialogs(dialogs: list, entries: list[dict[str, str]]) -> list
+             continue
+         entity = getattr(dialog, "entity", None)
+         # Do not feed the account's own output channels back into itself unless
+-        # the user has explicitly configured that dialog as a source.
++        # the user explicitly configured that dialog as a source.
+         if bool(getattr(entity, "creator", False)) and not _dialog_matches_source(dialog, entries):
+             continue
+         candidates.append(dialog)
+ 
++    entry_matches = [
++        (entry, [dialog for dialog in candidates if _dialog_matches_source_entry(dialog, entry)])
++        for entry in entries
++    ]
++    matched_dialog_ids = {
++        id(dialog) for _entry, matches in entry_matches for dialog in matches
++    }
++    matched = [dialog for dialog in candidates if id(dialog) in matched_dialog_ids]
++    matched_selectors = sum(bool(matches) for _entry, matches in entry_matches)
++    unmatched_private = [
++        entry for entry, matches in entry_matches
++        if _source_parts(entry.get("spec", ""))[2] and not matches
++    ]
++
+     if not entries:
+-        return candidates
++        return {
++            "selected": candidates,
++            "eligible": candidates,
++            "matched_selectors": 0,
++            "unmatched_private_invites": [],
++            "selection_mode": "all_joined_dialogs",
++            "fallback_reason": "no_configured_selectors",
++        }
++
++    if unmatched_private:
++        signature = tuple(sorted(
++            (
++                str(entry.get("spec") or "").strip().casefold(),
++                str(entry.get("name") or "").strip().casefold(),
++            )
++            for entry in unmatched_private
++        ))
++        if signature not in _WARNED_PRIVATE_FALLBACKS:
++            if len(_WARNED_PRIVATE_FALLBACKS) >= 128:
++                _WARNED_PRIVATE_FALLBACKS.clear()
++            _WARNED_PRIVATE_FALLBACKS.add(signature)
++            logger.warning(
++                "No joined dialog matched %s private invite source label(s); "
++                "using the already-joined dialog allowlist (%s eligible group/channel(s)). "
++                "Invites were not checked or joined; configured output dialogs remain excluded.",
++                len(unmatched_private), len(candidates),
++            )
++        return {
++            "selected": candidates,
++            "eligible": candidates,
++            "matched_selectors": matched_selectors,
++            "unmatched_private_invites": unmatched_private,
++            "selection_mode": "joined_dialog_fallback",
++            "fallback_reason": "private_invite_label_unmatched",
++        }
++
++    return {
++        "selected": matched,
++        "eligible": candidates,
++        "matched_selectors": matched_selectors,
++        "unmatched_private_invites": [],
++        "selection_mode": "configured_selectors",
++        "fallback_reason": "",
++    }
+ 
+-    matched = [dialog for dialog in candidates if _dialog_matches_source(dialog, entries)]
+-    unresolved_private_invites = any(
+-        _source_parts(entry.get("spec", ""))[2] and not entry.get("name")
+-        for entry in entries
+-    )
+-    if unresolved_private_invites:
+-        # Invite hashes cannot be mapped to an entity without checking the
+-        # invite. Read already-joined groups/channels instead, avoiding that RPC.
+-        return candidates
+-    return matched
++
++def _joined_source_dialogs(dialogs: list, entries: list[dict[str, str]]) -> list:
++    """Compatibility wrapper returning only the selected joined dialogs."""
++    return _source_selection(dialogs, entries)["selected"]
+ 
+ 
+ async def _read_dialog_list(client) -> list:
+@@ -266,12 +349,31 @@ async def _iter_source_dialogs(client, use_dummy: bool = False) -> list[tuple[ob
+             for dialog in selected]
+ 
+ 
+-async def inspect_source_selection() -> dict:
++def _dialog_kind(dialog) -> str:
++    entity = getattr(dialog, "entity", None)
++    if bool(getattr(dialog, "is_channel", False)) or bool(getattr(entity, "broadcast", False)):
++        return "channel"
++    return "group"
++
++
++def _dialog_summary(dialog) -> dict[str, str]:
++    """Small, secret-free summary of one joined dialog for the flow board."""
++    return {
++        "name": _dialog_name(dialog) or _dialog_username(dialog) or _dialog_id(dialog),
++        "id": _dialog_id(dialog),
++        "username": _dialog_username(dialog),
++        "kind": _dialog_kind(dialog),
++    }
++
++
++async def inspect_source_selection(include_dialog_names: bool = False) -> dict:
+     """Safely verify Telegram auth and source matching without touching invites.
+ 
+     This only enumerates dialogs already joined to the account and applies the
+     exact selector/output-exclusion rules used by the deal worker. It never
+     checks an invite, joins a dialog, reads message history, or sends a message.
++    ``include_dialog_names`` adds capped, secret-free summaries of the dialogs
++    the worker will actually read, so the dashboard can prove the selection.
+     """
+     client = telegram_ops._client()
+     was_connected = client.is_connected()
+@@ -283,20 +385,28 @@ async def inspect_source_selection() -> dict:
+ 
+         dialogs = await _read_dialog_list(client)
+         entries = _source_entries(use_dummy=False)
+-        selected = _joined_source_dialogs(dialogs, entries)
+-        unresolved_private = sum(
+-            1 for entry in entries
+-            if _source_parts(entry.get("spec", ""))[2] and not entry.get("name")
+-        )
+-        return {
++        selection = _source_selection(dialogs, entries)
++        selected = selection["selected"]
++        unresolved_private = len(selection["unmatched_private_invites"])
++        report = {
+             "ok": bool(entries) and bool(selected),
+             "authorized": True,
+             "configured_sources": len(entries),
++            "matched_source_selectors": selection["matched_selectors"],
+             "joined_group_channels": sum(1 for dialog in dialogs if _is_group_or_channel(dialog)),
++            "eligible_joined_dialogs": len(selection["eligible"]),
+             "selected_sources": len(selected),
+             "unresolved_private_invites": unresolved_private,
+-            "selection_mode": "joined_dialog_fallback" if unresolved_private else "configured_selectors",
++            "selection_mode": selection["selection_mode"],
++            "fallback_reason": selection["fallback_reason"],
+         }
++        if include_dialog_names:
++            limit = 50
++            report["selected_dialogs"] = [
++                _dialog_summary(dialog) for dialog in selected[:limit]
++            ]
++            report["selected_dialogs_truncated"] = max(0, len(selected) - limit)
++        return report
+     finally:
+         if not was_connected and client.is_connected():
+             await client.disconnect()
+diff --git a/influencer_hub/worker.py b/influencer_hub/worker.py
+index db63b0b..8449e68 100644
+--- a/influencer_hub/worker.py
++++ b/influencer_hub/worker.py
+@@ -50,13 +50,18 @@ def _first_failure_reason(results: dict) -> str:
+ 
+ 
+ def _record_source_activity(
+-    source_key: str, *, message_id: int = 0, posted: int = 0, failed: int = 0,
+-    error: str = "",
++    source_key: str, *, source_name: str = "", message_id: int = 0, posted: int = 0,
++    failed: int = 0, error: str = "",
+ ) -> None:
+-    """Per-source flow bookkeeping; never allowed to stop ingestion."""
++    """Per-source flow bookkeeping; never allowed to stop ingestion.
++
++    ``source_name`` is the joined dialog's live title, so the flow board can
++    show which real group/channel a selected source actually read.
++    """
+     try:
+         db.record_source_activity(
+-            source_key, message_id=message_id, posted=posted, failed=failed, error=error
++            source_key, source_name=source_name, message_id=message_id,
++            posted=posted, failed=failed, error=error,
+         )
+     except Exception:
+         logger.warning("Could not record source activity", exc_info=True)
+@@ -132,6 +137,7 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
+                 continue
+ 
+             text = str(record.get("text") or "").strip()
++            source_name = str(record.get("source") or "").strip()
+             # Early batch dedup: if same product already handled in this pull cycle from another source, skip but advance cursor
+             if text:
+                 try:
+@@ -139,6 +145,9 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
+                     _sig = _sig_for_batch(text)
+                     if _sig in seen_sigs_this_batch:
+                         logger.info("Batch dedup: skipping duplicate deal from source %s message %s sig %s", source_key, message_id, _sig[:8])
++                        _record_source_activity(
++                            source_key, source_name=source_name, message_id=message_id
++                        )
+                         db.set_worker_offset(source_key, message_id)
+                         handled += 1
+                         continue
+@@ -154,7 +163,7 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
+                 except Exception as exc:
+                     logger.exception("Pipeline failed for source %s message %s", source_key, message_id)
+                     _record_source_activity(
+-                        source_key, message_id=message_id, failed=1,
++                        source_key, source_name=source_name, message_id=message_id, failed=1,
+                         error=f"{type(exc).__name__}: {exc}",
+                     )
+                     retried += 1
+@@ -170,13 +179,14 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
+                     )
+                     failure_note = _first_failure_reason(result)
+                     _record_source_activity(
+-                        source_key, message_id=message_id, posted=posted,
+-                        failed=max(1, failed), error=failure_note,
++                        source_key, source_name=source_name, message_id=message_id,
++                        posted=posted, failed=max(1, failed), error=failure_note,
+                     )
+                     retried += 1
+                     break
+                 _record_source_activity(
+-                    source_key, message_id=message_id, posted=posted, failed=failed
++                    source_key, source_name=source_name, message_id=message_id,
++                    posted=posted, failed=failed,
+                 )
+ 
+             # Empty/media-only Telegram posts have no text parser input; mark
+diff --git a/patches/HANDOFF.md b/patches/HANDOFF.md
+index fb4c2cc..43668bd 100644
+--- a/patches/HANDOFF.md
++++ b/patches/HANDOFF.md
+@@ -1,213 +1,169 @@
+ # HANDOFF — Influencers-deals
+ 
+-Read this first. It documents what exists where, how to get it into a new
+-session, and the traps that already cost a session once.
++**Updated:** 2026-10-07 (UTC)
+ 
+----
+-
+-## 0. Reality check (do this before believing anything)
+-
+-An earlier session's notes claimed a `patches/` folder and a `HANDOFF.md` were
+-committed to `main`. **They never were.** A new session starting from `main`
+-(`0bf913f`) gets none of the work below. Everything that matters therefore lives
+-inside the repo — and this branch is pushed, so a fetch is enough.
++**Session branch:** `arena/9056711b-influencers-deals`
+ 
+-| item | state |
+-| --- | --- |
+-| `origin/main` | `0bf913f` "Merge PR #6" — PRs #1–#6 all merged, none open |
+-| PR #6 content | Password login, ⚡ Easy Setup, 💰 Money Radar, gunicorn `0.0.0.0:5000`, Telegram ingestion — **already on `main`, do not redo** |
+-| branch `arena/a54d6a1d-influencers-deals` | commission fixes + password policy + account model + deal-flow board + the patch bundle |
+-| tests | `main` = **234 passed**, this branch = **302 passed** (`--with-tests` replay: **287**, see §1) |
+-| VM | commission fixes live; password policy + account model + deal-flow board still to apply |
++**Checkout base:** `c6fa901` — PR #7 merged to `main`
+ 
+-Fastest path into a new session:
+-
+-```bash
+-git fetch origin arena/a54d6a1d-influencers-deals
+-git checkout -b arena/a54d6a1d-influencers-deals origin/arena/a54d6a1d-influencers-deals
+-```
+-
+-If the branch cannot be fetched, use `patches/` (upload it from the workspace);
+-`patches/HANDOFF.md` is a byte-identical copy of this file, so the bundle is
+-self-contained.
++Read this before deploying. This handoff describes the current checkout; older
++notes referring to `0bf913f`, an unmerged branch, or the earlier VM rollout are
++historical and are not the current source of truth.
+ 
+ ---
+ 
+-## 1. Bootstrap a session
+-
+-```bash
+-python3 -m venv .venv && .venv/bin/pip install -q pytest aiohttp flask
+-.venv/bin/python -m pytest -q      # 302 passed here, 234 on main
+-```
+-
+-From a **clean `main`** checkout, either replay path reproduces this branch
+-byte for byte:
+-
+-```bash
+-# A. git patches (recommended for a fresh clone)
+-git apply patches/commission-leaks.patch
+-git apply patches/password-policy.patch
+-git apply patches/tests.patch
+-git apply patches/deal-flow.patch
+-git apply patches/docs.patch
+-
+-# B. surgical appliers (for a VM that already has some of the work)
+-python3 patches/apply-commission-fixes.py --with-tests
+-python3 patches/apply-password-policy.py  --with-tests
+-python3 patches/apply-account-model.py    --with-tests
+-python3 patches/apply-deal-flow.py        --with-tests
+-
+-.venv/bin/python -m pytest -q      # expect 287 passed via B, 302 via A
+-```
+-
+-(`302` is the count **on this branch**: it includes the 15 guards in
+-`tests/test_patch_bundle.py`, which `--with-tests` intentionally does not
+-install — hence `287` on path B. Path A installs them through `tests.patch` and
+-`docs.patch` carries this file, so path A is complete. Path B installs code and
+-tests only — the copy you are reading travels as `patches/HANDOFF.md`.)
+-
+-`patches/conftest.py` keeps pytest out of `patches/tests/`; `pytest.ini` is not
+-needed. `tests/test_patch_bundle.py` fails if the bundle ever drifts from the
+-tree.
++## 1. Current state
++
++The merged `c6fa901` release already includes the commission-leak fixes,
++creator/central-account model, dashboard password policy, worker heartbeat,
++`/api/flow`, and the Easy Setup flow card. Do not replay those older patches on
++top of this release.
++
++This follow-up fixes a separate ingestion bug: named private Telegram invite
++links such as a source labelled **“Priority Source”** could fail matching when
++the label was not the joined group's exact title. The old fallback only ran for
++unnamed invites, leaving `selected_sources = 0` and no messages to process.
++
++The fix in this branch:
++
++- treats a private invite name as a title hint, not as the invite's identity;
++- matches private invite hints only to an exact normalized title;
++- if a private invite hint is unmatched, logs one warning per configuration and
++  reads the eligible dialogs the Telegram account has already joined;
++- never checks an invite or joins a channel; known output channels and
++  unconfigured account-owned channels remain excluded;
++- explains the fallback in Setup Center live checks and in
++  `python -m influencer_hub.cli doctor --telegram-sources`;
++- shows the **live** selection on the deal-flow board: `/api/flow` (and the
++  Easy Setup card) name the dialogs the worker would read right now, with the
++  selection mode, counts and a capped dialog list. The probe is read-only,
++  cached ~45 s and can be skipped with `?live=0`;
++- records each source's joined-dialog title in `source_activity.source_name`
++  (auto-migrated), so per-source rows show the real group name, not just the
++  configured selector;
++- lets operators save a private invite without inventing a required label; and
++  uses `Private Telegram source` rather than displaying the invite hash as its
++  label;
++- adds an autouse pytest fixture that redirects every test to a new temporary
++  SQLite database, protecting the real operator DB.
++
++The requested `236 → 236` result is reproduced by a unit test with 236 eligible
++joined dialogs. The actual number on a VM depends on which eligible dialogs are
++joined and which known output/owned channels are excluded.
++
++**Important scope note:** when a private invite label does not match, fallback
++means all eligible joined groups/channels, not a Telegram join of the private
++invite and not only the three private links. Use public usernames or the exact
++joined-dialog title when you want a narrower, deterministic source set. The
++worker will then poll the selected dialogs and may post their deals according
++to the configured creator/channel filters and affiliate routes.
++
++No live Telegram account or VM was available to this checkout. The live
++fallback and warning are covered by fake-client tests; run the VM checks below
++before calling production delivery verified.
+ 
+ ---
+ 
+-## 2. Commission leaks (done)
++## 2. Test and audit commands
+ 
+-| # | Leak | Fix |
+-| --- | --- | --- |
+-| 1 | Amazon **search / storefront** pages carrying OUR tag were deleted as "not OUR canonical" | attribution now follows the tag: `advanced_shortener.is_our_amazon_attribution()` keeps any Amazon URL with exactly one tag equal to ours (guard, Money Radar, pipeline "still earns?" check) |
+-| 2 | Wrong EarnKaro body → HTTP 200 with no link → Flipkart/Myntra/Ajio/Nykaa/Croma/Shopsy posted free | payload is `{"deal": <clean url>, "convert_option": "convert_only"}` + Bearer token, in `convert_one` **and** the live verifier |
+-| 3 | Another publisher's EarnKaro link accepted as ours | `link_router.publisher_ids_in_url()` reads `affExtParam2` **and** numeric `id=`; a mismatch falls back to the raw URL (direct results and after redirect resolution) |
+-
+-Verify on the VM (needs the configured token):
++From the repo root:
+ 
+ ```bash
+-python3 -m influencer_hub.cli verify-earnkaro
+-# expect: ok: True, publisher_id: '5478322', publisher_provenance_verified: True
++python3 -m venv .venv
++.venv/bin/pip install -r requirements.txt
++.venv/bin/python -m pytest -q
++python3 -m influencer_hub.cli doctor --telegram-sources
+ ```
+ 
+-Tests: `tests/test_amazon_tag_attribution.py` (new), `tests/test_earnkaro_live.py`,
+-`tests/test_earnkaro_provenance.py`.
++The test suite on this revision is expected to report **320 passed**. The
++source doctor is read-only: it enumerates joined dialogs, checks the same
++selection rules as the worker, does not read message history, and does not
++check or join invites. It requires valid Telegram credentials/session on the
++VM. Its fallback warning is not a delivery guarantee.
+ 
+----
+-
+-## 3. Account model (done) — their Amazon id, our EarnKaro/HYPD
+-
+-`influencer_hub/accounts.py` is the single source of truth:
+-
+-| network | who earns | rule |
+-| --- | --- | --- |
+-| **Amazon** | the **creator** | `creator_amazon_tag()` = channel override → the creator's own tag → configured fallback; `amazon_tag_source()` reports `fallback` so profiles missing their own id are visible (`creators_missing_own_tag()`) |
+-| **EarnKaro** | **us** | vault API token + publisher id (`central_earnkaro_api_key()`, `central_earnkaro_publisher_id()`) |
+-| **Meesho / HYPD** | **us** | `hypd_store_for()` returns OUR store; with `central_network_accounts` on (default, `CENTRAL_NETWORK_ACCOUNTS=1`) a per-creator or per-channel `hypd_store_id` cannot move HYPD commission |
+-| LehLah | the source | attribution preserved |
+-
+-Pipeline, Money Radar and both dashboard previews resolve the pair through this
+-module, so what we post and what we audit are the same accounts. Easy Setup's
+-routing table now shows a **"whose account earns"** section.
+-
+-Turn the central half off only if a creator must keep their own HYPD store:
+-
+-```bash
+-python3 -c "from influencer_hub import db; db.init(); db.set_global_setting('central_network_accounts','0')"
+-```
++The dashboard has the same bounded check under **Setup Center → Launch
++readiness → Run live checks**. With the sample 3-source/236-dialog situation,
++expect 3 unmatched private invite labels, fallback mode, and up to 236 eligible
++joined dialogs selected (subject to output exclusions).
+ 
+ ---
+ 
+-## 4. Password policy (done) — first login + removals only
++## 3. Apply on the VM
+ 
+-* `REAUTH_REQUIRED_ENDPOINTS`: 28 → 3 (`delete_channel`, `delete_influencer`,
+-  `delete_deal_source`).
+-* `data-require-reauth` removed from the 20 add / save / toggle / poll /
+-  Easy-Setup / money-switch forms; kept on the four removal tags.
+-* Delete-Influencer lost its separate `prompt()` + hidden `admin_password` and
+-  uses the shared unlock dialog. Copy says **Removals** everywhere.
+-* The Vault tab keeps its own password gate (it stores credentials) — unchanged.
+-* `tests/test_reauth_policy.py` pins the gated set, the tags, the copy and that
+-  add/toggle/save never ask.
+-
+----
+-
+-## 5. Deal flow (done) — sources keep feeding posts, and you can see it
+-
+-The engine was already self-healing (`worker.py`: a source cursor advances only
+-after a message is handled, the heartbeat is refreshed every loop, backoff is
+-capped, the poll queue is separate). What was missing was *evidence*:
+-
+-* `db.source_activity` + `worker._record_source_activity()` record, per source:
+-  deals seen, posts dispatched, failures and the failure reason. A cursor is
+-  still held on a failed delivery — and now the retry is visible instead of
+-  only being in logs.
+-* `GET /api/flow` (read-only, no network) returns the worker heartbeat, per
+-  source last-seen / stalled / never-delivered, per channel last post and
+-  posted/failed counts, plus `hourly_loot_enabled` and `only_earning_deals` and
+-  plain-language notes ("3 of 7 active sources have not delivered a deal yet").
+-* Easy Setup ends with a **Deal flow — sources → posts** card; per-source and
+-  per-channel tables sit in its Advanced section.
+-* Tests: `tests/test_deal_flow.py` (13) — including "a failed delivery holds the
+-  cursor and is counted", "a crash is a failure, not a lost cursor", "media-only
+-  messages advance so they cannot block the queue" and "a stalled source is
+-  reported as stalled".
+-
+-Two honest gaps in ingestion as it stands:
+-
+-1. **Hourly loot is off unless asked for**: `scheduler.py` runs the extra hourly
+-   sweep only when the global setting `hourly_loot_enabled=1`. `/api/flow` now
+-   says so when a day is idle.
+-2. **Priority sources are hardcoded** in `puller.py` (`PRIORITY_SOURCE_SPECS`,
+-   three invite links) and the puller reads only dialogs the Telegram account
+-   has already joined — it never joins. A source that is not joined looks
+-   "never delivered" on the flow card.
+-
+----
+-
+-## 6. Apply on the VM (what is still missing there)
++First back up the private `.env` and SQLite DB using the VM's normal backup
++procedure. Never copy secrets into Git or chat. From the deployed checkout:
+ 
+ ```bash
+ cd ~/Influencers-deals
+-python3 patches/apply-password-policy.py --with-tests
+-python3 patches/apply-account-model.py   --with-tests
+-python3 patches/apply-deal-flow.py       --with-tests
++python3 patches/apply-private-source-fallback.py --check
++python3 patches/apply-private-source-fallback.py --dry-run
++python3 patches/apply-private-source-fallback.py --with-tests
++python3 -m influencer_hub.cli doctor --telegram-sources
+ sudo systemctl restart influencer-deal-worker influencer-dashboard
+ systemctl is-active influencer-deal-worker influencer-dashboard
+-curl -s localhost:5000/api/flow | head -c 400
++journalctl -u influencer-deal-worker -n 100 --no-pager
+ ```
+ 
+-* The commission fixes are **already live** on the VM, so
+-  `apply-commission-fixes.py` and the `.patch` files are not needed there.
+-* Each applier stops with exit `1` on a second run and exit `2` (writing nothing)
+-  if a file does not match the verified revision.
+-* `--check` reports; `--dry-run` validates.
++The applier validates its bundled exact patch before writing. It aborts without
++writing if the VM checkout differs; inspect the diff rather than forcing it.
++If the code is already applied, `--check` exits successfully and a normal
++second run is refused. `--with-tests` refreshes the verified tests and installs
++the test-only DB-isolating conftest.
+ 
+----
++After restart, use Setup Center's live check and `/api/flow`. Confirm that the
++worker is alive, source selection is non-zero, source `last_seen` advances, and
++ready destinations show posts or explain failures. Check worker logs for the
++one-time private-invite fallback warning. A warning is expected when the label
++is only a label. It is not evidence that a deal was successfully delivered.
+ 
+-## 7. Next decisions, in order
++The worker can scan many joined dialogs sequentially. On a 236-dialog fallback,
++monitor Telegram flood-wait logs, worker poll duration, and channel posting
++filters. If only the three intended sources should be read, replace private
++invites with public usernames where possible, or save each exact joined group
++title as its label so fallback is not needed.
++
++---
+ 
+-1. **EarnKaro / Affiliaters token vault — biggest earning gap.** Until a valid
+-   token + publisher id sit in the Vault tab, every non-Amazon link earns
+-   nothing. Confirm with `verify-earnkaro`.
+-2. Then open **`/money`** and decide whether to turn on `ONLY_EARNING_DEALS`
+-   (config default `False`) so no post is spent on a link that pays zero.
+-3. **Give every creator their own Amazon tag** — check
+-   `python3 -c "from influencer_hub import accounts; print(accounts.creators_missing_own_tag())"`.
+-   Those profiles currently post Amazon under the fallback tag.
+-4. VM hygiene: remove `dashboard/app.py.save`; decide on the legacy
+-   `new-deals-bot-zip-main (1).zip` (1.2 MB) in the repo root.
++## 4. Affiliate and delivery verification
++
++The source fix only addresses source selection. It does not repair missing
++Telegram authorization, inactive sources, no ready destination channels,
++creator/channel source filters, categories/schedules, disabled networks, or a
++missing affiliate credential. If sources are selected but posts still do not
++appear:
++
++1. Read the source fallback / selector result in Setup Center or the CLI doctor.
++2. Check worker state, source activity, destination readiness, and failures on
++   `/api/flow`.
++3. Check the worker log for pipeline filtering or delivery errors.
++4. Confirm the EarnKaro token/publisher ID in Vault and run
++   `python -m influencer_hub.cli verify-earnkaro` when eligible merchant links
++   must earn. Amazon attribution uses each creator's configured tag; HYPD and
++   EarnKaro use the configured central accounts per the existing account model.
++5. Use a deliberate test post to verify destination permissions; the read-only
++   source doctor does not send a post.
++
++No software can guarantee a “perfect” stream: Telegram group content, account
++permissions, external affiliate conversion, filtering, rate limits and network
++availability are outside the app's control. The code now makes the source
++selection failure visible and avoids silently returning zero for unmatched
++named private invites.
+ 
+ ---
+ 
+-## 8. Traps — do not relearn these
+-
+-* **Never** `git checkout -- <file>` on the VM: it reverts fixes that are not in
+-  `origin/main`.
+-* **`patch -U0` will not apply these bundles** — use `git apply` or the appliers.
+-* **Keep artifacts inside the repo.** `/home/user/*.patch` and anything outside
+-  the checkout are lost when the sandbox restarts.
+-* `git pull` on a new session gives you `main` (`0bf913f`) — none of sections
+-  2–4 unless you replay `patches/`.
+-* Python is externally managed (PEP 668): `pip install` needs a venv.
+-* Test counts in older notes (244 / 251) do not match this tree; the real
+-  numbers are **234 on `main`**, **302 on this branch** and **287 via the
+-  `--with-tests` applier path** (the bundle's own 15 guards are not installed
+-  there).
++## 5. Replayable work and safety
++
++- `patches/private-source-fallback.patch` contains the follow-up patch for the
++  merged `c6fa901` release.
++- `patches/apply-private-source-fallback.py` supports `--check`, `--dry-run`, and
++  `--with-tests`; it uses `git apply --check` and never resets the checkout.
++- `patches/tests/` carries byte-identical test copies; `tests/test_patch_bundle.py`
++  checks copies, patch presence, and applier state.
++- The original commission/account/password/deal-flow work and its four
++  historical appliers remain documented in `patches/README.md`; they are
++  already in the current base release.
++- This checkout did not contain a reachable `6b6c1a8` commit despite the earlier
++  handoff message. The fix here was recreated on the session's required branch;
++  verify `git status` before committing or opening a PR.
++- Never run pytest against a provisioned/live DB: root `tests/conftest.py`
++  redirects every test to `tmp_path`.
+diff --git a/patches/README.md b/patches/README.md
+index 6ebc0df..e7e8495 100644
+--- a/patches/README.md
++++ b/patches/README.md
+@@ -1,62 +1,76 @@
+ # `patches/` — verified, replayable fixes
+ 
+-Four ways to move this work into another checkout, verified to land on
+-**exactly** the same code, tests and handoff.
++The first five patches reproduce the earlier release on its historical base;
++`private-source-fallback.patch` is the follow-up for the current `c6fa901`
++release. The applier validates this follow-up before writing anything.
+ 
+ | # | path | use it when |
+ | --- | --- | --- |
+-| 1 | `patches/*.patch` | a clean `0bf913f` checkout: `git apply` all five, done |
+-| 2 | `patches/apply-*.py` | a VM that already has part of the work (surgical, exact-text) |
+-| 3 | `patches/tests/` | the verified test files `--with-tests` installs |
++| 1 | `patches/*.patch` | replaying the earlier release, then applying the source-fallback patch |
++| 2 | `patches/apply-*.py` | a VM that already has part of the work (exact-match appliers) |
++| 3 | `patches/tests/` | the verified test files and DB-isolating conftest `--with-tests` installs |
+ | 4 | `patches/HANDOFF.md` | a byte-identical copy of the root handoff, so the bundle is self-contained (guarded by `tests/test_patch_bundle.py`) |
+ 
+-## 1. The five git patches
++## 1. Earlier release patches + the current source fix
++
++On a clean historical `0bf913f` checkout, replay the original five patches in
++order, then apply the new source fix:
+ 
+ ```bash
+ cd ~/Influencers-deals
+-git apply patches/commission-leaks.patch   # influencer_hub/
+-git apply patches/password-policy.patch    # dashboard/
+-git apply patches/tests.patch              # tests/
+-git apply patches/deal-flow.patch          # influencer_hub/ + dashboard/ (flow board)
+-git apply patches/docs.patch               # HANDOFF.md
+-pytest -q                                  # 302 passed
++git apply patches/commission-leaks.patch
++git apply patches/password-policy.patch
++git apply patches/tests.patch
++git apply patches/deal-flow.patch
++git apply patches/docs.patch
++git apply patches/private-source-fallback.patch
++python3 patches/apply-private-source-fallback.py --with-tests
++python3 -m pytest -q                         # 320 passed on this revision
+ ```
+ 
++On a VM already at the merged `c6fa901` release, only the last applier is
++needed. It validates the exact patch first and writes nothing on mismatch.
++
+ | patch | lines | covers |
+ | --- | --- | --- |
+ | `commission-leaks.patch` | 681 | `influencer_hub/` — the three leaks **plus** the account model |
+ | `password-policy.patch` | 666 | `dashboard/` — password only for removals + the who-earns table |
+ | `tests.patch` | 1524 | `tests/` — every changed and new test file, at this revision |
+ | `deal-flow.patch` | 474 | `influencer_hub/` + `dashboard/` — per-source deal flow, `/api/flow`, the Easy Setup card |
+-| `docs.patch` | 217 | `HANDOFF.md` — the handoff itself, so a patched checkout is complete |
++| `docs.patch` | 217 | `HANDOFF.md` — the historical handoff at the previous release |
++| `private-source-fallback.patch` | follow-up | named private-invite fallback, diagnostics and current handoff updates |
+ 
+-`commission-leaks.patch`, `password-policy.patch` and `tests.patch` cover
+-`0bf913f..77acbe7`; `deal-flow.patch` covers `77acbe7..HEAD` for the two code
+-directories only, so the tests always come from the single `tests.patch`, and
+-`docs.patch` adds `HANDOFF.md`. Apply them in the order above on a clean `main`
+-(`0bf913f`) and the tree matches this branch down to the byte — nothing is
+-missing.
++The first five patch files are the historical replay path (`0bf913f` to the
++merged pre-fallback release). The source-fallback patch is based on that merged
++release (`c6fa901`) and must be applied last. The live repo's guard tests verify
++that every patch exists and every copied test stays byte-identical.
+ 
+-## 2. The four appliers
++## 2. Appliers
+ 
+ ```bash
+-python3 patches/apply-commission-fixes.py --with-tests
+-python3 patches/apply-password-policy.py  --with-tests
+-python3 patches/apply-account-model.py    --with-tests
+-python3 patches/apply-deal-flow.py        --with-tests
++python3 patches/apply-private-source-fallback.py --check
++python3 patches/apply-private-source-fallback.py --dry-run
++python3 patches/apply-private-source-fallback.py --with-tests
++python3 -m influencer_hub.cli doctor --telegram-sources
+ sudo systemctl restart influencer-deal-worker influencer-dashboard
+ systemctl is-active influencer-deal-worker influencer-dashboard
+ curl -s localhost:5000/api/flow | head -c 400
+ ```
+ 
++The four original appliers below remain useful for VMs missing those earlier
++changes; do not rerun them on a release where their checks say already applied.
++
+ | applier | touches | what it fixes |
+ | --- | --- | --- |
+ | `apply-commission-fixes.py` | `influencer_hub/` | tagged Amazon pages kept, `convert_option` payload, `affExtParam2`/`id=` provenance |
+ | `apply-password-policy.py` | `dashboard/` | `REAUTH_REQUIRED_ENDPOINTS` 28 → 3, no `data-require-reauth` on adds/saves, one shared unlock dialog |
+ | `apply-account-model.py` | both | installs `influencer_hub/accounts.py` + wires it in (their Amazon id, our EarnKaro/HYPD) |
+ | `apply-deal-flow.py` | both | `source_activity` bookkeeping, `_flow_snapshot()`, `GET /api/flow`, the Easy Setup flow card |
++| `apply-private-source-fallback.py` | puller + dashboard + docs | unmatched named private invites fall back to eligible joined dialogs; Setup and CLI diagnostics explain why |
+ 
+-Each supports `--check`, `--dry-run`, `--with-tests` and stops a second run:
++The four original appliers support `--check`, `--dry-run`, `--with-tests` and
++stop a second run. The new applier validates its bundled `git apply` patch and
++also supports `--check`, `--dry-run`, and `--with-tests`:
+ 
+ | flag | meaning |
+ | --- | --- |
+@@ -69,12 +83,11 @@ Exit codes: `0` applied / already in place with `--check`, `1` already applied
+ (stop — never double-edit), `2` the file did not match the verified revision
+ (nothing was written).
+ 
+-**On the VM, apply only what is missing.** The commission fixes are already
+-live there; `apply-password-policy.py`, `apply-account-model.py` and
+-`apply-deal-flow.py` are the ones it still needs. The appliers touch different
+-functions, so they can run in any order. Without `--with-tests` an applier
+-changes only its own code files — the tests it installs assume **all four**
+-policies are in place.
++**For the VM:** the merged `c6fa901` release already contains the commission,
++account, password and deal-flow work. Apply only
++`apply-private-source-fallback.py` for this follow-up. It never resets files or
++joins channels; if its exact patch does not match, it exits without writing.
++Use `--with-tests` only when refreshing the test suite on the VM.
+ 
+ ## 3. What each policy actually does
+ 
+@@ -123,6 +136,24 @@ that would post on the fallback tag.
+ * Easy Setup ends with a **"Deal flow — sources → posts"** card; the per-source
+   table and the channel table live in its Advanced section.
+ 
++### Private Telegram source fallback (`influencer_hub/puller.py`)
++
++* A private invite is never checked or joined. Its friendly name is only a hint
++  for an **exact normalized joined-dialog title** match.
++* If one or more private invite hints do not match, selection falls back to all
++  eligible dialogs already joined by the Telegram account. Configured output
++  channels and unconfigured account-owned channels are excluded. The worker
++  logs one warning per source configuration; invite hashes are not logged.
++* This fallback may read many joined groups/channels. Use public usernames or
++  the exact private-dialog title to narrow selection. The Setup Center and
++  `doctor --telegram-sources` show when fallback is active.
++* The flow board proves the selection: `/api/flow` gains `live` (mode, counts
++  and a capped list of the dialogs the worker would read now) and per-source
++  rows gain `source_name`, the joined dialog's title recorded by the worker.
++  The probe is read-only, cached ~45 s, and skippable with `?live=0`.
++* `tests/conftest.py` redirects every test to a fresh temporary SQLite DB, so
++  tests without a local DB fixture cannot touch a VM/operator database.
++
+ ### Password policy (`dashboard/`)
+ 
+ * `REAUTH_REQUIRED_ENDPOINTS`: 28 endpoints → `delete_channel`,
+@@ -135,37 +166,35 @@ that would post on the fallback tag.
+ 
+ ## `patches/tests/` + `conftest.py`
+ 
+-`patches/tests/` holds byte-identical copies of the test files the policies
+-touched (including `test_reauth_policy.py`, `test_amazon_tag_attribution.py`,
+-`test_account_model.py` and `test_deal_flow.py`). `patches/conftest.py` keeps
+-pytest from collecting the bundle, so a receiving checkout needs no extra
+-config.
++`patches/tests/` carries byte-identical copies for the patched test files and a
++copy of `tests/conftest.py`. The root conftest gives each pytest case a fresh
++`tmp_path` SQLite DB; `patches/conftest.py` separately prevents pytest from
++collecting the bundle copies twice.
+ 
+-`tests/test_patch_bundle.py` is the drift guard for all of this: it fails if a
+-`.patch` is malformed, if `patches/tests/` copies diverge from `tests/`, or if an
+-applier no longer reports the branch state.
++`tests/test_patch_bundle.py` is the drift guard: it checks patch presence and
++format, copied-test parity, root DB isolation, and that every applier recognizes
++the current tree.
+ 
+ ## Traps (learned the hard way)
+ 
+-* **Never** `git checkout -- <file>` on the VM — the VM holds fixes that are not
+-  in `origin/main`, so a checkout silently reverts them.
+-* `patch -U0` mis-applies these bundles. Use `git apply` or the appliers.
+-* Keep artifacts **inside** the repo: a sandbox restart wipes `/home/user/*.patch`
+-  and anything else outside the checkout.
+-* Don't mix paths casually — a `.patch` expects a clean `0bf913f`; an applier
+-  expects the mix of fixes the VM actually has.
+-* `patches/tests/` copies go stale the moment a test changes. Re-copy, then let
+-  `tests/test_patch_bundle.py` prove they match.
+-
+-## Verified end-to-end
+-
+-* clean `0bf913f` + the five `.patch` files → **302 passed**, every file
+-  byte-identical (15 of those tests are the bundle guards in
+-  `tests/test_patch_bundle.py`)
+-* clean `0bf913f` + the four appliers (`--with-tests`) → **287 passed**, every
+-  code and test file byte-identical. `--with-tests` never installs
+-  `tests/test_patch_bundle.py` (15 guards): they only make sense on the branch
+-  that ships the bundle. The appliers also do not write the root `HANDOFF.md`;
+-  the bundle's own `patches/HANDOFF.md` is its copy.
+-* a second run of every applier → exit `1`, nothing written
+-* baseline on `main` before any of this: **234 passed**
++* The current follow-up expects the merged `c6fa901` release. The original five
++  patches are only for the historical `0bf913f` replay path.
++* Do not use `git checkout -- <file>` or force a patch on a VM with a mismatch.
++  The new applier validates first and exits without writing when context differs.
++* Private-invite fallback scans eligible joined dialogs; it does not join the
++  invite. Narrow with usernames or exact dialog titles if a broad joined set is
++  not intended.
++* Keep artifacts inside the repo. Test copies go stale when tests change; run
++  the full suite so `test_patch_bundle.py` catches drift.
++
++## Verified in this session
++
++* Clean checkout baseline `c6fa901`: **302 passed** before the follow-up.
++* Working tree after the source-selection fix, live flow-board source
++  visibility, DB-isolated tests, docs and bundle guard: **320 passed**.
++* `tests/test_private_source_fallback.py` simulates 236 joined dialogs, checks
++  warning behavior, exclusions and capped dialog summaries, confirms live
++  diagnostics make no invite or history requests, and exercises the worker pull
++  path; `tests/test_deal_flow.py` pins the live `/api/flow` selection view and
++  the recorded joined-dialog title per source.
++* The full suite has not been run against a live Telegram account or deployed VM.
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..553d84c
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,14 @@
++"""Keep every pytest run away from the operator's configured/live database."""
++from __future__ import annotations
++
++import pytest
++
++
++@pytest.fixture(autouse=True)
++def isolate_hub_database(tmp_path, monkeypatch):
++    """Give every test a fresh SQLite DB, even tests without their own fixture."""
++    from influencer_hub import config, db
++
++    monkeypatch.setattr(config, "DB_PATH", tmp_path / "hub-test.sqlite3")
++    db.init()
++    yield
+diff --git a/tests/test_db.py b/tests/test_db.py
+index 4031f65..79ad94d 100644
+--- a/tests/test_db.py
++++ b/tests/test_db.py
+@@ -1,17 +1,11 @@
+-import os
+-import tempfile
+-
+ import pytest
+ 
+-# Point the DB at a temp file before importing the module under test.
+-_TMP = os.path.join(tempfile.mkdtemp(), "hub_test.sqlite3")
+-os.environ["HUB_DB_PATH"] = _TMP
+-
+-from influencer_hub import db  # noqa: E402
++from influencer_hub import db
+ 
+ 
+ @pytest.fixture(autouse=True)
+ def _init():
++    db.init()
+     con = db._connect()
+     try:
+         con.execute("DELETE FROM posts")
+diff --git a/tests/test_deal_flow.py b/tests/test_deal_flow.py
+index 566fac6..1eab59d 100644
+--- a/tests/test_deal_flow.py
++++ b/tests/test_deal_flow.py
+@@ -18,9 +18,11 @@ import asyncio
+ import json
+ import pathlib
+ import time
++from unittest.mock import AsyncMock
+ 
+ import pytest
+ 
++import dashboard.app as dashboard_module
+ from dashboard.app import app
+ from influencer_hub import config, db, worker
+ 
+@@ -262,3 +264,87 @@ def test_flow_api_is_read_only_and_json(hub):
+     assert response.status_code == 200
+     assert response.headers["Content-Type"].startswith("application/json")
+     assert json.loads(response.get_data(as_text=True))["ok"] is True
++
++
++# --------------------------------------------------------------------------
++# live source visibility: prove WHICH dialogs are actually read
++# --------------------------------------------------------------------------
++def test_flow_api_reports_the_live_telegram_selection(hub, monkeypatch):
++    db.add_source("Priority Source", "https://t.me/+privatehash")
++    report = {
++        "ok": True,
++        "authorized": True,
++        "configured_sources": 3,
++        "matched_source_selectors": 0,
++        "joined_group_channels": 236,
++        "eligible_joined_dialogs": 236,
++        "selected_sources": 236,
++        "unresolved_private_invites": 3,
++        "selection_mode": "joined_dialog_fallback",
++        "fallback_reason": "private_invite_label_unmatched",
++        "selected_dialogs": [{"name": "Loot Group One", "id": "42", "username": "loot_one", "kind": "group"}],
++        "selected_dialogs_truncated": 235,
++    }
++    monkeypatch.setattr(config, "TELEGRAM_API_HASH", "test-api-hash")
++    monkeypatch.setattr(
++        dashboard_module.puller, "inspect_source_selection",
++        AsyncMock(return_value=report),
++    )
++    monkeypatch.setattr(dashboard_module, "_run", lambda coro: asyncio.run(coro))
++
++    flow = hub.get("/api/flow").get_json()
++
++    live = flow["live"]
++    assert live["checked"] is True
++    assert live["selection_mode"] == "joined_dialog_fallback"
++    assert live["selected_sources"] == 236
++    assert live["dialogs"][0]["name"] == "Loot Group One"
++    assert live["dialogs_truncated"] == 235
++    assert any("private invite label(s)" in note for note in flow["notes"])
++    assert any("Live check" in note for note in flow["notes"])
++
++
++def test_flow_api_pins_the_live_selection_when_nothing_is_readable(hub, monkeypatch):
++    db.add_source("Missing source", "@not_joined")
++    monkeypatch.setattr(config, "TELEGRAM_API_HASH", "test-api-hash")
++    monkeypatch.setattr(
++        dashboard_module.puller, "inspect_source_selection",
++        AsyncMock(return_value={
++            "ok": False,
++            "authorized": True,
++            "configured_sources": 1,
++            "selected_sources": 0,
++            "selection_mode": "configured_selectors",
++        }),
++    )
++    monkeypatch.setattr(dashboard_module, "_run", lambda coro: asyncio.run(coro))
++
++    flow = hub.get("/api/flow").get_json()
++
++    assert flow["live"]["selected_sources"] == 0
++    assert any("no joined dialog to read" in note for note in flow["notes"])
++
++
++def test_flow_api_skips_the_live_probe_on_request(hub, monkeypatch):
++    def explode(*_args, **_kwargs):  # pragma: no cover - must not run
++        raise AssertionError("live probe must be skipped with ?live=0")
++
++    monkeypatch.setattr(config, "TELEGRAM_API_HASH", "test-api-hash")
++    monkeypatch.setattr(dashboard_module.puller, "inspect_source_selection", explode)
++
++    flow = hub.get("/api/flow?live=0").get_json()
++
++    assert flow["live"] == {"checked": False, "reason": "probe_disabled"}
++
++
++def test_flow_card_names_the_dialog_a_source_actually_read(hub):
++    db.add_source("Priority Source", "https://t.me/+privatehash")
++    db.record_source_activity(
++        "https://t.me/+privatehash", source_name="Real Loot Group", message_id=9, posted=1,
++    )
++    flow = hub.get("/api/flow?live=0").get_json()
++    row = flow["sources"]["rows"][0]
++
++    assert row["source_name"] == "Real Loot Group"
++    page = hub.get("/easy-setup?live=0").get_data(as_text=True)
++    assert "Real Loot Group" in page
+diff --git a/tests/test_patch_bundle.py b/tests/test_patch_bundle.py
+index 4452b06..df56516 100644
+--- a/tests/test_patch_bundle.py
++++ b/tests/test_patch_bundle.py
+@@ -29,12 +29,14 @@ PATCH_FILES = (
+     "tests.patch",
+     "deal-flow.patch",
+     "docs.patch",
++    "private-source-fallback.patch",
+ )
+ APPLIERS = (
+     "apply-commission-fixes.py",
+     "apply-password-policy.py",
+     "apply-account-model.py",
+     "apply-deal-flow.py",
++    "apply-private-source-fallback.py",
+ )
+ 
+ 
+@@ -47,7 +49,7 @@ def _load(path: pathlib.Path):
+ 
+ def _in_place(module) -> bool:
+     """Each applier names its own idempotency check slightly differently."""
+-    for name in ("policy_in_place", "_policy_in_place", "flow_in_place"):
++    for name in ("policy_in_place", "_policy_in_place", "flow_in_place", "patch_in_place"):
+         if hasattr(module, name):
+             return bool(getattr(module, name)())
+     raise AssertionError("applier has no in-place check")
+@@ -96,7 +98,14 @@ def test_applier_is_present_and_reports_the_branch_state(name):
+ def test_applier_edits_point_at_real_files_and_real_kinds():
+     for name in APPLIERS:
+         module = _load(PATCH_DIR / name)
+-        for relative, old, _new, _label in module.EDITS:
++        edits = getattr(module, "EDITS", None)
++        if edits is None:
++            # The current source-fallback applier validates a bundled git diff.
++            patch_file = PATCH_DIR / "private-source-fallback.patch"
++            assert patch_file.is_file(), f"{name}: verified patch is missing"
++            assert patch_file.read_text(encoding="utf-8").startswith("diff --git ")
++            continue
++        for relative, old, _new, _label in edits:
+             assert old.strip(), f"{name}: empty search text"
+             target = REPO_ROOT / relative
+             assert target.is_file(), f"{name}: {relative} does not exist"
+@@ -138,3 +147,11 @@ def test_bundle_keeps_itself_out_of_the_suite():
+     conftest = (PATCH_DIR / "conftest.py").read_text(encoding="utf-8")
+     assert "collect_ignore_glob" in conftest
+     assert "tests/*" in conftest
++
++
++def test_pytest_always_uses_a_fresh_temporary_database():
++    """A test without a local DB fixture must never touch the operator DB."""
++    conftest = (REPO_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
++    assert "autouse=True" in conftest
++    assert "tmp_path / \"hub-test.sqlite3\"" in conftest
++    assert "config, db" in conftest
+diff --git a/tests/test_setup_assistant.py b/tests/test_setup_assistant.py
+index ed03304..6a487d8 100644
+--- a/tests/test_setup_assistant.py
++++ b/tests/test_setup_assistant.py
+@@ -68,15 +68,17 @@ def test_setup_source_pool_can_add_pause_and_remove_without_joining(setup_client
+     assert db.list_sources(active_only=False) == []
+ 
+ 
+-def test_private_source_requires_a_dialog_label_for_precise_matching(setup_client):
++def test_private_source_label_is_optional_and_never_exposes_invite_as_label(setup_client):
+     response = setup_client.post(
+         "/sources/add",
+         data={"from_setup": "1", "spec": "https://t.me/+privatehash123"},
+     )
+ 
+     assert response.status_code == 302
+-    assert "source_error=private_name_required" in response.headers["Location"]
+-    assert db.list_sources(active_only=False) == []
++    assert "source_saved=1" in response.headers["Location"]
++    source = db.list_sources(active_only=False)[0]
++    assert source["name"] == "Private Telegram source"
++    assert source["spec"] == "https://t.me/+privatehash123"
+ 
+ 
+ def test_live_checks_report_telegram_sources_and_hub_without_sending(setup_client, monkeypatch):
+@@ -116,6 +118,48 @@ def test_live_checks_report_telegram_sources_and_hub_without_sending(setup_clien
+     assert "No message was sent" in checks["whatsapp_hub"]["message"]
+ 
+ 
++def test_live_checks_explain_named_private_invite_fallback(setup_client, monkeypatch):
++    monkeypatch.setattr(config, "TELEGRAM_API_HASH", "test-api-hash")
++    monkeypatch.setattr(
++        puller,
++        "inspect_source_selection",
++        AsyncMock(return_value={
++            "ok": True,
++            "authorized": True,
++            "configured_sources": 3,
++            "matched_source_selectors": 0,
++            "joined_group_channels": 236,
++            "eligible_joined_dialogs": 236,
++            "selected_sources": 236,
++            "unresolved_private_invites": 3,
++            "selection_mode": "joined_dialog_fallback",
++            "fallback_reason": "private_invite_label_unmatched",
++        }),
++    )
++    monkeypatch.setattr(
++        dashboard_module.whatsapp_client,
++        "health_snapshot",
++        AsyncMock(return_value={
++            "ok": True,
++            "session_count": 0,
++            "connected_count": 0,
++            "qr_pending_count": 0,
++            "offline_count": 0,
++        }),
++    )
++    monkeypatch.setattr(dashboard_module, "_run", lambda coro: asyncio.run(coro))
++
++    response = setup_client.post("/api/setup/live-checks")
++
++    assert response.status_code == 200
++    sources = response.get_json()["checks"]["sources"]
++    assert sources["state"] == "fallback"
++    assert "236 joined dialog(s) selected" in sources["message"]
++    assert "3 private invite label(s)" in sources["message"]
++    assert "already-joined eligible dialog allowlist" in sources["message"]
++    assert "No invite was checked or joined" in sources["message"]
++
++
+ def test_live_source_audit_uses_only_already_joined_dialogs(setup_client, monkeypatch):
+     db.add_source("Already joined", "@already_joined", kind="production")
+ 
