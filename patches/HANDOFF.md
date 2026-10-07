@@ -1,6 +1,6 @@
 # HANDOFF — Influencers-deals
 
-**Updated:** 2026-10-08 (UTC)
+**Updated:** 2026-10-07 (UTC)
 
 **Session branch:** `arena/9056711b-influencers-deals`
 
@@ -129,7 +129,7 @@ python3 -m venv .venv
 python3 -m influencer_hub.cli doctor --telegram-sources
 ```
 
-The test suite on this revision is expected to report **342 passed**. The
+The test suite on this revision is expected to report **346 passed**. The
 source doctor is read-only: it enumerates joined dialogs, checks the same
 selection rules as the worker, does not read message history, and does not
 check or join invites. It requires valid Telegram credentials/session on the
@@ -158,7 +158,7 @@ python3 patches/apply-link-conversion-fixes.py --check
 python3 patches/apply-link-conversion-fixes.py --dry-run
 python3 patches/apply-link-conversion-fixes.py --with-tests
 python3 -m influencer_hub.cli doctor --telegram-sources
-python3 -m pytest -q            # expect 342 passed
+python3 -m pytest -q            # expect 346 passed
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
 journalctl -u influencer-deal-worker -n 100 --no-pager
