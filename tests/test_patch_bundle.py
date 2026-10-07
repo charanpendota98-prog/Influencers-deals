@@ -151,6 +151,33 @@ def test_bundle_keeps_itself_out_of_the_suite():
     assert "tests/*" in conftest
 
 
+def test_no_test_module_executes_itself_at_import_time():
+    """A module-level ``test_...()`` call runs during collection, before fixtures.
+
+    That is how two legacy tests used to write to the configured (live) DB on the
+    VM. Collecting them as real tests keeps the DB-isolating fixture in charge.
+    """
+    import ast
+
+    offenders: list[str] = []
+    for path in sorted((REPO_ROOT / "tests").glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+                continue
+            name = getattr(node.value.func, "id", "") or getattr(node.value.func, "attr", "")
+            if name.startswith("test_"):
+                offenders.append(f"{path.name} calls {name}() at import time")
+    assert offenders == [], offenders
+
+
+def test_collection_phase_cannot_reach_the_default_database():
+    """conftest must pin a temporary DB path before any test module is imported."""
+    text = (REPO_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
+    assert "tempfile.mkdtemp" in text
+    assert "_config.DB_PATH = _COLLECTION_DB" in text
+
+
 def test_pytest_always_uses_a_fresh_temporary_database():
     """A test without a local DB fixture must never touch the operator DB."""
     conftest = (REPO_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
