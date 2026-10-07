@@ -1,14 +1,8 @@
 diff --git a/HANDOFF.md b/HANDOFF.md
-index 43668bd..32104d2 100644
+index 43668bd..d2df580 100644
 --- a/HANDOFF.md
 +++ b/HANDOFF.md
-@@ -1,11 +1,14 @@
- # HANDOFF — Influencers-deals
- 
--**Updated:** 2026-10-07 (UTC)
-+**Updated:** 2026-10-08 (UTC)
- 
- **Session branch:** `arena/9056711b-influencers-deals`
+@@ -6,6 +6,9 @@
  
  **Checkout base:** `c6fa901` — PR #7 merged to `main`
  
@@ -81,7 +75,7 @@ index 43668bd..32104d2 100644
  ```
  
 -The test suite on this revision is expected to report **320 passed**. The
-+The test suite on this revision is expected to report **342 passed**. The
++The test suite on this revision is expected to report **346 passed**. The
  source doctor is read-only: it enumerates joined dialogs, checks the same
  selection rules as the worker, does not read message history, and does not
  check or join invites. It requires valid Telegram credentials/session on the
@@ -98,7 +92,7 @@ index 43668bd..32104d2 100644
 +python3 patches/apply-link-conversion-fixes.py --dry-run
 +python3 patches/apply-link-conversion-fixes.py --with-tests
  python3 -m influencer_hub.cli doctor --telegram-sources
-+python3 -m pytest -q            # expect 342 passed
++python3 -m pytest -q            # expect 346 passed
  sudo systemctl restart influencer-deal-worker influencer-dashboard
  systemctl is-active influencer-deal-worker influencer-dashboard
  journalctl -u influencer-deal-worker -n 100 --no-pager
