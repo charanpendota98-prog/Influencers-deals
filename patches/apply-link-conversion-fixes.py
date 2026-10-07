@@ -4,6 +4,11 @@
 This bundle is the second half of the current work and must be applied *after*
 ``apply-private-source-fallback.py`` (its patch is diffed against that state).
 
+Both follow-up patches carry source files and the root docs only: ``tests/`` is
+installed from the byte-identical copies in ``patches/tests/`` by
+``--with-tests``, and the whole ``patches/`` folder is meant to be copied from
+the branch, so no patch rewrites it and a wholesale copy can never conflict.
+
 It makes every link shape a source deal can carry end up as OUR affiliate link:
 
 * opaque Amazon shorts are recognised on every host Amazon uses
@@ -87,6 +92,46 @@ def prerequisite_installed() -> bool:
         return False
 
 
+def bundle_is_current() -> bool:
+    """True when the copied ``patches/`` folder is the current bundle.
+
+    A stale ``patches/tests/`` would install older tests over newer sources, so
+    the applier checks for the newest copy it ships with before touching tests.
+    """
+    marker = TESTS_DIR / "test_patch_bundle.py"
+    if not marker.is_file():
+        return False
+    try:
+        text = marker.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "link-conversion-fixes.patch" in text and (
+        TESTS_DIR / "test_perfect_link_conversion.py"
+    ).is_file()
+
+
+def sync_handoff_copy() -> str:
+    """Keep the bundle's handoff byte-identical to the root one (guarded test).
+
+    An operator who updates only the patch/applier files (instead of the whole
+    ``patches/`` folder) would otherwise leave ``patches/HANDOFF.md`` behind,
+    which the bundle guard test reports as drift. The two files are required to
+    be identical, so syncing them is always safe and writes nothing new.
+    """
+    root = REPO_ROOT / "HANDOFF.md"
+    copy = PATCH_DIR / "HANDOFF.md"
+    if not root.is_file():
+        return "skip  HANDOFF.md not present on this checkout"
+    try:
+        text = root.read_text(encoding="utf-8")
+        if copy.is_file() and copy.read_text(encoding="utf-8") == text:
+            return "patches/HANDOFF.md already matches HANDOFF.md"
+        copy.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        return f"could not refresh patches/HANDOFF.md: {exc}"
+    return "refresh patches/HANDOFF.md to match HANDOFF.md"
+
+
 def copy_test_updates() -> list[str]:
     """Refresh only the verified tests/conftest files carried by this bundle."""
     target_dir = REPO_ROOT / "tests"
@@ -116,6 +161,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if patch_in_place():
         if args.with_tests:
+            if not bundle_is_current():
+                print(
+                    "Refusing to refresh tests: patches/tests/ is not the current "
+                    "bundle. Copy the whole patches/ folder from the branch first.",
+                    file=sys.stderr,
+                )
+                return 2
+            print("  ", sync_handoff_copy())
             try:
                 for item in copy_test_updates():
                     print("  ", item)
@@ -175,6 +228,15 @@ def main(argv: list[str] | None = None) -> int:
 
     print("Link-conversion fixes, retry queue, flow board and docs applied.")
     if args.with_tests:
+        if not bundle_is_current():
+            print(
+                "Code is applied, but tests were not refreshed: patches/tests/ is "
+                "not the current bundle. Copy the whole patches/ folder from the "
+                "branch and re-run with --with-tests.",
+                file=sys.stderr,
+            )
+            return 2
+        print("  ", sync_handoff_copy())
         try:
             for item in copy_test_updates():
                 print("  ", item)

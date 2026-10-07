@@ -56,6 +56,23 @@ def patch_in_place() -> bool:
     ))
 
 
+def bundle_is_current() -> bool:
+    """True when the copied ``patches/`` folder is the current bundle.
+
+    A stale ``patches/tests/`` would install older tests over newer sources, so
+    ``--with-tests`` refuses to run until the operator copies the whole
+    ``patches/`` folder from the branch (the newest copy is checked for).
+    """
+    marker = TESTS_DIR / "test_patch_bundle.py"
+    if not marker.is_file():
+        return False
+    try:
+        text = marker.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "link-conversion-fixes.patch" in text
+
+
 def copy_test_updates() -> list[str]:
     """Refresh only the verified tests/conftest files carried by this bundle."""
     target_dir = REPO_ROOT / "tests"
@@ -85,6 +102,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if patch_in_place():
         if args.with_tests:
+            if not bundle_is_current():
+                print(
+                    "Refusing to refresh tests: patches/tests/ is not the current "
+                    "bundle. Copy the whole patches/ folder from the branch first.",
+                    file=sys.stderr,
+                )
+                return 2
             try:
                 for item in copy_test_updates():
                     print("  ", item)
@@ -138,6 +162,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print("Private-source fallback, Setup diagnostics, CLI source doctor, and docs applied.")
     if args.with_tests:
+        if not bundle_is_current():
+            print(
+                "Code is applied, but tests were not refreshed: patches/tests/ is "
+                "not the current bundle. Copy the whole patches/ folder from the "
+                "branch and re-run with --with-tests.",
+                file=sys.stderr,
+            )
+            return 2
         try:
             for item in copy_test_updates():
                 print("  ", item)
