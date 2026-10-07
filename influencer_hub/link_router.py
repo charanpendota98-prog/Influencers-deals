@@ -18,9 +18,99 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from . import config
 
-# Amazon product hosts supported by this India-first integration.
-AMAZON_DOMAINS = {"amazon.in", "amazon.com", "amzn.to", "amzn.in"}
+# Amazon marketplaces this hub can canonicalize, mapped to their canonical host.
+# Only OUR marketplace (Amazon India) can pay with the configured Associate tag;
+# links to other stores are deliberately left untouched instead of being
+# rewritten into something that can never earn for this account.
+AMAZON_MARKETPLACES = {
+    "amazon.in": "www.amazon.in",
+    "amazon.com": "www.amazon.com",
+    "amazon.co.uk": "www.amazon.co.uk",
+    "amazon.ae": "www.amazon.ae",
+    "amazon.sg": "www.amazon.sg",
+    "amazon.ca": "www.amazon.ca",
+    "amazon.com.au": "www.amazon.com.au",
+    "amazon.de": "www.amazon.de",
+    "amazon.fr": "www.amazon.fr",
+    "amazon.it": "www.amazon.it",
+    "amazon.es": "www.amazon.es",
+    "amazon.nl": "www.amazon.nl",
+    "amazon.se": "www.amazon.se",
+    "amazon.pl": "www.amazon.pl",
+    "amazon.co.jp": "www.amazon.co.jp",
+    "amazon.com.br": "www.amazon.com.br",
+    "amazon.com.mx": "www.amazon.com.mx",
+    "amazon.com.tr": "www.amazon.com.tr",
+    "amazon.sa": "www.amazon.sa",
+    "amazon.eg": "www.amazon.eg",
+    "amazon.com.be": "www.amazon.com.be",
+}
+
+# The storefront our Associate tag belongs to. A link on another storefront can
+# never be converted into a paying link, so it stays informational.
+AMAZON_OUR_MARKETPLACE = "amazon.in"
+
+# Opaque Amazon short-link hosts. The Associate tag lives inside the short code
+# itself, so these links must be resolved to a ``/dp/ASIN`` page before they can
+# be retagged deterministically. Every host Amazon uses for its link shortener
+# belongs here — a deal channel can and does send ``a.co``/``amzn.eu`` codes.
+AMAZON_SHORT_HOSTS = {
+    "amzn.to",
+    "www.amzn.to",
+    "amzn.in",
+    "www.amzn.in",
+    "amzn.eu",
+    "www.amzn.eu",
+    "amzn.asia",
+    "www.amzn.asia",
+    "a.co",
+    "www.a.co",
+}
+
+# Hosts that are treated as Amazon URLs (India store + the mobile/global
+# aliases) plus every opaque short host.
+AMAZON_DOMAINS = {
+    "amazon.in",
+    "amazon.com",
+    "m.amazon.in",
+    "m.amazon.com",
+} | {host.removeprefix("www.") for host in AMAZON_SHORT_HOSTS}
+
 HYPD_DOMAINS = {"hypd.store"}
+
+
+def is_amazon_short_host(url: str) -> bool:
+    """True for an opaque Amazon short link whose short code decides the tag."""
+    return _host_of(url) in AMAZON_SHORT_HOSTS
+
+
+def is_our_amazon_marketplace(url: str) -> bool:
+    """True when the URL belongs to the marketplace our Associate tag serves."""
+    return _is_domain(_host_of(url), AMAZON_OUR_MARKETPLACE)
+
+
+def amazon_marketplace_host(url: str) -> str | None:
+    """Canonical ``www.`` host for a known Amazon marketplace URL, else None."""
+    host = _host_of(url)
+    for domain, canonical in AMAZON_MARKETPLACES.items():
+        if _is_domain(host, domain):
+            return canonical
+    return None
+
+
+def text_has_amazon_short(text: str) -> bool:
+    """True when the text carries at least one opaque Amazon short link."""
+    return any(is_amazon_short_host(url) for url in find_urls(text or ""))
+
+
+def unresolved_amazon_shorts(text: str) -> list[str]:
+    """Opaque Amazon shorts that could not be resolved into a ``/dp/ASIN`` link.
+
+    A resolved short becomes a long canonical link; an unverifiable one keeps
+    its opaque code and posts with best-effort attribution, so the caller should
+    surface it (dashboard/warning) instead of staying silent about it.
+    """
+    return [url for url in find_urls(text or "") if is_amazon_short_host(url)]
 
 # Merchant domains we route through EarnKaro (except Amazon, HYPD, and
 # Meesho). Meesho has its own HYPD path and must never be sent to EarnKaro.
@@ -183,6 +273,16 @@ def _is_lehlah_meesho_affiliate(url: str) -> bool:
         or params.get("mcn", "").lower() == "lehlah"
         or "lehlah" in params.get("pid", "").lower()
     )
+
+
+def is_known_merchant_host(url: str) -> bool:
+    """True for a storefront this hub expects EarnKaro to convert.
+
+    Anything else that classifies as ``merchant`` is an unknown host, where a
+    failed conversion may simply mean "EarnKaro does not cover this store".
+    """
+    host = _host_of(url)
+    return any(_is_domain(host, domain.removeprefix("www.")) for domain in MERCHANT_DOMAINS)
 
 
 def classify_url(url: str) -> str:
@@ -364,17 +464,8 @@ def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
         if not re.fullmatch(r"[A-Za-z0-9_-]{3,30}", effective_tag):
             effective_tag = config.AMAZON_ASSOCIATE_TAG
     asin = _amazon_asin(parsed)
-    # Determine marketplace - must preserve original marketplace perfectly
-    if _is_domain(host, "amazon.in"):
-        marketplace_host = "www.amazon.in"
-    elif _is_domain(host, "amazon.com"):
-        marketplace_host = "www.amazon.com"
-    elif _is_domain(host, "amazon.co.uk"):
-        marketplace_host = "www.amazon.co.uk"
-    elif _is_domain(host, "amazon.ae"):
-        marketplace_host = "www.amazon.ae"
-    else:
-        marketplace_host = None  # amzn.to / amzn.in short links stay on their host
+    # Determine marketplace — an Amazon URL always keeps its own storefront.
+    marketplace_host = amazon_marketplace_host(url)  # short links -> None, stay on their host
 
     if asin and marketplace_host:
         # PERFECT CANONICALIZATION: Always https://www.amazon.in/dp/<ASIN>?tag=YOURTAG
@@ -421,17 +512,19 @@ def apply_amazon_tag(url: str, tag: str | None = None) -> str:
 
 
 def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
-    """Heuristic to fix amzn.to/amzn.in short links that encode an old tag.
+    """Heuristic to fix opaque Amazon short links that encode an old tag.
 
-    Amazon's short codes (amzn.to/XXXX) are generated via SiteStripe and already
-    contain the creator's tag inside the code. Appending ?tag=OURTAG does NOT
-    override the embedded tag, so commission would still go to the old tag.
-    The only commission-safe fix without a network round-trip is:
+    Amazon's short codes (``amzn.to``/``amzn.in``/``amzn.eu``/``amzn.asia``/
+    ``a.co``) are generated by Amazon's tools and already contain the creator's
+    tag inside the code. Appending ?tag=OURTAG does NOT override the embedded
+    tag, so commission would still go to the old tag. The only commission-safe
+    fix without a network round-trip is:
     - If the same deal text also contains a long Amazon link with an ASIN,
-      replace every amzn.to/amzn.in short with the canonical long link for that
-      ASIN + OUR tag (keeping th/psc from the long link if present).
-    - If no ASIN is available in the text, fall back to tag-append (best effort)
-      but the caller should be aware that commission may still be at risk.
+      replace every opaque short with the canonical long link for that ASIN +
+      OUR tag (keeping th/psc from the long link if present).
+    - If no ASIN is available in the text, the async resolver tries the network
+      and callers can report what stayed unresolved with
+      :func:`unresolved_amazon_shorts`.
 
     This handles the user's case:
       amzn.to/4dnF9lU?tag=mama086-21  (short, old tag inside)
@@ -449,8 +542,7 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
     # Collect all ASINs and their th/psc from long links in the same text
     asins_with_params: list[tuple[str, dict[str, str]]] = []
     for u in urls:
-        host = _host_of(u)
-        if host in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}:
+        if is_amazon_short_host(u):
             continue
         try:
             parsed = urlparse(u)
@@ -478,8 +570,7 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
 
     out = text
     for u in urls:
-        host = _host_of(u)
-        if host not in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}:
+        if not is_amazon_short_host(u):
             continue
         # Build canonical for this short using the primary ASIN + OUR tag + th/psc
         canonical_q = list(primary_params.items())
@@ -497,24 +588,27 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
 
 
 async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None) -> str:
-    """Async version that also tries network expansion for standalone amzn.to.
+    """Async version that also resolves standalone opaque shorts over the network.
 
-    First does the heuristic (ASIN from same deal). If no ASIN is found and
-    the text contains only amzn.to/amzn.in shorts, try to resolve one via
-    HTTP HEAD (best effort, 5s timeout). If network fails or no ASIN, fall
-    back to tag-append (still better than nothing, but commission may be at risk).
+    First does the heuristic (ASIN from the same deal). If no ASIN is found and
+    the text carries any opaque Amazon short (``amzn.to``/``amzn.in``/``amzn.eu``/
+    ``amzn.asia``/``a.co``), resolve it with a real GET and rewrite every short in
+    the text into a long ``/dp/ASIN`` link signed with OUR tag on the same
+    marketplace the short pointed at. When the network fails or the target has no
+    ASIN the text is returned unchanged (best-effort attribution), and callers can
+    list what stayed unresolved with :func:`unresolved_amazon_shorts`.
     """
     # Fast heuristic first (sync, no network)
     heuristic = expand_amazon_shorts_in_text(text, tag)
     if heuristic != text:
         return heuristic
 
-    # No ASIN in same deal, but we have amzn.to shorts — try network
-    if not tag or "amzn.to" not in text and "amzn.in" not in text:
+    # No ASIN in the same deal, but we may have an opaque short to resolve.
+    if not tag:
         return text
 
     urls = find_urls(text)
-    shorts = [u for u in urls if _host_of(u) in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}]
+    shorts = [u for u in urls if is_amazon_short_host(u)]
     if not shorts:
         return text
 
@@ -537,7 +631,12 @@ async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None) 
                             continue
                         asin = _amazon_asin(parsed_final)
                         if asin:
-                            # Build canonical with OUR tag
+                            # Build the canonical link on the marketplace the
+                            # short actually pointed at (OUR store when the short
+                            # is an India short), signed with OUR tag.
+                            marketplace_host = (
+                                amazon_marketplace_host(final_url) or "www.amazon.in"
+                            )
                             q = dict(parse_qsl(parsed_final.query, keep_blank_values=True))
                             safe = {}
                             for k in ("th", "psc"):
@@ -546,7 +645,7 @@ async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None) 
                             canonical_q = list(safe.items())
                             canonical_q.append(("tag", effective_tag))
                             canonical = urlunparse(
-                                ("https", "www.amazon.in", f"/dp/{asin}", "", urlencode(canonical_q), "")
+                                ("https", marketplace_host, f"/dp/{asin}", "", urlencode(canonical_q), "")
                             )
                             # Replace all shorts with this canonical (best we can do)
                             out = text
@@ -710,6 +809,9 @@ def _approval_render(text: str, amazon_tag: str) -> str:
     result = "\n".join(kept_lines).strip()
     # Normalize excessive blank lines
     result = re.sub(r"\n{3,}", "\n\n", result)
+    # A post that carried both an opaque short and the long link collapses into
+    # the same canonical URL during expansion — show it once, not twice.
+    result = deduplicate_urls_in_text(result)
 
     if "#ad" not in result.lower():
         result = result + "\n\n#ad (paid link)"

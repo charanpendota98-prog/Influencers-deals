@@ -201,6 +201,20 @@ def parse_ek_response(body: str, expected_pubid: str | None = None) -> str | Non
     return result
 
 
+def credentials_configured() -> bool:
+    """True when an EarnKaro API key is configured (dashboard vault or env).
+
+    Without a key no merchant link can ever be converted, so callers must not
+    treat a raw merchant URL as a transient conversion failure in that state.
+    """
+    try:
+        if str(db.get_global_setting("earnkaro_api_key") or "").strip():
+            return True
+    except Exception:  # pragma: no cover - defensive (DB unavailable)
+        pass
+    return bool(str(config.EARNKARO_API_KEY or "").strip())
+
+
 async def convert_one(session: aiohttp.ClientSession, url: str,
                       include_meesho: bool = False) -> str:
     # Amazon has its own Associates tag, so it never goes to EarnKaro. Raw

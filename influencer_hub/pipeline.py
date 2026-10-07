@@ -13,6 +13,7 @@ twice to the same place while its dedup record is retained.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from typing import Iterable
 
@@ -74,6 +75,28 @@ def only_earning_deals_enabled() -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+# A deal parked because its only link was a merchant URL EarnKaro had not
+# converted yet is retried after this long, this many times, then posted anyway
+# (see influencer_hub/worker.py:drain_deferred_deals).
+DEFERRED_RETRY_DELAY_SECONDS = 300
+DEFERRED_MAX_ATTEMPTS = 6
+
+
+def allow_unconverted_posts_enabled() -> bool:
+    """Post deals whose links would all earn nothing (default: no).
+
+    The commission guard parks such a deal in the retry queue instead of
+    spending a post on it, and the worker posts it converted as soon as
+    EarnKaro answers. Set ``ALLOW_UNCONVERTED_POSTS=1`` (or the
+    ``allow_unconverted_posts`` global setting) to post the raw link straight
+    away — volume over commission, e.g. during a long converter outage.
+    """
+    value = db.get_global_setting("allow_unconverted_posts", config.ALLOW_UNCONVERTED_POSTS)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 async def _earnkaro_map_for(text: str) -> dict[str, str]:
     include_meesho = meesho_earnkaro_fallback_enabled()
     collected = link_router.collect_links(text)
@@ -83,8 +106,18 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
     if not urls:
         return {}
     # Conversion is best-effort: the original clean merchant URL is retained
-    # if the affiliate API is unavailable, so a deal is not lost.
-    return await earnkaro.convert_links(urls, include_meesho=include_meesho)
+    # if the affiliate API is unavailable, so the mapping never loses a URL.
+    # Identity entries are URLs EarnKaro did NOT convert (outage, bad key or an
+    # unsupported merchant) — they are surfaced because such a link pays nothing.
+    converted = await earnkaro.convert_links(urls, include_meesho=include_meesho)
+    unconverted = [url for url in urls if converted.get(url, url) == url]
+    if unconverted:
+        logging.getLogger(__name__).warning(
+            "EARNKARO UNCONVERTED %d/%d link(s): %s — check EARNKARO_API_KEY/publisher id; "
+            "these links earn nothing until converted",
+            len(unconverted), len(urls), unconverted[:3],
+        )
+    return converted
 
 
 async def apply_whatsapp_safety_pacing(session_key: str) -> None:
@@ -233,8 +266,12 @@ def _is_source_allowed(source_name: str, allowed_spec: str) -> bool:
 
 
 async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | None = None,
-                              source_channel: str = "") -> dict:
+                              source_channel: str = "", force_unconverted: bool = False) -> dict:
     """Render one deal for every active influencer and dispatch to their channels.
+
+    ``force_unconverted`` is used by the deferred-retry drain: once a deal has
+    used up its retries, it is posted even though its links did not convert,
+    rather than being dropped after all.
 
     Returns {influencer_id: {channel_id: status}}.
     """
@@ -382,15 +419,26 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             except Exception:
                 pass
             render_text = link_router.filter_disallowed_affiliate_links(deal_text, allowed_kinds)
-            # Fix amzn.to/amzn.in short links that encode old tags: if the deal also has a long
-            # Amazon link with ASIN, replace the short with the canonical OUR link (heuristic, no network)
-            # This ensures https://amzn.to/4dnF9lU?tag=mama086-21 (old code) becomes
-            # https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=mama086-21 and then gets shortened correctly
-            # For standalone shorts, also try network expansion (production VM)
-            if "amzn.to" in render_text or "amzn.in" in render_text:
+            # Fix opaque Amazon short links that encode an old tag: when the same
+            # deal also carries a long Amazon link with an ASIN, replace the short
+            # with the canonical OUR link (heuristic, no network). Example:
+            # https://amzn.to/4dnF9lU?tag=mama086-21 (old code) becomes
+            # https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=mama086-21 and is then
+            # shortened correctly. Standalone shorts are resolved over the network
+            # (production VM), covering amzn.to/amzn.in/amzn.eu/amzn.asia/a.co.
+            if link_router.text_has_amazon_short(render_text):
                 render_text = await link_router.expand_amazon_shorts_in_text_async(
                     render_text, effective_amz_tag
                 )
+                still_opaque = link_router.unresolved_amazon_shorts(render_text)
+                if still_opaque:
+                    # Never stay silent about a link whose embedded tag we could
+                    # not verify: the post goes out with best-effort attribution.
+                    logging.getLogger(__name__).warning(
+                        "UNRESOLVED AMAZON SHORT inf=%s ch=%s tag=%s links=%s — "
+                        "tag appended but the short code still decides attribution",
+                        inf.get("id"), ch.get("id"), effective_amz_tag, still_opaque[:3],
+                    )
 
             # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
             if db.already_posted(inf["id"], ch["id"], sig):
@@ -437,6 +485,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 meesho_fallback = meesho_earnkaro_fallback_enabled()
             except Exception:
                 meesho_fallback = bool(config.MEESHO_EARNKARO_FALLBACK)
+            try:
+                allow_unconverted_posts = allow_unconverted_posts_enabled()
+            except Exception:
+                allow_unconverted_posts = bool(config.ALLOW_UNCONVERTED_POSTS)
             try:
                 only_earning = only_earning_deals_enabled()
             except Exception:
@@ -512,63 +564,80 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 # We audit FINAL rendered text before dispatch. Any non-OUR leak is logged and sanitized.
                 try:
                     from . import commission_guard
+                    log = logging.getLogger(__name__)
                     expected_pubid = (db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or "").strip()
                     audit = commission_guard.audit_rendered_text(
                         rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
                     )
                     if not audit["ok"]:
-                        import logging
-                        log = logging.getLogger(__name__)
                         log.warning(
                             "COMMISSION GUARD leak inf=%s ch=%s tag=%s store=%s pubid=%s allowed=%s issues=%s snippet=%.200s",
                             inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid, allowed_kinds,
                             "; ".join(audit["issues"])[:500], rendered[:200]
                         )
-                        # Sanitize: remove raw meesho / unconverted merchant / wrong-tag links
+                        # Sanitize: remove wrong-tag Amazon / wrong-store HYPD links so
+                        # nobody else's attribution can ride along with our post.
                         sanitized, _ = commission_guard.sanitize_rendered_text(
                             rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
                         )
-                        # Check if sanitized still has at least one OUR affiliate (amazon/hypd/EarnKaro/first-party/bitly-OUR)
-                        remaining_urls = link_router.find_urls(sanitized)
-                        has_affiliate = False
-                        for u in remaining_urls:
-                            kind = link_router.classify_url(u)
-                            host = (link_router._host_of(u) if hasattr(link_router, "_host_of") else "")
-                            # Bitly OUR links (advanced_only_our mode ensures any bit.ly is OUR)
-                            if host in {"bit.ly", "www.bit.ly", "bitly.com", "www.bitly.com"} or host.endswith(".bit.ly"):
-                                has_affiliate = True
-                                break
-                            if kind == "amazon" and effective_amz_tag and (
-                                advanced_shortener.is_our_amazon_link(u, effective_amz_tag)
-                                or advanced_shortener.is_our_amazon_attribution(u, effective_amz_tag)
-                            ):
-                                # A tagged search/store page keeps our attribution
-                                # even though it is not a /dp/ASIN link.
-                                has_affiliate = True
-                                break
-                            if kind == "hypd" and effective_hypd_store and advanced_shortener.is_our_hypd_link(u, effective_hypd_store):
-                                has_affiliate = True
-                                break
-                            if commission_guard.is_earnkaro_short_link(u):
-                                has_affiliate = True
-                                break
-                            if kind == "lehlah":
-                                has_affiliate = True
-                                break
-                            if "/amazon/" in u and effective_amz_tag and f"tag={effective_amz_tag}" in u:
-                                has_affiliate = True
-                                break
-                            if "/m/" in u:
-                                has_affiliate = True
-                                break
-                        if has_affiliate:
+                        if commission_guard.our_affiliate_urls(
+                            sanitized, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map
+                        ):
                             rendered = sanitized
                         else:
                             # No OUR affiliate left — posting would earn zero. Skip this channel.
                             per_channel[ch["id"]] = "skipped:no_our_affiliate_after_guard"
                             continue
+                    elif not commission_guard.our_affiliate_urls(
+                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map
+                    ):
+                        # The hard checks passed but nothing in the post pays us.
+                        # Every link is informational, or a merchant link EarnKaro
+                        # never converted, or a raw Meesho URL (nothing can mint
+                        # an affiliate link from those by design).
+                        unmonetised = commission_guard.unmonetised_links(audit, allowed_kinds)
+                        # A conversion failure on a store EarnKaro is known to
+                        # cover is worth retrying: hold the deal back and let the
+                        # worker re-read the source post, so it goes out converted
+                        # a few minutes later instead of posting a free link now.
+                        # Unknown hosts stay posted: an unsupported store earns
+                        # nothing whether or not we delay it.
+                        retryable = [
+                            detail for detail in unmonetised
+                            if link_router.is_known_merchant_host(str(detail.get("url") or ""))
+                        ]
+                        if (retryable and not allow_unconverted_posts and not force_unconverted
+                                and earnkaro.credentials_configured()):
+                            log.warning(
+                                "EARNKARO CONVERSION FAILED — deal parked for a retry inf=%s ch=%s tag=%s "
+                                "store=%s pubid=%s links=%s (set ALLOW_UNCONVERTED_POSTS=1 to post unconverted "
+                                "links anyway)",
+                                inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid,
+                                [d.get("url") for d in retryable][:5],
+                            )
+                            try:
+                                db.defer_deal(
+                                    deal_text, source=source_channel, reason="earnkaro_unconverted",
+                                    delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
+                                    max_attempts=DEFERRED_MAX_ATTEMPTS,
+                                )
+                            except Exception:  # pragma: no cover - a retry gap must never break posting
+                                log.exception("could not park the deal for a retry")
+                            per_channel[ch["id"]] = "skipped:no_our_affiliate_after_guard"
+                            continue
+                        if unmonetised:
+                            # Zero-commission by design or unsupported store: the
+                            # deal still goes out, but never silently.
+                            log.warning(
+                                "ZERO-COMMISSION post inf=%s ch=%s tag=%s store=%s pubid=%s unconverted=%s "
+                                "meesho_by_design=%s",
+                                inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid,
+                                [d.get("url") for d in unmonetised][:5],
+                                [d.get("url") for d in commission_guard.unmonetised_links(
+                                    audit, allowed_kinds, kinds=commission_guard.UNMONETISABLE_KINDS
+                                )][:3],
+                            )
                 except Exception as _guard_exc:
-                    import logging
                     logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
 
             # 8b-2. MONEY FILTER: never spend a post on a deal that pays nothing.
@@ -590,7 +659,6 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                         per_channel[ch["id"]] = "skipped:no_commission_link"
                         continue
                 except Exception as _money_exc:  # pragma: no cover - defensive
-                    import logging
                     logging.getLogger(__name__).exception("money filter failed: %s", _money_exc)
             # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
             # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
@@ -645,8 +713,13 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
     return results
 
 
-async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] | None = None) -> dict:
-    """Process a batch of deals (dicts with ``text``/``source`` or plain strings)."""
+async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] | None = None,
+                   force_unconverted: bool = False) -> dict:
+    """Process a batch of deals (dicts with ``text``/``source`` or plain strings).
+
+    ``force_unconverted=True`` posts deals whose links could not be converted —
+    the last resort after every deferred retry is used up.
+    """
     # Periodically prune old post/stat rows to bound database growth.
     try:
         if random.random() < 0.05:  # ~5% of run cycles
@@ -661,7 +734,9 @@ async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] | 
         else:
             d_text = str(deal)
             d_src = ""
-        res = await render_and_dispatch(d_text, influencer_ids, source_channel=d_src)
+        res = await render_and_dispatch(
+            d_text, influencer_ids, source_channel=d_src, force_unconverted=force_unconverted
+        )
         for iid, chmap in res.items():
             all_results.setdefault(iid, {}).update(chmap)
     return all_results

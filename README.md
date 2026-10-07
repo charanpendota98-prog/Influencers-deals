@@ -343,6 +343,44 @@ other setup change):
   deal when none of its links would carry our attribution
   (`skipped:no_commission_link`). It trades volume for earnings, so it starts
   off and the Radar recommends it only once it has seen free posts.
+* **Post unconverted links anyway** *(off by default)* — mirrored by
+  `ALLOW_UNCONVERTED_POSTS=1`. See the retry queue below: when a merchant link
+  did not convert, the deal is parked and retried, so this switch is only for an
+  operator who prefers volume over commission during a converter outage.
+
+#### Conversion guarantees, link shape by link shape
+
+Every link kind a source deal can carry has exactly one defined outcome:
+
+| Source link | What is posted |
+| --- | --- |
+| Amazon `/dp/<ASIN>`, `/gp/product/<ASIN>`, `?asin=<ASIN>`, search, storefront | One canonical `https://www.amazon.in/dp/<ASIN>` (or the same search/store page) carrying exactly **our** tag; every other `tag=` is removed |
+| Amazon short (`amzn.to`, `amzn.in`, `amzn.eu`, `amzn.asia`, `a.co`), long link for the same product in the same post | Both collapse into that one canonical OUR link |
+| Amazon short alone | Resolved over the network into `https://www.amazon.in/dp/<ASIN>?tag=<OURS>`; if the network cannot resolve it, the short is kept with our tag appended and the run logs `UNRESOLVED AMAZON SHORT` |
+| Flipkart / Shopsy / Myntra / Ajio / Nykaa / Croma / TataCliq… | The EarnKaro short link (`ekaro.in`, `fktr.in`, `myntr.it`, …) carrying our publisher id, verified by following the redirect |
+| Same merchants while EarnKaro is down | The deal is **parked** (see below) instead of posting a raw zero-commission URL |
+| Raw Meesho | Sent to EarnKaro when the fallback is on; otherwise posted as-is, because HYPD cannot mint an affiliate link from a product URL (with a `ZERO-COMMISSION post` log line) |
+| HYPD `hypd.store/<store>/afflink/<token>` | Retagged to our store id |
+| LehLah Meesho (`mcn=LEHLAH`, `af_siteid=lehlah`, `pid=lehlah`) | Kept exactly as it is — it already pays us |
+| Anything else (news, YouTube, blog) | Untouched |
+
+#### The retry queue — no free posts, no lost deals
+
+When the only link in a deal is a merchant URL EarnKaro should have converted
+but did not (key missing/expired, API outage, transient error), posting now
+would earn nothing and posting later would be too late. Instead the deal is
+parked in `deferred_deals` and the worker retries it every
+`DEFERRED_RETRY_DELAY_SECONDS` (5 min) up to `DEFERRED_MAX_ATTEMPTS` (6) times —
+the source cursor has already moved on, so this queue is the only way the deal
+can still go out. As soon as EarnKaro converts, the deal is posted with OUR
+link. If the outage outlasts the retry budget the deal is posted anyway and the
+log says why, so a converter outage delays a deal instead of dropping it.
+
+`/api/flow` reports the queue as `deferred: {waiting, retry_seconds,
+allow_unconverted_posts}` and adds a note to the flow board, and the Money page
+carries the `Post unconverted links anyway` switch. Two link shapes stay
+zero-commission by design and are logged rather than delayed: a raw Meesho URL
+(nothing can mint it) and a store EarnKaro does not cover.
 
 Per-creator and per-channel **⭐ Minimum Deal Quality** (S/A/B/C, resolved
 channel → creator → global) keeps a channel's attention for the deals worth a

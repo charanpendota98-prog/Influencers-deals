@@ -1114,6 +1114,13 @@ MONEY_SWITCHES: dict[str, tuple[str, str]] = {
         "Hold back a deal when none of its links would carry our attribution. "
         "Fewer posts, but no post goes out that pays nothing.",
     ),
+    "allow_unconverted_posts": (
+        "Post unconverted links anyway",
+        "Off (recommended): a deal whose only link is a merchant URL EarnKaro "
+        "has not converted yet is parked and retried, so it is posted with OUR "
+        "link a few minutes later instead of earning nothing. On: post the raw "
+        "merchant link immediately, for volume over commission.",
+    ),
 }
 
 
@@ -1150,6 +1157,7 @@ def money_dashboard():
     defaults = {
         "meesho_earnkaro_fallback": bool(config.MEESHO_EARNKARO_FALLBACK),
         "only_earning_deals": bool(config.ONLY_EARNING_DEALS),
+        "allow_unconverted_posts": bool(config.ALLOW_UNCONVERTED_POSTS),
     }
     switches = [
         {
@@ -1935,6 +1943,23 @@ def _flow_snapshot(
     except Exception:
         hourly_loot = False
     only_earning = bool(getattr(config, "ONLY_EARNING_DEALS", False))
+    try:
+        deferred_deals = db.count_deferred_deals()
+    except Exception:
+        deferred_deals = 0
+    retry_seconds = 300
+    try:
+        from influencer_hub import pipeline as _pipeline
+
+        retry_seconds = max(1, int(getattr(_pipeline, "DEFERRED_RETRY_DELAY_SECONDS", 300)))
+    except Exception:  # pragma: no cover - the board must still render
+        pass
+    if deferred_deals:
+        note_list.append(
+            f"{deferred_deals} deal(s) are waiting for an EarnKaro conversion "
+            f"(the worker retries them every {max(1, retry_seconds // 60)} min, then "
+            "posts them anyway). None of them was posted for free."
+        )
     if live_channels and not posted_window and worker_alive:
         note_list.append(
             f"No post in the last {window_hours}h across {len(live_channels)} ready "
@@ -1976,6 +2001,16 @@ def _flow_snapshot(
         "settings": {
             "hourly_loot_enabled": hourly_loot,
             "only_earning_deals": only_earning,
+        },
+        # Deals parked for a conversion retry (nothing posted for free, nothing
+        # dropped): the board shows how many are waiting and how long the retry
+        # gap is, so "why is the channel quiet?" has a concrete answer.
+        "deferred": {
+            "waiting": deferred_deals,
+            "retry_seconds": retry_seconds,
+            "allow_unconverted_posts": bool(
+                getattr(config, "ALLOW_UNCONVERTED_POSTS", False)
+            ),
         },
         "notes": note_list,
         "stall_seconds": stall_seconds,

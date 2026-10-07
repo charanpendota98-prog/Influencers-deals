@@ -130,6 +130,11 @@ MEESHO_EARNKARO_FALLBACK = _bool("MEESHO_EARNKARO_FALLBACK", True)
 # Hold back deals whose links would all post without our attribution. Volume vs
 # earnings trade-off, so the operator decides; the Money Radar recommends it.
 ONLY_EARNING_DEALS = _bool("ONLY_EARNING_DEALS", False)
+# A deal whose only links are raw merchant/raw Meesho URLs (EarnKaro down, bad
+# key, or an unsupported merchant) pays exactly zero. Default: hold it back for
+# this cycle instead of spending a post — the worker re-reads the source post,
+# so it goes out as soon as EarnKaro converts it. Set to 1 to post anyway.
+ALLOW_UNCONVERTED_POSTS = _bool("ALLOW_UNCONVERTED_POSTS", False)
 
 # ----- EarnKaro (optional configured network for eligible non-Amazon links) -----
 EARNKARO_API_KEY = _env("EARNKARO_API_KEY")

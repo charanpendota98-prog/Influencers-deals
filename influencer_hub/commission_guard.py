@@ -151,9 +151,12 @@ def audit_rendered_text(
                 # A search page, a storefront or a short link cannot be turned
                 # into /dp/ASIN without a network round-trip, but commission is
                 # carried by the tag — so the page is KEPT, never deleted.
-                if _host_of(url) in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}:
-                    entry["reason"] = f"amzn.to with OUR tag (short code opaque, tag appended): {url}"
-                    issues.append(f"WARN amzn.to opaque link (commission best-effort, prefer /dp/ASIN): {url}")
+                if link_router.is_amazon_short_host(url):
+                    entry["reason"] = f"{_host_of(url)} with OUR tag (short code opaque, tag appended): {url}"
+                    issues.append(
+                        f"WARN opaque Amazon short link unresolved (commission best-effort, "
+                        f"prefer /dp/ASIN): {url}"
+                    )
                 else:
                     entry["reason"] = (
                         f"OUR Amazon page kept as-is (tag={effective_tag}, "
@@ -163,9 +166,12 @@ def audit_rendered_text(
             else:
                 parsed = urlparse(url)
                 tags = [v for k, v in parse_qsl(parsed.query) if k.lower() == "tag"]
-                if _host_of(url) in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}:
+                if link_router.is_amazon_short_host(url):
                     entry["ok"] = False
-                    entry["reason"] = f"amzn.to without OUR tag (expected {effective_tag}): {url}"
+                    entry["reason"] = (
+                        f"opaque Amazon short link without OUR tag "
+                        f"(expected {effective_tag}): {url}"
+                    )
                     amazon_ok = False
                     issues.append(entry["reason"])
                 else:
@@ -268,6 +274,107 @@ def audit_rendered_text(
         "earnkaro_ok": earnkaro_ok,
         "details": details,
     }
+
+
+def is_verified_our_link(
+    url: str,
+    effective_amz_tag: str,
+    effective_hypd_store: str,
+    expected_pubid: str | None = None,
+    bitly_map: dict[str, str] | None = None,
+) -> bool:
+    """True when a single final URL is verifiably carrying OUR attribution.
+
+    This is the same predicate the pre-dispatch guard uses, exposed so the
+    pipeline can ask one question: "does this post contain at least one link
+    that pays us?" A Bitly link counts when our own Bitly map says it wraps one
+    of OUR links (or when the map is absent, matching the advanced-only mode
+    where generic merchant Bitly is disabled).
+    """
+    url = str(url or "").strip()
+    if not url:
+        return False
+    tag = str(effective_amz_tag or "").strip()
+    store = str(effective_hypd_store or "").strip()
+    host = _host_of(url)
+    kind = link_router.classify_url(url)
+
+    if _is_earnkaro_short(url):
+        return True
+    if kind == "lehlah":
+        return True
+    if kind == "amazon" and tag:
+        if is_our_amazon_link(url, tag) or is_our_amazon_attribution(url, tag):
+            return True
+    if kind == "hypd" and store and is_our_hypd_link(url, store):
+        return True
+    # First-party short links minted by this hub: /amazon/<code>?tag=OURS and /m/<code>
+    if "/amazon/" in url and tag and f"tag={tag}" in url:
+        return True
+    if "/m/" in url:
+        return True
+    if host in {"bit.ly", "www.bit.ly", "bitly.com", "www.bitly.com"} or host.endswith(".bit.ly"):
+        long_url = ""
+        if bitly_map:
+            long_url = str(bitly_map.get(url) or "").strip()
+            if not long_url:
+                for long_url_candidate, short_url in bitly_map.items():
+                    if str(short_url).strip() == url:
+                        long_url = str(long_url_candidate).strip()
+                        break
+        if not long_url:
+            # Advanced-only mode disables generic merchant Bitly, so an unknown
+            # bit.ly can only be one we created.
+            return True
+        return is_verified_our_link(long_url, tag, store, expected_pubid)
+    return False
+
+
+def our_affiliate_urls(
+    rendered: str,
+    effective_amz_tag: str,
+    effective_hypd_store: str,
+    expected_pubid: str | None = None,
+    bitly_map: dict[str, str] | None = None,
+) -> list[str]:
+    """Every URL in ``rendered`` that is verifiably OURS (earns for us)."""
+    return [
+        url for url in link_router.find_urls(rendered)
+        if is_verified_our_link(url, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map)
+    ]
+
+
+# Kinds whose zero-commission state is a *conversion failure*: the link can and
+# normally does become OUR EarnKaro short, so a raw one only means the
+# conversion did not happen (API/key down, transient error, unsupported URL).
+CONVERTIBLE_KINDS = ("merchant",)
+
+# Kinds that stay raw by design: HYPD cannot mint an affiliate link from a raw
+# meesho.com product URL, so such a link earns nothing no matter what we do.
+UNMONETISABLE_KINDS = ("meesho",)
+
+
+def unmonetised_links(audit: dict, allowed_kinds: set[str] | None = None,
+                      kinds: tuple[str, ...] = CONVERTIBLE_KINDS) -> list[dict]:
+    """Audit details for links that pass the hard checks yet pay us nothing.
+
+    ``kinds`` selects which leak shapes to report: merchant links that EarnKaro
+    never converted (a conversion failure we can retry) and/or raw Meesho links
+    (nothing can monetise those today). Only kinds the channel actually allows
+    are reported, so an explicitly disabled route is never treated as a leak.
+    """
+    allowed = None if allowed_kinds is None else {k for k in allowed_kinds}
+    leaked: list[dict] = []
+    for detail in audit.get("details", []):
+        if detail.get("ok"):
+            continue
+        kind = detail.get("kind")
+        if kind not in kinds:
+            continue
+        if allowed is not None and kind not in allowed:
+            continue
+        leaked.append(detail)
+    return leaked
 
 
 def sanitize_rendered_text(
