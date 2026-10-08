@@ -1,5 +1,5 @@
 diff --git a/HANDOFF.md b/HANDOFF.md
-index 43668bd..d2df580 100644
+index 43668bd..c0ea009 100644
 --- a/HANDOFF.md
 +++ b/HANDOFF.md
 @@ -6,6 +6,9 @@
@@ -12,7 +12,7 @@ index 43668bd..d2df580 100644
  Read this before deploying. This handoff describes the current checkout; older
  notes referring to `0bf913f`, an unmerged branch, or the earlier VM rollout are
  historical and are not the current source of truth.
-@@ -64,6 +67,57 @@ before calling production delivery verified.
+@@ -64,6 +67,110 @@ before calling production delivery verified.
  
  ---
  
@@ -56,8 +56,61 @@ index 43668bd..d2df580 100644
 +
 +`/api/flow` reports the retry queue as
 +`deferred: {waiting, retry_seconds, allow_unconverted_posts}` and adds
-+"*N deal(s) are waiting for an EarnKaro conversion*" to the flow notes. The
++"*N deal(s) are waiting for a retry*" (a missing paying link: an unconverted merchant link or an unresolved wrapper) to the flow notes. The
 +README documents the per-link-shape outcome table and the retry queue.
++
++### 1c. Wrapper links and scheme-less links (second audit round, `7d68e75`+)
++
++A second, pipeline-faithful audit (55 link shapes through
++`promote_scheme_less_links` → `resolve_opaque_links_in_text_async` →
++`filter_disallowed_affiliate_links` → EarnKaro conversion → `render_for_influencer`
++→ `commission_guard`, all offline) found one more class of silent leaks and three
++sharp edges:
++
++5. **Generic shorteners were filed as "informational"** (`bit.ly`, `tinyurl.com`,
++   `cutt.ly`, `dl.flipkart.com/…`, `fkrt.it/…`). Whatever they pointed at — a
++   Flipkart product, an Amazon page, someone else's affiliate link — travelled
++   through the post untouched and unverified. `classify_url` now returns
++   `shortener` for them and `resolve_opaque_links_in_text_async()` unwraps every
++   wrapper before anything classifies, filters or converts the deal: an Amazon
++   destination becomes OUR canonical `/dp/ASIN?tag=OURTAG`, a merchant
++   destination becomes the real URL that the normal EarnKaro conversion turns
++   into OUR `ekaro.in` link. Wrappers that cannot be resolved are logged as
++   `UNRESOLVED WRAPPED LINK`, the guard reports them (`commission_guard.WRAPPED_KINDS`),
++   and the deal is **parked** (`reason="unresolved_wrapper"`) and retried by the
++   worker exactly like a failed conversion — never posted as if it paid.
++   Resolutions are cached per process (`clear_resolution_cache()`), bounded to 6
++   links / 4 s each, and some shorteners answer `200 OK` with a meta-refresh body
++   redirect, which the resolver also follows.
++6. **Links written without `http://` were invisible.** `promote_scheme_less_links()`
++   now rewrites known hosts (`flipkart.com/…`, `amazon.in/dp/…`, `amzn.to/…`,
++   `myshop…`) into real URLs at a word boundary before classification, so a
++   scheme-less Amazon link is retagged and a scheme-less Flipkart link is
++   converted. Prose ("available on amazon.in"), e-mail addresses and longer
++   domains are left alone.
++7. **A wrapper carried by the source post is not OURS.** Our own Bitly wrappers
++   are minted *after* rendering, so the guard now takes the untouched source text
++   (`source_text=`) and refuses to count a short link that was already in it —
++   closing the hole where `bit.ly/3xyzFlip` (someone else's link) was reported as
++   "OUR link present" and the post went out free.
++8. **Two-product deals no longer borrow each other's short link.** The offline
++   heuristic only maps an opaque Amazon short when the deal carries exactly one
++   distinct ASIN; otherwise resolution is left to the per-link network resolver.
++
++Operator tool (read-only, nothing is posted): 
++
++```bash
++python3 -m influencer_hub.cli audit-links --text "🔥 deal … bit.ly/abc"
++python3 -m influencer_hub.cli audit-links --file /tmp/post.txt --json
++python3 -m influencer_hub.cli audit-links --offline --text "…"   # no network
++```
++
++It prints every link, its kind, where a wrapper really points, the text that
++would be published and the verdict; exit code `0` = at least one of OUR links is
++present, `1` = the worker would hold the deal. Audit result on the 55-shape
++corpus: 8 unmonetised/unverified links before this round → 1 after, and that last
++one (a HYPD store page with no `afflink` token) is *skipped*, never posted.
++
 +
 +Two-cycle proof on a temp DB: cycle 1 with EarnKaro down → merchant-only deals
 +parked (`deferred queue: 2`), Amazon and raw-Meesho deals posted; cycle 2 with
@@ -70,16 +123,16 @@ index 43668bd..d2df580 100644
  ## 2. Test and audit commands
  
  From the repo root:
-@@ -75,7 +129,7 @@ python3 -m venv .venv
+@@ -75,7 +182,7 @@ python3 -m venv .venv
  python3 -m influencer_hub.cli doctor --telegram-sources
  ```
  
 -The test suite on this revision is expected to report **320 passed**. The
-+The test suite on this revision is expected to report **346 passed**. The
++The test suite on this revision is expected to report **363 passed**. The
  source doctor is read-only: it enumerates joined dialogs, checks the same
  selection rules as the worker, does not read message history, and does not
  check or join invites. It requires valid Telegram credentials/session on the
-@@ -95,15 +149,28 @@ procedure. Never copy secrets into Git or chat. From the deployed checkout:
+@@ -95,15 +202,29 @@ procedure. Never copy secrets into Git or chat. From the deployed checkout:
  
  ```bash
  cd ~/Influencers-deals
@@ -92,7 +145,8 @@ index 43668bd..d2df580 100644
 +python3 patches/apply-link-conversion-fixes.py --dry-run
 +python3 patches/apply-link-conversion-fixes.py --with-tests
  python3 -m influencer_hub.cli doctor --telegram-sources
-+python3 -m pytest -q            # expect 346 passed
++python3 -m influencer_hub.cli audit-links --offline --text "Deal https://www.amazon.in/dp/B08XYZ1234?tag=old-21"   # expect exit 0 + [OUR] amazon
++python3 -m pytest -q            # expect 363 passed
  sudo systemctl restart influencer-deal-worker influencer-dashboard
  systemctl is-active influencer-deal-worker influencer-dashboard
  journalctl -u influencer-deal-worker -n 100 --no-pager
@@ -108,7 +162,7 @@ index 43668bd..d2df580 100644
  The applier validates its bundled exact patch before writing. It aborts without
  writing if the VM checkout differs; inspect the diff rather than forcing it.
  If the code is already applied, `--check` exits successfully and a normal
-@@ -135,7 +202,12 @@ appear:
+@@ -135,7 +256,12 @@ appear:
  1. Read the source fallback / selector result in Setup Center or the CLI doctor.
  2. Check worker state, source activity, destination readiness, and failures on
     `/api/flow`.
@@ -122,7 +176,7 @@ index 43668bd..d2df580 100644
  4. Confirm the EarnKaro token/publisher ID in Vault and run
     `python -m influencer_hub.cli verify-earnkaro` when eligible merchant links
     must earn. Amazon attribution uses each creator's configured tag; HYPD and
-@@ -153,10 +225,13 @@ named private invites.
+@@ -153,10 +279,13 @@ named private invites.
  
  ## 5. Replayable work and safety
  
@@ -141,10 +195,10 @@ index 43668bd..d2df580 100644
    checks copies, patch presence, and applier state.
  - The original commission/account/password/deal-flow work and its four
 diff --git a/README.md b/README.md
-index 1c0662f..17c76c0 100644
+index 1c0662f..7ea7099 100644
 --- a/README.md
 +++ b/README.md
-@@ -343,6 +343,44 @@ other setup change):
+@@ -343,6 +343,60 @@ other setup change):
    deal when none of its links would carry our attribution
    (`skipped:no_commission_link`). It trades volume for earnings, so it starts
    off and the Radar recommends it only once it has seen free posts.
@@ -167,13 +221,29 @@ index 1c0662f..17c76c0 100644
 +| Raw Meesho | Sent to EarnKaro when the fallback is on; otherwise posted as-is, because HYPD cannot mint an affiliate link from a product URL (with a `ZERO-COMMISSION post` log line) |
 +| HYPD `hypd.store/<store>/afflink/<token>` | Retagged to our store id |
 +| LehLah Meesho (`mcn=LEHLAH`, `af_siteid=lehlah`, `pid=lehlah`) | Kept exactly as it is — it already pays us |
++| Wrapper (`bit.ly`, `tinyurl.com`, `cutt.ly`, `dl.flipkart.com/…`, `fkrt.it/…`) | Resolved first: an Amazon destination becomes the canonical OUR link, a merchant destination is converted by EarnKaro; if the destination cannot be resolved the deal is parked and the run logs `UNRESOLVED WRAPPED LINK` |
++| Link written without `http://` (`flipkart.com/…`, `amazon.in/dp/…`, `amzn.to/…`) | Promoted to a real URL before anything else, then handled like every other link above (retagged/converted) |
 +| Anything else (news, YouTube, blog) | Untouched |
++
++#### Check a post before it goes out
++
++```bash
++python3 -m influencer_hub.cli audit-links --text "🔥 deal … bit.ly/abc"
++python3 -m influencer_hub.cli audit-links --file /tmp/post.txt --json
++python3 -m influencer_hub.cli audit-links --offline --text "…"   # no network calls
++```
++
++Read-only: prints every link, its kind, where a wrapper really points, the text
++that would be published and the verdict — exit code `0` when at least one of OUR
++links is present, `1` when the worker would hold the deal instead of posting it.
 +
 +#### The retry queue — no free posts, no lost deals
 +
 +When the only link in a deal is a merchant URL EarnKaro should have converted
 +but did not (key missing/expired, API outage, transient error), posting now
-+would earn nothing and posting later would be too late. Instead the deal is
++would earn nothing and posting later would be too late. The same applies to a
++wrapper link (`bit.ly`, `fkrt.it`, …) whose destination could not be resolved —
++until it is, nobody can say whether the link pays us. Instead the deal is
 +parked in `deferred_deals` and the worker retries it every
 +`DEFERRED_RETRY_DELAY_SECONDS` (5 min) up to `DEFERRED_MAX_ATTEMPTS` (6) times —
 +the source cursor has already moved on, so this queue is the only way the deal
@@ -190,7 +260,7 @@ index 1c0662f..17c76c0 100644
  Per-creator and per-channel **⭐ Minimum Deal Quality** (S/A/B/C, resolved
  channel → creator → global) keeps a channel's attention for the deals worth a
 diff --git a/dashboard/app.py b/dashboard/app.py
-index 3d00119..d7ee2a3 100644
+index 3d00119..d2b7e9c 100644
 --- a/dashboard/app.py
 +++ b/dashboard/app.py
 @@ -1114,6 +1114,13 @@ MONEY_SWITCHES: dict[str, tuple[str, str]] = {
@@ -215,7 +285,7 @@ index 3d00119..d7ee2a3 100644
      }
      switches = [
          {
-@@ -1935,6 +1943,23 @@ def _flow_snapshot(
+@@ -1935,6 +1943,25 @@ def _flow_snapshot(
      except Exception:
          hourly_loot = False
      only_earning = bool(getattr(config, "ONLY_EARNING_DEALS", False))
@@ -232,14 +302,16 @@ index 3d00119..d7ee2a3 100644
 +        pass
 +    if deferred_deals:
 +        note_list.append(
-+            f"{deferred_deals} deal(s) are waiting for an EarnKaro conversion "
-+            f"(the worker retries them every {max(1, retry_seconds // 60)} min, then "
-+            "posts them anyway). None of them was posted for free."
++            f"{deferred_deals} deal(s) are waiting for a retry (a link that pays us is "
++            f"missing: EarnKaro has not converted the merchant link yet, or a wrapper "
++            f"link such as bit.ly could not be resolved). The worker retries every "
++            f"{max(1, retry_seconds // 60)} min, then posts them anyway. None of them "
++            "was posted for free."
 +        )
      if live_channels and not posted_window and worker_alive:
          note_list.append(
              f"No post in the last {window_hours}h across {len(live_channels)} ready "
-@@ -1977,6 +2002,16 @@ def _flow_snapshot(
+@@ -1977,6 +2004,16 @@ def _flow_snapshot(
              "hourly_loot_enabled": hourly_loot,
              "only_earning_deals": only_earning,
          },
@@ -256,11 +328,173 @@ index 3d00119..d7ee2a3 100644
          "notes": note_list,
          "stall_seconds": stall_seconds,
      }
+diff --git a/influencer_hub/cli.py b/influencer_hub/cli.py
+index 1fb229b..ad067dc 100644
+--- a/influencer_hub/cli.py
++++ b/influencer_hub/cli.py
+@@ -9,6 +9,8 @@ Examples
+   python -m influencer_hub.cli pair-wa 1
+   python -m influencer_hub.cli status
+   python -m influencer_hub.cli render-demo 1
++  python -m influencer_hub.cli audit-links --text "Deal ... bit.ly/abc"
++  python -m influencer_hub.cli audit-links --file /tmp/post.txt --json
+   python -m influencer_hub.cli vm-watch
+ """
+ from __future__ import annotations
+@@ -131,6 +133,106 @@ def _cmd_render_demo(args):  # pragma: no cover - demo
+     print(link_router.render_for_influencer(sample, inf["amazon_tag"], ek, role="whatsapp"))
+ 
+ 
++def _cmd_audit_links(args):  # pragma: no cover - operator tool
++    """Show exactly what a source post becomes — read-only, nothing is posted.
++
++    Prints every link in the post, how it is classified, where a wrapper really
++    points, the text that would be published and the commission verdict. Exit
++    code 0 means the post would carry at least one of OUR affiliate links; 1
++    means it would carry none (the worker would hold it for a retry when a
++    conversion/wrapper can still be resolved).
++    """
++    import json
++    import pathlib
++
++    from . import commission_guard, earnkaro
++
++    text = args.text or ""
++    if getattr(args, "file", None):
++        text = pathlib.Path(args.file).read_text(encoding="utf-8")
++    if not text.strip():
++        print("Give a post with --text \"...\" or --file path", file=sys.stderr)
++        return 2
++
++    tag = (args.tag or config.AMAZON_ASSOCIATE_TAG or "").strip()
++    store = (args.store or config.HYPD_STORE_ID or "").strip()
++    pubid = (args.publisher_id or config.EARNKARO_PUBLISHER_ID or "").strip()
++    resolve = not args.offline
++    converted: dict[str, str] = {}
++    unresolved: list[str] = []
++
++    try:
++        db.init()
++    except Exception:
++        pass
++    try:
++        if db.get_global_setting("earnkaro_publisher_id"):
++            pubid = (db.get_global_setting("earnkaro_publisher_id") or pubid).strip()
++    except Exception:
++        pass
++
++    if resolve:
++        text, unresolved = asyncio.run(
++            link_router.resolve_opaque_links_in_text_async(text, tag)
++        )
++        merchant_urls = {
++            url for url, kind in link_router.collect_links(text).items() if kind == "merchant"
++        }
++        if merchant_urls:
++            converted = asyncio.run(earnkaro.convert_links(merchant_urls))
++
++    rendered = link_router.render_for_influencer(text, tag, converted)
++    rendered = link_router.deduplicate_urls_in_text(rendered)
++    audit = commission_guard.audit_rendered_text(rendered, tag, store, pubid, source_text=text)
++    ours = commission_guard.our_affiliate_urls(rendered, tag, store, pubid, source_text=text)
++
++    if args.json:
++        print(json.dumps({
++            "amazon_tag": tag,
++            "hypd_store": store,
++            "earnkaro_publisher_id": pubid,
++            "links": [
++                {
++                    "url": url,
++                    "kind": link_router.classify_url(url),
++                    "ours": url in set(ours),
++                    "note": next(
++                        (d.get("reason", "") for d in audit["details"] if d.get("url") == url), ""
++                    ),
++                }
++                for url in link_router.find_urls(rendered)
++            ],
++            "unresolved_wrappers": unresolved,
++            "our_links": list(ours),
++            "rendered": rendered,
++            "verdict": "our_link_present" if ours else "no_our_link",
++        }, indent=2, ensure_ascii=False))
++        return 0 if ours else 1
++
++    print(f"=== LINK AUDIT (tag={tag} store={store} publisher={pubid or 'unset'}) ===")
++    print(f"resolve wrappers over the network: {'yes' if resolve else 'no (--offline)'}")
++    print("\n-- links in the republished post --")
++    for url in link_router.find_urls(rendered):
++        kind = link_router.classify_url(url)
++        mark = "OUR" if url in set(ours) else "   "
++        note = next((d.get("reason", "") for d in audit["details"] if d.get("url") == url), "")
++        print(f"  [{mark}] {kind:9s} {url}")
++        if note:
++            print(f"        {note}")
++    if unresolved:
++        print("\n-- wrappers we could not resolve (attribution unknown) --")
++        for url in unresolved:
++            print(f"  {url}")
++    print("\n-- text that would be posted --")
++    print(rendered)
++    print("\n-- verdict --")
++    if ours:
++        print(f"POST: {len(ours)} of OUR affiliate link(s) present")
++        return 0
++    print("HOLD: no link in this post pays us (worker parks it for a retry)")
++    return 1
++
++
+ def _cmd_vm_watch(args):  # pragma: no cover - side effect
+     db.init()
+     if args.loop:
+@@ -456,6 +558,19 @@ def build_parser() -> argparse.ArgumentParser:
+     r.add_argument("id", type=int)
+     r.set_defaults(func=_cmd_render_demo)
+ 
++    al = sub.add_parser(
++        "audit-links",
++        help="show what a source post becomes (read-only): links, wrappers, OUR links, verdict",
++    )
++    al.add_argument("--text", default="", help="the source post text")
++    al.add_argument("--file", default="", help="read the post text from a file instead")
++    al.add_argument("--tag", default="", help="override the Amazon Associate tag")
++    al.add_argument("--store", default="", help="override the HYPD store id")
++    al.add_argument("--publisher-id", default="", help="override the EarnKaro publisher id")
++    al.add_argument("--offline", action="store_true", help="skip resolution/conversion network calls")
++    al.add_argument("--json", action="store_true", help="machine-readable output")
++    al.set_defaults(func=_cmd_audit_links)
++
+     v = sub.add_parser("vm-watch", help="snapshot VM health (or loop)")
+     v.add_argument("--loop", action="store_true")
+     v.set_defaults(func=_cmd_vm_watch)
 diff --git a/influencer_hub/commission_guard.py b/influencer_hub/commission_guard.py
-index 8997ad9..98c53ea 100644
+index 8997ad9..fa0c601 100644
 --- a/influencer_hub/commission_guard.py
 +++ b/influencer_hub/commission_guard.py
-@@ -151,9 +151,12 @@ def audit_rendered_text(
+@@ -63,6 +63,7 @@ def audit_rendered_text(
+     expected_earnkaro_pubid: str | None = None,
+     bitly_map: dict[str, str] | None = None,
+     allowed_kinds: set[str] | None = None,
++    source_text: str = "",
+ ) -> dict:
+     """
+     Audit final rendered text for commission leaks.
+@@ -130,6 +131,13 @@ def audit_rendered_text(
+                 else:
+                     # Bitly for generic merchant pre-ADVANCED mode — not used when advanced_only_our enabled
+                     entry["reason"] = f"Bitly for generic merchant: {long_url}"
++            elif _source_wrapper(url, source_text):
++                # Same wrapper in the untouched source post -> it is the source's
++                # own short link, so it pays somebody else (or nobody).
++                entry["ok"] = False
++                entry["reason"] = (
++                    f"Wrapper carried by the source post — not created by us: {url}"
++                )
+             else:
+                 # Bitly link not in our map — in advanced_only_our mode, any bit.ly is OUR (generic Bitly disabled)
+                 # So we treat it as OUR if no map, to avoid false warnings for correctly shortened OUR links
+@@ -151,9 +159,12 @@ def audit_rendered_text(
                  # A search page, a storefront or a short link cannot be turned
                  # into /dp/ASIN without a network round-trip, but commission is
                  # carried by the tag — so the page is KEPT, never deleted.
@@ -276,7 +510,7 @@ index 8997ad9..98c53ea 100644
                  else:
                      entry["reason"] = (
                          f"OUR Amazon page kept as-is (tag={effective_tag}, "
-@@ -163,9 +166,12 @@ def audit_rendered_text(
+@@ -163,9 +174,12 @@ def audit_rendered_text(
              else:
                  parsed = urlparse(url)
                  tags = [v for k, v in parse_qsl(parsed.query) if k.lower() == "tag"]
@@ -291,16 +525,52 @@ index 8997ad9..98c53ea 100644
                      amazon_ok = False
                      issues.append(entry["reason"])
                  else:
-@@ -270,6 +276,107 @@ def audit_rendered_text(
+@@ -247,6 +261,16 @@ def audit_rendered_text(
+             else:
+                 entry["reason"] = f"First-party short link: {url}"
+ 
++        elif kind == "shortener":
++            # A wrapper we did not resolve: attribution is unknown. It is not a
++            # HARD leak (no foreign tag/store is proven), so it never triggers
++            # sanitisation — but it must be visible to the flow board, the audit
++            # and the retry decision instead of being filed away as "other".
++            entry["ok"] = False
++            entry["reason"] = (
++                f"Opaque wrapper link ({host}) — destination unknown, attribution unverified: {url}"
++            )
++
+         else:
+             # Other URLs (t.me, etc.) — not affiliate, ignore
+             entry["reason"] = f"Non-affiliate URL (other): {url}"
+@@ -270,6 +294,142 @@ def audit_rendered_text(
      }
  
  
++def _source_wrapper(url: str, source_text: str) -> bool:
++    """True when a wrapper link was already carried by the source post.
++
++    The hub mints its own Bitly wrappers *after* rendering, so seeing that same
++    short link in the untouched source text means it belongs to whoever wrote the
++    post — not to us. Such a link must never be counted as OUR commission.
++    """
++    if not source_text:
++        return False
++    try:
++        return link_router._normalised_link(url) in {
++            link_router._normalised_link(found)
++            for found in link_router.find_urls(source_text)
++        }
++    except Exception:
++        return False
++
++
 +def is_verified_our_link(
 +    url: str,
 +    effective_amz_tag: str,
 +    effective_hypd_store: str,
 +    expected_pubid: str | None = None,
 +    bitly_map: dict[str, str] | None = None,
++    source_text: str = "",
 +) -> bool:
 +    """True when a single final URL is verifiably carrying OUR attribution.
 +
@@ -342,8 +612,12 @@ index 8997ad9..98c53ea 100644
 +                        long_url = str(long_url_candidate).strip()
 +                        break
 +        if not long_url:
++            if _source_wrapper(url, source_text):
++                # The source post itself carried this bit.ly: it wraps someone
++                # else's link, so it is not OURS — never count it as commission.
++                return False
 +            # Advanced-only mode disables generic merchant Bitly, so an unknown
-+            # bit.ly can only be one we created.
++            # bit.ly created after rendering can only be one we created.
 +            return True
 +        return is_verified_our_link(long_url, tag, store, expected_pubid)
 +    return False
@@ -355,11 +629,18 @@ index 8997ad9..98c53ea 100644
 +    effective_hypd_store: str,
 +    expected_pubid: str | None = None,
 +    bitly_map: dict[str, str] | None = None,
++    source_text: str = "",
 +) -> list[str]:
-+    """Every URL in ``rendered`` that is verifiably OURS (earns for us)."""
++    """Every URL in ``rendered`` that is verifiably OURS (earns for us).
++
++    ``source_text`` (the untouched source post) keeps source wrappers from being
++    mistaken for wrappers this hub created.
++    """
 +    return [
 +        url for url in link_router.find_urls(rendered)
-+        if is_verified_our_link(url, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map)
++        if is_verified_our_link(
++            url, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map, source_text
++        )
 +    ]
 +
 +
@@ -367,6 +648,11 @@ index 8997ad9..98c53ea 100644
 +# normally does become OUR EarnKaro short, so a raw one only means the
 +# conversion did not happen (API/key down, transient error, unsupported URL).
 +CONVERTIBLE_KINDS = ("merchant",)
++
++#: Wrapper links (bit.ly/tinyurl/…): the destination — and therefore who gets
++#: paid — is unknown until they are resolved. A pure wrapper with nothing that
++#: pays is worth retrying exactly like a failed EarnKaro conversion.
++WRAPPED_KINDS = ("shortener",)
 +
 +# Kinds that stay raw by design: HYPD cannot mint an affiliate link from a raw
 +# meesho.com product URL, so such a link earns nothing no matter what we do.
@@ -571,10 +857,17 @@ index 693cfad..fabb5e1 100644
                        include_meesho: bool = False) -> str:
      # Amazon has its own Associates tag, so it never goes to EarnKaro. Raw
 diff --git a/influencer_hub/link_router.py b/influencer_hub/link_router.py
-index 92258f8..b97b8e8 100644
+index 92258f8..3270c1b 100644
 --- a/influencer_hub/link_router.py
 +++ b/influencer_hub/link_router.py
-@@ -18,10 +18,100 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+@@ -13,15 +13,423 @@ network call done by the pipeline and passed in as a precomputed map.
+ """
+ from __future__ import annotations
+ 
++import asyncio
+ import re
++import time
+ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
  
  from . import config
  
@@ -674,10 +967,390 @@ index 92258f8..b97b8e8 100644
 +    """
 +    return [url for url in find_urls(text or "") if is_amazon_short_host(url)]
 +
++# Generic link wrappers: a shortener hides the real destination from every
++# classifier, so a post can carry somebody else's link (or a link that pays
++# nothing) while looking perfectly normal. Every wrapper is resolved to its real
++# destination before rendering; these are the hosts we know how to unwrap.
++SHORTENER_DOMAINS = {
++    "bit.ly",
++    "bitly.com",
++    "tinyurl.com",
++    "tiny.cc",
++    "cutt.ly",
++    "rb.gy",
++    "is.gd",
++    "shorturl.at",
++    "rebrand.ly",
++    "ow.ly",
++    "t.ly",
++    "shrtco.de",
++    "lnk.to",
++    # Flipkart's own shorteners: they carry whoever created the link's affid
++    # inside the code, so they must be resolved and re-converted like any other
++    # merchant link instead of being posted as-is.
++    "dl.flipkart.com",
++    "fkrt.it",
++}
++
++
++def is_shortener_host(url: str) -> bool:
++    """True for a generic shortener host (bit.ly, tinyurl, Flipkart's own\u2026)."""
++    host = _host_of(url)
++    return any(_is_domain(host, domain) for domain in SHORTENER_DOMAINS)
++
++
++def is_opaque_link(url: str) -> bool:
++    """True when the link hides its destination (shortener or Amazon short code)."""
++    return is_amazon_short_host(url) or is_shortener_host(url)
++
++
++#: Hosts we look for even without an ``http://`` prefix, longest first so
++#: ``dl.flipkart.com`` wins over a hypothetical ``flipkart.com`` entry.
++_BARE_OPAQUE_HOSTS = sorted(
++    {host.removeprefix("www.") for host in AMAZON_SHORT_HOSTS} | SHORTENER_DOMAINS,
++    key=len,
++    reverse=True,
++)
++_BARE_OPAQUE_RE = re.compile(
++    r"(?<![\w./@-])("
++    + "|".join(re.escape(host) for host in _BARE_OPAQUE_HOSTS)
++    + r")/[^\s)\]}>\"']+",
++    re.I,
++)
++_TRAILING_JUNK = ".,;!?:'\""
++
++
++def opaque_link_spans(text: str) -> list[tuple[int, int, str]]:
++    """``(start, end, url)`` for every opaque wrapper in ``text``.
++
++    Scheme-less wrappers (``bit.ly/xyz``, ``amzn.to/xyz``) are included because
++    deal channels post them without a protocol all the time, and an unseen short
++    link is exactly how an untagged link reaches the channel.
++    """
++    if not text:
++        return []
++    spans: list[tuple[int, int, str]] = []
++    scheme_ful: list[tuple[int, int]] = []
++    for match in URL_RE.finditer(text):
++        raw = match.group(0)
++        trimmed = raw
++        while trimmed and trimmed[-1] in _TRAILING_JUNK:
++            trimmed = trimmed[:-1]
++        end = match.start() + len(trimmed)
++        scheme_ful.append((match.start(), end))
++        if is_opaque_link(trimmed):
++            spans.append((match.start(), end, trimmed))
++    for match in _BARE_OPAQUE_RE.finditer(text):
++        start = match.start()
++        if any(begin <= start < end for begin, end in scheme_ful):
++            continue
++        trimmed = match.group(0)
++        while trimmed and trimmed[-1] in _TRAILING_JUNK:
++            trimmed = trimmed[:-1]
++        if not trimmed:
++            continue
++        spans.append((start, start + len(trimmed), "https://" + trimmed))
++    spans.sort(key=lambda item: item[0])
++    return spans
++
++
++def has_opaque_link(text: str) -> bool:
++    """True when the text carries at least one wrapper link (short or shortener)."""
++    return bool(opaque_link_spans(text or ""))
++
++
++def unresolved_opaque_links(text: str) -> list[str]:
++    """Every wrapper still present in ``text`` (used for warnings/audits)."""
++    seen: list[str] = []
++    for _, _, url in opaque_link_spans(text or ""):
++        if url not in seen:
++            seen.append(url)
++    return seen
++
++
++# --- resolution cache: one network round-trip per wrapper per process --------
++_RESOLVED_CACHE: dict[str, tuple[float, str | None]] = {}
++_RESOLVE_CACHE_MAX = 1024
++_RESOLVE_CACHE_TTL = 3600.0
++_RESOLVE_CACHE_NEGATIVE_TTL = 90.0
++
++
++def _cache_get(url: str) -> tuple[bool, str | None]:
++    entry = _RESOLVED_CACHE.get(url)
++    if not entry:
++        return False, None
++    stored_at, final = entry
++    ttl = _RESOLVE_CACHE_TTL if final else _RESOLVE_CACHE_NEGATIVE_TTL
++    if time.time() - stored_at > ttl:
++        _RESOLVED_CACHE.pop(url, None)
++        return False, None
++    return True, final
++
++
++def _cache_put(url: str, final: str | None) -> None:
++    if len(_RESOLVED_CACHE) >= _RESOLVE_CACHE_MAX:
++        _RESOLVED_CACHE.clear()
++    _RESOLVED_CACHE[url] = (time.time(), final)
++
++
++def clear_resolution_cache() -> None:
++    """Forget every remembered wrapper resolution (tests/operator tools)."""
++    _RESOLVED_CACHE.clear()
++
++
++_REFRESH_RE = re.compile(
++    r"""(?:http-equiv=["']?refresh["']?[^>]*?url=([^"'>\s]+))"""
++    r"""|(?:location\.(?:replace|assign|href)\s*=\s*["']([^"']+)["'])""",
++    re.I,
++)
++
++
++def _destination_from_html(body: str) -> str | None:
++    """Find a meta-refresh / JS redirect target in a shortener's HTML page.
++
++    Several shorteners answer ``200 OK`` with a redirect in the body instead of a
++    ``3xx``, so following redirects alone would leave the wrapper unresolved.
++    """
++    if not body:
++        return None
++    for match in _REFRESH_RE.finditer(body[:80000]):
++        candidate = (match.group(1) or match.group(2) or "").strip().strip("'\"")
++        if candidate.startswith("//"):
++            candidate = "https:" + candidate
++        if candidate.lower().startswith(("http://", "https://")):
++            return candidate
++    return None
++
++
++def _normalised_link(url: str) -> tuple[str, str, str]:
++    try:
++        parsed = urlparse(url)
++        return (
++            (parsed.hostname or "").lower().rstrip("."),
++            (parsed.path or "").rstrip("/"),
++            urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True))),
++        )
++    except (TypeError, ValueError):
++        return ("", "", "")
++
++
++def _same_link(left: str, right: str) -> bool:
++    return _normalised_link(left) == _normalised_link(right)
++
++
++async def _default_resolve(url: str, timeout: float = 4.0) -> str | None:
++    """Follow a wrapper link and return its real destination (or None)."""
++    try:
++        import aiohttp  # type: ignore
++    except Exception:
++        return None
++    final = ""
++    body = ""
++    try:
++        client_timeout = aiohttp.ClientTimeout(total=timeout)
++        headers = {"User-Agent": "Mozilla/5.0 (compatible; InfluencerHub/1.0)"}
++        async with aiohttp.ClientSession(timeout=client_timeout, headers=headers) as session:
++            async with session.get(url, allow_redirects=True) as resp:
++                final = str(getattr(resp, "url", "") or "")
++                try:
++                    body = await resp.text()
++                except Exception:
++                    body = ""
++    except Exception:
++        return None
++    body_target = _destination_from_html(body)
++    if body_target and _host_of(body_target):
++        # A body redirect beats a URL that did not actually move (many
++        # shorteners serve the landing page with a canonical/JS redirect).
++        if not _host_of(final) or _same_link(final, url) or is_opaque_link(final):
++            return body_target
++    return final or None
++
++
++async def _call_resolver(resolver, url: str, timeout: float) -> str | None:
++    try:
++        return await resolver(url, timeout=timeout)
++    except TypeError:
++        # A caller-supplied resolver may take only the URL.
++        return await resolver(url)
++
++
++def _replacement_for_wrapper(url: str, destination: str | None, tag: str) -> str | None:
++    """The link that should replace a wrapper, or None to keep it untouched.
++
++    * an Amazon destination becomes OUR canonical ``/dp/ASIN`` link with OUR tag
++    * a merchant/HYPD/Meesho destination is returned as-is so the normal
++      conversion stages (EarnKaro, HYPD retag) can monetise it
++    * an informational destination keeps the wrapper (we only rewrote links that
++      change what we earn — a promo/YouTube link is the source's own business)
++    """
++    if not destination:
++        return None
++    if _same_link(destination, url) or is_opaque_link(destination):
++        return None
++    if amazon_marketplace_host(destination):
++        return _amazon_short_replacement(destination, tag)
++    if classify_url(destination) in {"merchant", "hypd", "meesho", "lehlah"}:
++        return destination
++    return None
++
++
++async def resolve_opaque_links_in_text_async(
++    text: str,
++    tag: str | None = None,
++    *,
++    resolve=None,
++    max_links: int = 6,
++    timeout: float = 4.0,
++    budget: float | None = None,
++) -> tuple[str, list[str]]:
++    """Rewrite every wrapper link in ``text`` into its real destination.
++
++    Returns ``(new_text, unresolved_urls)``. ``unresolved_urls`` lists the
++    wrappers whose destination could not be determined — those are the links
++    whose attribution is unknown, and the caller must treat the post as
++    unmonetised instead of posting a link that (probably) pays nobody.
++
++    ``resolve`` injects an alternative resolver for tests; when it is omitted the
++    process-wide cache is used so a batch never resolves the same wrapper twice.
++    """
++    if not text:
++        return text, []
++    spans = opaque_link_spans(text)
++    if not spans:
++        return text, []
++
++    unique: list[str] = []
++    for _, _, url in spans:
++        if url not in unique:
++            unique.append(url)
++    targets = unique[:max_links]
++    unresolved: list[str] = list(unique[max_links:])
++
++    use_cache = resolve is None
++    destinations: dict[str, str | None] = {}
++    pending: list[str] = []
++    for url in targets:
++        if use_cache:
++            cached, final = _cache_get(url)
++            if cached:
++                destinations[url] = final
++                continue
++        pending.append(url)
++
++    if pending:
++        resolver = resolve or _default_resolve
++        tasks = {asyncio.ensure_future(_call_resolver(resolver, url, timeout)): url for url in pending}
++        wait_budget = (timeout * 2 + 1.0) if budget is None else budget
++        done, not_done = await asyncio.wait(set(tasks), timeout=wait_budget)
++        for task in done:
++            url = tasks[task]
++            try:
++                final = task.result()
++            except Exception:
++                final = None
++            destinations[url] = final
++            if use_cache:
++                _cache_put(url, final)
++        for task in not_done:
++            url = tasks[task]
++            task.cancel()
++            destinations[url] = None
++
++    replacements: dict[str, str | None] = {}
++    for url in targets:
++        destination = destinations.get(url)
++        replacement = _replacement_for_wrapper(url, destination, str(tag or ""))
++        replacements[url] = replacement
++        if replacement is None and not destination:
++            unresolved.append(url)
++        elif replacement is None and (is_opaque_link(destination) or _same_link(destination, url)):
++            unresolved.append(url)
++
++    out = text
++    for start, end, url in sorted(spans, key=lambda item: item[0], reverse=True):
++        if end > len(out):
++            continue
++        replacement = replacements.get(url)
++        if not replacement:
++            continue
++        out = out[:start] + replacement + out[end:]
++
++    deduped: list[str] = []
++    for url in unresolved:
++        if url not in deduped:
++            deduped.append(url)
++    return out, deduped
++
++
  # Merchant domains we route through EarnKaro (except Amazon, HYPD, and
  # Meesho). Meesho has its own HYPD path and must never be sent to EarnKaro.
  # Expanded to cover EarnKaro's 150+ supported brands - ensures sources from
-@@ -185,6 +275,16 @@ def _is_lehlah_meesho_affiliate(url: str) -> bool:
+@@ -102,6 +510,63 @@ MERCHANT_DOMAINS = {
+     "myntra.com",
+ }
+ 
++# --- scheme-less links --------------------------------------------------------
++# Deal posts constantly carry links without ``http://`` ("flipkart.com/...",
++# "amazon.in/dp/...", "amzn.to/..."). ``URL_RE`` only sees scheme-ful URLs, so
++# those links were never classified, never converted and never verified — they
++# simply travelled through the render untouched. They are promoted to real URLs
++# before anything classifies the deal.
++_BARE_KNOWN_HOSTS = sorted(
++    {domain.removeprefix("www.") for domain in MERCHANT_DOMAINS}
++    | set(AMAZON_MARKETPLACES)
++    | {"m.amazon.in", "m.amazon.com", "hypd.store", "meesho.com"}
++    | set(SHORTENER_DOMAINS)
++    | {host.removeprefix("www.") for host in AMAZON_SHORT_HOSTS},
++    key=len,
++    reverse=True,
++)
++_BARE_KNOWN_RE = re.compile(
++    r"(?<![\w./@-])((?:www\.)?"
++    + "|".join(re.escape(host) for host in _BARE_KNOWN_HOSTS)
++    + r")(/[\w\-./?=&%#+,;:!~*'()\[\]]*)?",
++    re.I,
++)
++
++
++def promote_scheme_less_links(text: str) -> str:
++    """Give ``https://`` to known hosts written without a scheme.
++
++    Only hosts this hub can actually act on (Amazon marketplaces and shorteners,
++    supported merchants, HYPD/Meesho, the wrappers above) are promoted, and only
++    at a word boundary, so prose, e-mail addresses and file paths are untouched.
++    """
++    if not text:
++        return text
++    out: list[str] = []
++    last = 0
++    for match in _BARE_KNOWN_RE.finditer(text):
++        start, end = match.span()
++        if start < last:
++            continue
++        following = text[end:end + 1]
++        if following and (following in ".-" or following.isalnum()):
++            # Part of a longer host/path (or a sentence continues straight on).
++            continue
++        host = match.group(1)
++        path = match.group(2) or ""
++        if not path:
++            # A bare hostname in prose ("available on amazon.in") is not a deal
++            # link; only real paths/queries are promoted.
++            continue
++        while path and path[-1] in _TRAILING_JUNK:
++            path = path[:-1]
++        out.append(text[last:start])
++        out.append("https://" + host + path)
++        last = start + len(host) + len(match.group(2) or "")
++    out.append(text[last:])
++    return "".join(out)
++
++
+ # A reasonably permissive URL finder (http/https only).
+ URL_RE = re.compile(r"https?://[^\s)>\]]+", re.I)
+ 
+@@ -185,8 +650,18 @@ def _is_lehlah_meesho_affiliate(url: str) -> bool:
      )
  
  
@@ -692,9 +1365,22 @@ index 92258f8..b97b8e8 100644
 +
 +
  def classify_url(url: str) -> str:
-     """Return 'amazon' | 'hypd' | 'lehlah' | 'meesho' | 'merchant' | 'other'."""
+-    """Return 'amazon' | 'hypd' | 'lehlah' | 'meesho' | 'merchant' | 'other'."""
++    """Return 'amazon' | 'hypd' | 'lehlah' | 'meesho' | 'merchant' | 'shortener' | 'other'."""
      host = _host_of(url)
-@@ -364,17 +464,8 @@ def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
+     if any(_is_domain(host, domain) for domain in AMAZON_DOMAINS):
+         return "amazon"
+@@ -196,6 +671,9 @@ def classify_url(url: str) -> str:
+         return "lehlah"
+     if _is_domain(host, "meesho.com"):
+         return "meesho"
++    if is_shortener_host(url):
++        # A wrapper: nothing downstream can classify it until it is resolved.
++        return "shortener"
+     if any(_is_domain(host, domain.removeprefix("www.")) for domain in MERCHANT_DOMAINS):
+         return "merchant"
+     return "other"
+@@ -364,17 +842,8 @@ def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
          if not re.fullmatch(r"[A-Za-z0-9_-]{3,30}", effective_tag):
              effective_tag = config.AMAZON_ASSOCIATE_TAG
      asin = _amazon_asin(parsed)
@@ -714,7 +1400,7 @@ index 92258f8..b97b8e8 100644
  
      if asin and marketplace_host:
          # PERFECT CANONICALIZATION: Always https://www.amazon.in/dp/<ASIN>?tag=YOURTAG
-@@ -421,17 +512,19 @@ def apply_amazon_tag(url: str, tag: str | None = None) -> str:
+@@ -421,17 +890,19 @@ def apply_amazon_tag(url: str, tag: str | None = None) -> str:
  
  
  def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
@@ -743,7 +1429,7 @@ index 92258f8..b97b8e8 100644
  
      This handles the user's case:
        amzn.to/4dnF9lU?tag=mama086-21  (short, old tag inside)
-@@ -449,8 +542,7 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
+@@ -449,8 +920,7 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
      # Collect all ASINs and their th/psc from long links in the same text
      asins_with_params: list[tuple[str, dict[str, str]]] = []
      for u in urls:
@@ -753,7 +1439,25 @@ index 92258f8..b97b8e8 100644
              continue
          try:
              parsed = urlparse(u)
-@@ -478,8 +570,7 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
+@@ -469,8 +939,15 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
+     if not asins_with_params:
+         return text
+ 
+-    # Use the most common ASIN (first) for all shorts in this deal
+-    # If multiple different ASINs, we still use the first – the post likely has one product with two Link forms
++    # Only a deal that carries exactly ONE distinct ASIN can be mapped without a
++    # network round-trip: the shorts then certainly belong to that product. A
++    # post with two products and two shorts would otherwise get both shorts
++    # rewritten to the first product's ASIN — a wrong link is worse than an
++    # unresolved one, so multi-product posts are left to the async resolver.
++    distinct_asins = {asin for asin, _ in asins_with_params}
++    if len(distinct_asins) != 1:
++        return text
++
+     primary_asin, primary_params = asins_with_params[0]
+     # Deduplicate: if the text already contains a long link with this ASIN, we will replace shorts with that canonical
+     # After replacement, the rendered text may have duplicate canonical URLs (short + long both become same)
+@@ -478,8 +955,7 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
  
      out = text
      for u in urls:
@@ -763,67 +1467,116 @@ index 92258f8..b97b8e8 100644
              continue
          # Build canonical for this short using the primary ASIN + OUR tag + th/psc
          canonical_q = list(primary_params.items())
-@@ -497,24 +588,27 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
+@@ -496,75 +972,42 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
+     return out
  
  
- async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None) -> str:
+-async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None) -> str:
 -    """Async version that also tries network expansion for standalone amzn.to.
 -
 -    First does the heuristic (ASIN from same deal). If no ASIN is found and
 -    the text contains only amzn.to/amzn.in shorts, try to resolve one via
 -    HTTP HEAD (best effort, 5s timeout). If network fails or no ASIN, fall
 -    back to tag-append (still better than nothing, but commission may be at risk).
-+    """Async version that also resolves standalone opaque shorts over the network.
-+
-+    First does the heuristic (ASIN from the same deal). If no ASIN is found and
-+    the text carries any opaque Amazon short (``amzn.to``/``amzn.in``/``amzn.eu``/
-+    ``amzn.asia``/``a.co``), resolve it with a real GET and rewrite every short in
-+    the text into a long ``/dp/ASIN`` link signed with OUR tag on the same
-+    marketplace the short pointed at. When the network fails or the target has no
-+    ASIN the text is returned unchanged (best-effort attribution), and callers can
-+    list what stayed unresolved with :func:`unresolved_amazon_shorts`.
-     """
-     # Fast heuristic first (sync, no network)
-     heuristic = expand_amazon_shorts_in_text(text, tag)
-     if heuristic != text:
-         return heuristic
- 
+-    """
+-    # Fast heuristic first (sync, no network)
+-    heuristic = expand_amazon_shorts_in_text(text, tag)
+-    if heuristic != text:
+-        return heuristic
+-
 -    # No ASIN in same deal, but we have amzn.to shorts — try network
 -    if not tag or "amzn.to" not in text and "amzn.in" not in text:
-+    # No ASIN in the same deal, but we may have an opaque short to resolve.
-+    if not tag:
-         return text
- 
-     urls = find_urls(text)
+-        return text
+-
+-    urls = find_urls(text)
 -    shorts = [u for u in urls if _host_of(u) in {"amzn.to", "www.amzn.to", "amzn.in", "www.amzn.in"}]
-+    shorts = [u for u in urls if is_amazon_short_host(u)]
-     if not shorts:
-         return text
- 
-@@ -537,7 +631,12 @@ async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None)
-                             continue
-                         asin = _amazon_asin(parsed_final)
-                         if asin:
+-    if not shorts:
+-        return text
+-
+-    # Try to resolve the first short via network (production VM has internet)
++def _amazon_short_replacement(final_url: str, tag: str) -> str | None:
++    """Canonical ``/dp/ASIN?tag=OURTAG`` for a resolved Amazon destination."""
+     try:
+-        import aiohttp  # type: ignore
+-
+-        effective_tag = str(tag or "").strip()
+-        for short_url in shorts:
+-            try:
+-                timeout = aiohttp.ClientTimeout(total=5.0)
+-                headers = {"User-Agent": "Mozilla/5.0"}
+-                async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+-                    async with session.get(short_url, allow_redirects=True) as resp:
+-                        final_url = str(resp.url)
+-                        # Try to extract ASIN from final URL
+-                        try:
+-                            parsed_final = urlparse(final_url)
+-                        except Exception:
+-                            continue
+-                        asin = _amazon_asin(parsed_final)
+-                        if asin:
 -                            # Build canonical with OUR tag
-+                            # Build the canonical link on the marketplace the
-+                            # short actually pointed at (OUR store when the short
-+                            # is an India short), signed with OUR tag.
-+                            marketplace_host = (
-+                                amazon_marketplace_host(final_url) or "www.amazon.in"
-+                            )
-                             q = dict(parse_qsl(parsed_final.query, keep_blank_values=True))
-                             safe = {}
-                             for k in ("th", "psc"):
-@@ -546,7 +645,7 @@ async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None)
-                             canonical_q = list(safe.items())
-                             canonical_q.append(("tag", effective_tag))
-                             canonical = urlunparse(
+-                            q = dict(parse_qsl(parsed_final.query, keep_blank_values=True))
+-                            safe = {}
+-                            for k in ("th", "psc"):
+-                                if k in q and q[k].isdigit():
+-                                    safe[k] = q[k]
+-                            canonical_q = list(safe.items())
+-                            canonical_q.append(("tag", effective_tag))
+-                            canonical = urlunparse(
 -                                ("https", "www.amazon.in", f"/dp/{asin}", "", urlencode(canonical_q), "")
-+                                ("https", marketplace_host, f"/dp/{asin}", "", urlencode(canonical_q), "")
-                             )
-                             # Replace all shorts with this canonical (best we can do)
-                             out = text
-@@ -710,6 +809,9 @@ def _approval_render(text: str, amazon_tag: str) -> str:
+-                            )
+-                            # Replace all shorts with this canonical (best we can do)
+-                            out = text
+-                            for s in shorts:
+-                                if s in out:
+-                                    out = out.replace(s, canonical)
+-                                else:
+-                                    base = s.split("?")[0]
+-                                    if base in out:
+-                                        out = out.replace(base, canonical)
+-                            return out
+-            except Exception:
+-                continue
+-    except Exception:
+-        pass
++        parsed = urlparse(final_url)
++    except (TypeError, ValueError):
++        return None
++    asin = _amazon_asin(parsed)
++    if not asin:
++        return None
++    marketplace_host = amazon_marketplace_host(final_url) or "www.amazon.in"
++    safe_params: list[tuple[str, str]] = []
++    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
++        if key.lower() in {"th", "psc"} and value.isdigit():
++            safe_params.append((key.lower(), value))
++    if tag:
++        safe_params.append(("tag", tag))
++    return urlunparse(("https", marketplace_host, f"/dp/{asin}", "", urlencode(safe_params), ""))
+ 
+-    return text
+ 
++async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None) -> str:
++    """Rewrite every opaque wrapper in a deal into a link we can verify.
++
++    Kept for backwards compatibility (pipeline + tests): it first tries the
++    offline heuristic (a single ASIN elsewhere in the same deal), then resolves
++    every remaining wrapper — Amazon short codes **and** generic shorteners such
++    as ``bit.ly``/``dl.flipkart.com`` — over the network via
++    :func:`resolve_opaque_links_in_text_async`. Text whose wrappers cannot be
++    resolved is returned unchanged; callers report those with
++    :func:`unresolved_amazon_shorts` / :func:`unresolved_opaque_links`.
++    """
++    out = text
++    if tag and text_has_amazon_short(out):
++        out = expand_amazon_shorts_in_text(out, tag)
++    if has_opaque_link(out):
++        out, _unresolved = await resolve_opaque_links_in_text_async(out, tag)
++    return out
+ 
+ def deduplicate_urls_in_text(text: str) -> str:
+     """Remove duplicate URL occurrences, keeping the first."""
+@@ -710,6 +1153,9 @@ def _approval_render(text: str, amazon_tag: str) -> str:
      result = "\n".join(kept_lines).strip()
      # Normalize excessive blank lines
      result = re.sub(r"\n{3,}", "\n\n", result)
@@ -834,7 +1587,7 @@ index 92258f8..b97b8e8 100644
      if "#ad" not in result.lower():
          result = result + "\n\n#ad (paid link)"
 diff --git a/influencer_hub/pipeline.py b/influencer_hub/pipeline.py
-index 15afe00..a19fe66 100644
+index 15afe00..1a83a89 100644
 --- a/influencer_hub/pipeline.py
 +++ b/influencer_hub/pipeline.py
 @@ -13,6 +13,7 @@ twice to the same place while its dedup record is retained.
@@ -910,27 +1663,30 @@ index 15afe00..a19fe66 100644
      Returns {influencer_id: {channel_id: status}}.
      """
      sig = link_router.deal_signature(deal_text)
-@@ -382,15 +419,26 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
-             except Exception:
-                 pass
-             render_text = link_router.filter_disallowed_affiliate_links(deal_text, allowed_kinds)
--            # Fix amzn.to/amzn.in short links that encode old tags: if the deal also has a long
--            # Amazon link with ASIN, replace the short with the canonical OUR link (heuristic, no network)
--            # This ensures https://amzn.to/4dnF9lU?tag=mama086-21 (old code) becomes
--            # https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=mama086-21 and then gets shortened correctly
--            # For standalone shorts, also try network expansion (production VM)
--            if "amzn.to" in render_text or "amzn.in" in render_text:
-+            # Fix opaque Amazon short links that encode an old tag: when the same
-+            # deal also carries a long Amazon link with an ASIN, replace the short
-+            # with the canonical OUR link (heuristic, no network). Example:
-+            # https://amzn.to/4dnF9lU?tag=mama086-21 (old code) becomes
-+            # https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=mama086-21 and is then
-+            # shortened correctly. Standalone shorts are resolved over the network
-+            # (production VM), covering amzn.to/amzn.in/amzn.eu/amzn.asia/a.co.
-+            if link_router.text_has_amazon_short(render_text):
-                 render_text = await link_router.expand_amazon_shorts_in_text_async(
-                     render_text, effective_amz_tag
-                 )
+@@ -298,7 +335,47 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+                 per_channel[ch["id"]] = "skipped"
+                 continue
+ 
+-            urls = link_router.find_urls(deal_text)
++            # 3b. WRAPPER LINKS: a post can hide its destination behind a
++            # shortener (bit.ly, tinyurl, dl.flipkart.com/…, fkrt.it/…, amzn.to,
++            # amzn.eu, a.co…). Until it is resolved we cannot know whether the
++            # link pays us, so every wrapper is unwrapped *before* anything
++            # classifies, filters or converts the deal:
++            #   * Amazon destination -> OUR canonical /dp/ASIN?tag=OURTAG
++            #   * merchant destination -> the real URL, which the normal EarnKaro
++            #     conversion below turns into OUR ekaro link
++            #   * unknown destination -> left visible and reported, never silent
++            # Links written without http:// ("flipkart.com/…", "amzn.to/…") are
++            # invisible to every URL stage, so they are promoted to real URLs
++            # first — then resolved, classified, converted and verified like any
++            # other link instead of travelling through the post untouched.
++            render_text = link_router.promote_scheme_less_links(deal_text)
++            unresolved_wrapped: list[str] = []
++            if link_router.has_opaque_link(render_text):
++                render_text, unresolved_wrapped = await link_router.resolve_opaque_links_in_text_async(
++                    render_text, effective_amz_tag
++                )
 +                still_opaque = link_router.unresolved_amazon_shorts(render_text)
 +                if still_opaque:
 +                    # Never stay silent about a link whose embedded tag we could
@@ -940,10 +1696,44 @@ index 15afe00..a19fe66 100644
 +                        "tag appended but the short code still decides attribution",
 +                        inf.get("id"), ch.get("id"), effective_amz_tag, still_opaque[:3],
 +                    )
++                wrapped_left = [
++                    url for url in unresolved_wrapped
++                    if not link_router.is_amazon_short_host(url)
++                ]
++                if wrapped_left:
++                    logging.getLogger(__name__).warning(
++                        "UNRESOLVED WRAPPED LINK inf=%s ch=%s tag=%s links=%s — the wrapper hid its "
++                        "destination; attribution is unverified and the deal is treated as "
++                        "unmonetised (retried while nothing else pays)",
++                        inf.get("id"), ch.get("id"), effective_amz_tag, wrapped_left[:3],
++                    )
++
++            urls = link_router.find_urls(render_text)
+             kinds = {link_router.classify_url(url) for url in urls}
+             has_amz = "amazon" in kinds
+             present_affiliate_kinds = kinds.intersection(
+@@ -381,16 +458,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+                             continue
+             except Exception:
+                 pass
+-            render_text = link_router.filter_disallowed_affiliate_links(deal_text, allowed_kinds)
+-            # Fix amzn.to/amzn.in short links that encode old tags: if the deal also has a long
+-            # Amazon link with ASIN, replace the short with the canonical OUR link (heuristic, no network)
+-            # This ensures https://amzn.to/4dnF9lU?tag=mama086-21 (old code) becomes
+-            # https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=mama086-21 and then gets shortened correctly
+-            # For standalone shorts, also try network expansion (production VM)
+-            if "amzn.to" in render_text or "amzn.in" in render_text:
+-                render_text = await link_router.expand_amazon_shorts_in_text_async(
+-                    render_text, effective_amz_tag
+-                )
++            # Wrappers were already unwrapped above (step 3b), so filtering an
++            # affiliate kind now drops links the channel really disabled —
++            # including the ones a wrapper was hiding.
++            render_text = link_router.filter_disallowed_affiliate_links(render_text, allowed_kinds)
  
              # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
              if db.already_posted(inf["id"], ch["id"], sig):
-@@ -437,6 +485,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -437,6 +508,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                  meesho_fallback = meesho_earnkaro_fallback_enabled()
              except Exception:
                  meesho_fallback = bool(config.MEESHO_EARNKARO_FALLBACK)
@@ -954,14 +1744,19 @@ index 15afe00..a19fe66 100644
              try:
                  only_earning = only_earning_deals_enabled()
              except Exception:
-@@ -512,63 +564,80 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -512,63 +587,106 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                  # We audit FINAL rendered text before dispatch. Any non-OUR leak is logged and sanitized.
                  try:
                      from . import commission_guard
 +                    log = logging.getLogger(__name__)
                      expected_pubid = (db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or "").strip()
                      audit = commission_guard.audit_rendered_text(
-                         rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
+-                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
++                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
++                        bitly_map=shortened_map, allowed_kinds=allowed_kinds,
++                        # Provenance: a wrapper that also sits in the untouched
++                        # source post belongs to the source, not to us.
++                        source_text=deal_text,
                      )
                      if not audit["ok"]:
 -                        import logging
@@ -1012,7 +1807,8 @@ index 15afe00..a19fe66 100644
 -                                break
 -                        if has_affiliate:
 +                        if commission_guard.our_affiliate_urls(
-+                            sanitized, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map
++                            sanitized, effective_amz_tag, effective_hypd_store, expected_pubid,
++                            bitly_map=shortened_map, source_text=deal_text,
 +                        ):
                              rendered = sanitized
                          else:
@@ -1020,13 +1816,21 @@ index 15afe00..a19fe66 100644
                              per_channel[ch["id"]] = "skipped:no_our_affiliate_after_guard"
                              continue
 +                    elif not commission_guard.our_affiliate_urls(
-+                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map
++                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
++                        bitly_map=shortened_map, source_text=deal_text,
 +                    ):
 +                        # The hard checks passed but nothing in the post pays us.
 +                        # Every link is informational, or a merchant link EarnKaro
 +                        # never converted, or a raw Meesho URL (nothing can mint
 +                        # an affiliate link from those by design).
 +                        unmonetised = commission_guard.unmonetised_links(audit, allowed_kinds)
++                        # Wrappers are channel-independent: they are reported even
++                        # when every affiliate kind is enabled.
++                        wrapped = commission_guard.unmonetised_links(
++                            audit,
++                            set(allowed_kinds) | set(commission_guard.WRAPPED_KINDS),
++                            kinds=commission_guard.WRAPPED_KINDS,
++                        )
 +                        # A conversion failure on a store EarnKaro is known to
 +                        # cover is worth retrying: hold the deal back and let the
 +                        # worker re-read the source post, so it goes out converted
@@ -1037,18 +1841,30 @@ index 15afe00..a19fe66 100644
 +                            detail for detail in unmonetised
 +                            if link_router.is_known_merchant_host(str(detail.get("url") or ""))
 +                        ]
-+                        if (retryable and not allow_unconverted_posts and not force_unconverted
++                        # A wrapper whose destination we could not resolve is the
++                        # same problem as a failed conversion: the link may pay
++                        # nobody, so hold the deal and let the worker retry it.
++                        pending_wrappers = [
++                            str(detail.get("url") or "")
++                            for detail in wrapped
++                            if str(detail.get("url") or "")
++                            and not link_router.is_amazon_short_host(str(detail.get("url") or ""))
++                        ]
++                        park_reason = "earnkaro_unconverted" if retryable else "unresolved_wrapper"
++                        if ((retryable or pending_wrappers) and not allow_unconverted_posts
++                                and not force_unconverted
 +                                and earnkaro.credentials_configured()):
 +                            log.warning(
-+                                "EARNKARO CONVERSION FAILED — deal parked for a retry inf=%s ch=%s tag=%s "
-+                                "store=%s pubid=%s links=%s (set ALLOW_UNCONVERTED_POSTS=1 to post unconverted "
-+                                "links anyway)",
++                                "UNMONETISED DEAL PARKED FOR A RETRY inf=%s ch=%s tag=%s "
++                                "store=%s pubid=%s reason=%s unconverted=%s wrapped=%s (set "
++                                "ALLOW_UNCONVERTED_POSTS=1 to post unconverted/wrapped links anyway)",
 +                                inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid,
-+                                [d.get("url") for d in retryable][:5],
++                                park_reason,
++                                [d.get("url") for d in retryable][:5], pending_wrappers[:5],
 +                            )
 +                            try:
 +                                db.defer_deal(
-+                                    deal_text, source=source_channel, reason="earnkaro_unconverted",
++                                    deal_text, source=source_channel, reason=park_reason,
 +                                    delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
 +                                    max_attempts=DEFERRED_MAX_ATTEMPTS,
 +                                )
@@ -1061,9 +1877,10 @@ index 15afe00..a19fe66 100644
 +                            # deal still goes out, but never silently.
 +                            log.warning(
 +                                "ZERO-COMMISSION post inf=%s ch=%s tag=%s store=%s pubid=%s unconverted=%s "
-+                                "meesho_by_design=%s",
++                                "wrapped=%s meesho_by_design=%s",
 +                                inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid,
 +                                [d.get("url") for d in unmonetised][:5],
++                                pending_wrappers[:5],
 +                                [d.get("url") for d in commission_guard.unmonetised_links(
 +                                    audit, allowed_kinds, kinds=commission_guard.UNMONETISABLE_KINDS
 +                                )][:3],
@@ -1073,7 +1890,7 @@ index 15afe00..a19fe66 100644
                      logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
  
              # 8b-2. MONEY FILTER: never spend a post on a deal that pays nothing.
-@@ -590,7 +659,6 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -590,7 +708,6 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                          per_channel[ch["id"]] = "skipped:no_commission_link"
                          continue
                  except Exception as _money_exc:  # pragma: no cover - defensive
@@ -1081,7 +1898,7 @@ index 15afe00..a19fe66 100644
                      logging.getLogger(__name__).exception("money filter failed: %s", _money_exc)
              # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
              # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
-@@ -645,8 +713,13 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -645,8 +762,13 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
      return results
  
  
@@ -1097,7 +1914,7 @@ index 15afe00..a19fe66 100644
      # Periodically prune old post/stat rows to bound database growth.
      try:
          if random.random() < 0.05:  # ~5% of run cycles
-@@ -661,7 +734,9 @@ async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] |
+@@ -661,7 +783,9 @@ async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] |
          else:
              d_text = str(deal)
              d_src = ""
