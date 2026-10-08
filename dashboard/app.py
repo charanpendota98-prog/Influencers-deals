@@ -1956,9 +1956,11 @@ def _flow_snapshot(
         pass
     if deferred_deals:
         note_list.append(
-            f"{deferred_deals} deal(s) are waiting for an EarnKaro conversion "
-            f"(the worker retries them every {max(1, retry_seconds // 60)} min, then "
-            "posts them anyway). None of them was posted for free."
+            f"{deferred_deals} deal(s) are waiting for a retry (a link that pays us is "
+            f"missing: EarnKaro has not converted the merchant link yet, or a wrapper "
+            f"link such as bit.ly could not be resolved). The worker retries every "
+            f"{max(1, retry_seconds // 60)} min, then posts them anyway. None of them "
+            "was posted for free."
         )
     if live_channels and not posted_window and worker_alive:
         note_list.append(

@@ -107,8 +107,61 @@ our store; LehLah preserved; informational links untouched.
 
 `/api/flow` reports the retry queue as
 `deferred: {waiting, retry_seconds, allow_unconverted_posts}` and adds
-"*N deal(s) are waiting for an EarnKaro conversion*" to the flow notes. The
+"*N deal(s) are waiting for a retry*" (a missing paying link: an unconverted merchant link or an unresolved wrapper) to the flow notes. The
 README documents the per-link-shape outcome table and the retry queue.
+
+### 1c. Wrapper links and scheme-less links (second audit round, `7d68e75`+)
+
+A second, pipeline-faithful audit (55 link shapes through
+`promote_scheme_less_links` → `resolve_opaque_links_in_text_async` →
+`filter_disallowed_affiliate_links` → EarnKaro conversion → `render_for_influencer`
+→ `commission_guard`, all offline) found one more class of silent leaks and three
+sharp edges:
+
+5. **Generic shorteners were filed as "informational"** (`bit.ly`, `tinyurl.com`,
+   `cutt.ly`, `dl.flipkart.com/…`, `fkrt.it/…`). Whatever they pointed at — a
+   Flipkart product, an Amazon page, someone else's affiliate link — travelled
+   through the post untouched and unverified. `classify_url` now returns
+   `shortener` for them and `resolve_opaque_links_in_text_async()` unwraps every
+   wrapper before anything classifies, filters or converts the deal: an Amazon
+   destination becomes OUR canonical `/dp/ASIN?tag=OURTAG`, a merchant
+   destination becomes the real URL that the normal EarnKaro conversion turns
+   into OUR `ekaro.in` link. Wrappers that cannot be resolved are logged as
+   `UNRESOLVED WRAPPED LINK`, the guard reports them (`commission_guard.WRAPPED_KINDS`),
+   and the deal is **parked** (`reason="unresolved_wrapper"`) and retried by the
+   worker exactly like a failed conversion — never posted as if it paid.
+   Resolutions are cached per process (`clear_resolution_cache()`), bounded to 6
+   links / 4 s each, and some shorteners answer `200 OK` with a meta-refresh body
+   redirect, which the resolver also follows.
+6. **Links written without `http://` were invisible.** `promote_scheme_less_links()`
+   now rewrites known hosts (`flipkart.com/…`, `amazon.in/dp/…`, `amzn.to/…`,
+   `myshop…`) into real URLs at a word boundary before classification, so a
+   scheme-less Amazon link is retagged and a scheme-less Flipkart link is
+   converted. Prose ("available on amazon.in"), e-mail addresses and longer
+   domains are left alone.
+7. **A wrapper carried by the source post is not OURS.** Our own Bitly wrappers
+   are minted *after* rendering, so the guard now takes the untouched source text
+   (`source_text=`) and refuses to count a short link that was already in it —
+   closing the hole where `bit.ly/3xyzFlip` (someone else's link) was reported as
+   "OUR link present" and the post went out free.
+8. **Two-product deals no longer borrow each other's short link.** The offline
+   heuristic only maps an opaque Amazon short when the deal carries exactly one
+   distinct ASIN; otherwise resolution is left to the per-link network resolver.
+
+Operator tool (read-only, nothing is posted): 
+
+```bash
+python3 -m influencer_hub.cli audit-links --text "🔥 deal … bit.ly/abc"
+python3 -m influencer_hub.cli audit-links --file /tmp/post.txt --json
+python3 -m influencer_hub.cli audit-links --offline --text "…"   # no network
+```
+
+It prints every link, its kind, where a wrapper really points, the text that
+would be published and the verdict; exit code `0` = at least one of OUR links is
+present, `1` = the worker would hold the deal. Audit result on the 55-shape
+corpus: 8 unmonetised/unverified links before this round → 1 after, and that last
+one (a HYPD store page with no `afflink` token) is *skipped*, never posted.
+
 
 Two-cycle proof on a temp DB: cycle 1 with EarnKaro down → merchant-only deals
 parked (`deferred queue: 2`), Amazon and raw-Meesho deals posted; cycle 2 with
@@ -129,7 +182,7 @@ python3 -m venv .venv
 python3 -m influencer_hub.cli doctor --telegram-sources
 ```
 
-The test suite on this revision is expected to report **346 passed**. The
+The test suite on this revision is expected to report **363 passed**. The
 source doctor is read-only: it enumerates joined dialogs, checks the same
 selection rules as the worker, does not read message history, and does not
 check or join invites. It requires valid Telegram credentials/session on the
@@ -158,7 +211,8 @@ python3 patches/apply-link-conversion-fixes.py --check
 python3 patches/apply-link-conversion-fixes.py --dry-run
 python3 patches/apply-link-conversion-fixes.py --with-tests
 python3 -m influencer_hub.cli doctor --telegram-sources
-python3 -m pytest -q            # expect 346 passed
+python3 -m influencer_hub.cli audit-links --offline --text "Deal https://www.amazon.in/dp/B08XYZ1234?tag=old-21"   # expect exit 0 + [OUR] amazon
+python3 -m pytest -q            # expect 363 passed
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
 journalctl -u influencer-deal-worker -n 100 --no-pager

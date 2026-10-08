@@ -63,6 +63,7 @@ def audit_rendered_text(
     expected_earnkaro_pubid: str | None = None,
     bitly_map: dict[str, str] | None = None,
     allowed_kinds: set[str] | None = None,
+    source_text: str = "",
 ) -> dict:
     """
     Audit final rendered text for commission leaks.
@@ -130,6 +131,13 @@ def audit_rendered_text(
                 else:
                     # Bitly for generic merchant pre-ADVANCED mode — not used when advanced_only_our enabled
                     entry["reason"] = f"Bitly for generic merchant: {long_url}"
+            elif _source_wrapper(url, source_text):
+                # Same wrapper in the untouched source post -> it is the source's
+                # own short link, so it pays somebody else (or nobody).
+                entry["ok"] = False
+                entry["reason"] = (
+                    f"Wrapper carried by the source post — not created by us: {url}"
+                )
             else:
                 # Bitly link not in our map — in advanced_only_our mode, any bit.ly is OUR (generic Bitly disabled)
                 # So we treat it as OUR if no map, to avoid false warnings for correctly shortened OUR links
@@ -253,6 +261,16 @@ def audit_rendered_text(
             else:
                 entry["reason"] = f"First-party short link: {url}"
 
+        elif kind == "shortener":
+            # A wrapper we did not resolve: attribution is unknown. It is not a
+            # HARD leak (no foreign tag/store is proven), so it never triggers
+            # sanitisation — but it must be visible to the flow board, the audit
+            # and the retry decision instead of being filed away as "other".
+            entry["ok"] = False
+            entry["reason"] = (
+                f"Opaque wrapper link ({host}) — destination unknown, attribution unverified: {url}"
+            )
+
         else:
             # Other URLs (t.me, etc.) — not affiliate, ignore
             entry["reason"] = f"Non-affiliate URL (other): {url}"
@@ -276,12 +294,31 @@ def audit_rendered_text(
     }
 
 
+def _source_wrapper(url: str, source_text: str) -> bool:
+    """True when a wrapper link was already carried by the source post.
+
+    The hub mints its own Bitly wrappers *after* rendering, so seeing that same
+    short link in the untouched source text means it belongs to whoever wrote the
+    post — not to us. Such a link must never be counted as OUR commission.
+    """
+    if not source_text:
+        return False
+    try:
+        return link_router._normalised_link(url) in {
+            link_router._normalised_link(found)
+            for found in link_router.find_urls(source_text)
+        }
+    except Exception:
+        return False
+
+
 def is_verified_our_link(
     url: str,
     effective_amz_tag: str,
     effective_hypd_store: str,
     expected_pubid: str | None = None,
     bitly_map: dict[str, str] | None = None,
+    source_text: str = "",
 ) -> bool:
     """True when a single final URL is verifiably carrying OUR attribution.
 
@@ -323,8 +360,12 @@ def is_verified_our_link(
                         long_url = str(long_url_candidate).strip()
                         break
         if not long_url:
+            if _source_wrapper(url, source_text):
+                # The source post itself carried this bit.ly: it wraps someone
+                # else's link, so it is not OURS — never count it as commission.
+                return False
             # Advanced-only mode disables generic merchant Bitly, so an unknown
-            # bit.ly can only be one we created.
+            # bit.ly created after rendering can only be one we created.
             return True
         return is_verified_our_link(long_url, tag, store, expected_pubid)
     return False
@@ -336,11 +377,18 @@ def our_affiliate_urls(
     effective_hypd_store: str,
     expected_pubid: str | None = None,
     bitly_map: dict[str, str] | None = None,
+    source_text: str = "",
 ) -> list[str]:
-    """Every URL in ``rendered`` that is verifiably OURS (earns for us)."""
+    """Every URL in ``rendered`` that is verifiably OURS (earns for us).
+
+    ``source_text`` (the untouched source post) keeps source wrappers from being
+    mistaken for wrappers this hub created.
+    """
     return [
         url for url in link_router.find_urls(rendered)
-        if is_verified_our_link(url, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map)
+        if is_verified_our_link(
+            url, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map, source_text
+        )
     ]
 
 
@@ -348,6 +396,11 @@ def our_affiliate_urls(
 # normally does become OUR EarnKaro short, so a raw one only means the
 # conversion did not happen (API/key down, transient error, unsupported URL).
 CONVERTIBLE_KINDS = ("merchant",)
+
+#: Wrapper links (bit.ly/tinyurl/…): the destination — and therefore who gets
+#: paid — is unknown until they are resolved. A pure wrapper with nothing that
+#: pays is worth retrying exactly like a failed EarnKaro conversion.
+WRAPPED_KINDS = ("shortener",)
 
 # Kinds that stay raw by design: HYPD cannot mint an affiliate link from a raw
 # meesho.com product URL, so such a link earns nothing no matter what we do.

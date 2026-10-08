@@ -335,7 +335,47 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                 per_channel[ch["id"]] = "skipped"
                 continue
 
-            urls = link_router.find_urls(deal_text)
+            # 3b. WRAPPER LINKS: a post can hide its destination behind a
+            # shortener (bit.ly, tinyurl, dl.flipkart.com/…, fkrt.it/…, amzn.to,
+            # amzn.eu, a.co…). Until it is resolved we cannot know whether the
+            # link pays us, so every wrapper is unwrapped *before* anything
+            # classifies, filters or converts the deal:
+            #   * Amazon destination -> OUR canonical /dp/ASIN?tag=OURTAG
+            #   * merchant destination -> the real URL, which the normal EarnKaro
+            #     conversion below turns into OUR ekaro link
+            #   * unknown destination -> left visible and reported, never silent
+            # Links written without http:// ("flipkart.com/…", "amzn.to/…") are
+            # invisible to every URL stage, so they are promoted to real URLs
+            # first — then resolved, classified, converted and verified like any
+            # other link instead of travelling through the post untouched.
+            render_text = link_router.promote_scheme_less_links(deal_text)
+            unresolved_wrapped: list[str] = []
+            if link_router.has_opaque_link(render_text):
+                render_text, unresolved_wrapped = await link_router.resolve_opaque_links_in_text_async(
+                    render_text, effective_amz_tag
+                )
+                still_opaque = link_router.unresolved_amazon_shorts(render_text)
+                if still_opaque:
+                    # Never stay silent about a link whose embedded tag we could
+                    # not verify: the post goes out with best-effort attribution.
+                    logging.getLogger(__name__).warning(
+                        "UNRESOLVED AMAZON SHORT inf=%s ch=%s tag=%s links=%s — "
+                        "tag appended but the short code still decides attribution",
+                        inf.get("id"), ch.get("id"), effective_amz_tag, still_opaque[:3],
+                    )
+                wrapped_left = [
+                    url for url in unresolved_wrapped
+                    if not link_router.is_amazon_short_host(url)
+                ]
+                if wrapped_left:
+                    logging.getLogger(__name__).warning(
+                        "UNRESOLVED WRAPPED LINK inf=%s ch=%s tag=%s links=%s — the wrapper hid its "
+                        "destination; attribution is unverified and the deal is treated as "
+                        "unmonetised (retried while nothing else pays)",
+                        inf.get("id"), ch.get("id"), effective_amz_tag, wrapped_left[:3],
+                    )
+
+            urls = link_router.find_urls(render_text)
             kinds = {link_router.classify_url(url) for url in urls}
             has_amz = "amazon" in kinds
             present_affiliate_kinds = kinds.intersection(
@@ -418,27 +458,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                             continue
             except Exception:
                 pass
-            render_text = link_router.filter_disallowed_affiliate_links(deal_text, allowed_kinds)
-            # Fix opaque Amazon short links that encode an old tag: when the same
-            # deal also carries a long Amazon link with an ASIN, replace the short
-            # with the canonical OUR link (heuristic, no network). Example:
-            # https://amzn.to/4dnF9lU?tag=mama086-21 (old code) becomes
-            # https://www.amazon.in/dp/B0D9P2M1PB?th=1&tag=mama086-21 and is then
-            # shortened correctly. Standalone shorts are resolved over the network
-            # (production VM), covering amzn.to/amzn.in/amzn.eu/amzn.asia/a.co.
-            if link_router.text_has_amazon_short(render_text):
-                render_text = await link_router.expand_amazon_shorts_in_text_async(
-                    render_text, effective_amz_tag
-                )
-                still_opaque = link_router.unresolved_amazon_shorts(render_text)
-                if still_opaque:
-                    # Never stay silent about a link whose embedded tag we could
-                    # not verify: the post goes out with best-effort attribution.
-                    logging.getLogger(__name__).warning(
-                        "UNRESOLVED AMAZON SHORT inf=%s ch=%s tag=%s links=%s — "
-                        "tag appended but the short code still decides attribution",
-                        inf.get("id"), ch.get("id"), effective_amz_tag, still_opaque[:3],
-                    )
+            # Wrappers were already unwrapped above (step 3b), so filtering an
+            # affiliate kind now drops links the channel really disabled —
+            # including the ones a wrapper was hiding.
+            render_text = link_router.filter_disallowed_affiliate_links(render_text, allowed_kinds)
 
             # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
             if db.already_posted(inf["id"], ch["id"], sig):
@@ -567,7 +590,11 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                     log = logging.getLogger(__name__)
                     expected_pubid = (db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or "").strip()
                     audit = commission_guard.audit_rendered_text(
-                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
+                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
+                        bitly_map=shortened_map, allowed_kinds=allowed_kinds,
+                        # Provenance: a wrapper that also sits in the untouched
+                        # source post belongs to the source, not to us.
+                        source_text=deal_text,
                     )
                     if not audit["ok"]:
                         log.warning(
@@ -581,7 +608,8 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                             rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
                         )
                         if commission_guard.our_affiliate_urls(
-                            sanitized, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map
+                            sanitized, effective_amz_tag, effective_hypd_store, expected_pubid,
+                            bitly_map=shortened_map, source_text=deal_text,
                         ):
                             rendered = sanitized
                         else:
@@ -589,13 +617,21 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                             per_channel[ch["id"]] = "skipped:no_our_affiliate_after_guard"
                             continue
                     elif not commission_guard.our_affiliate_urls(
-                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map
+                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
+                        bitly_map=shortened_map, source_text=deal_text,
                     ):
                         # The hard checks passed but nothing in the post pays us.
                         # Every link is informational, or a merchant link EarnKaro
                         # never converted, or a raw Meesho URL (nothing can mint
                         # an affiliate link from those by design).
                         unmonetised = commission_guard.unmonetised_links(audit, allowed_kinds)
+                        # Wrappers are channel-independent: they are reported even
+                        # when every affiliate kind is enabled.
+                        wrapped = commission_guard.unmonetised_links(
+                            audit,
+                            set(allowed_kinds) | set(commission_guard.WRAPPED_KINDS),
+                            kinds=commission_guard.WRAPPED_KINDS,
+                        )
                         # A conversion failure on a store EarnKaro is known to
                         # cover is worth retrying: hold the deal back and let the
                         # worker re-read the source post, so it goes out converted
@@ -606,18 +642,30 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                             detail for detail in unmonetised
                             if link_router.is_known_merchant_host(str(detail.get("url") or ""))
                         ]
-                        if (retryable and not allow_unconverted_posts and not force_unconverted
+                        # A wrapper whose destination we could not resolve is the
+                        # same problem as a failed conversion: the link may pay
+                        # nobody, so hold the deal and let the worker retry it.
+                        pending_wrappers = [
+                            str(detail.get("url") or "")
+                            for detail in wrapped
+                            if str(detail.get("url") or "")
+                            and not link_router.is_amazon_short_host(str(detail.get("url") or ""))
+                        ]
+                        park_reason = "earnkaro_unconverted" if retryable else "unresolved_wrapper"
+                        if ((retryable or pending_wrappers) and not allow_unconverted_posts
+                                and not force_unconverted
                                 and earnkaro.credentials_configured()):
                             log.warning(
-                                "EARNKARO CONVERSION FAILED — deal parked for a retry inf=%s ch=%s tag=%s "
-                                "store=%s pubid=%s links=%s (set ALLOW_UNCONVERTED_POSTS=1 to post unconverted "
-                                "links anyway)",
+                                "UNMONETISED DEAL PARKED FOR A RETRY inf=%s ch=%s tag=%s "
+                                "store=%s pubid=%s reason=%s unconverted=%s wrapped=%s (set "
+                                "ALLOW_UNCONVERTED_POSTS=1 to post unconverted/wrapped links anyway)",
                                 inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid,
-                                [d.get("url") for d in retryable][:5],
+                                park_reason,
+                                [d.get("url") for d in retryable][:5], pending_wrappers[:5],
                             )
                             try:
                                 db.defer_deal(
-                                    deal_text, source=source_channel, reason="earnkaro_unconverted",
+                                    deal_text, source=source_channel, reason=park_reason,
                                     delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
                                     max_attempts=DEFERRED_MAX_ATTEMPTS,
                                 )
@@ -630,9 +678,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                             # deal still goes out, but never silently.
                             log.warning(
                                 "ZERO-COMMISSION post inf=%s ch=%s tag=%s store=%s pubid=%s unconverted=%s "
-                                "meesho_by_design=%s",
+                                "wrapped=%s meesho_by_design=%s",
                                 inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid,
                                 [d.get("url") for d in unmonetised][:5],
+                                pending_wrappers[:5],
                                 [d.get("url") for d in commission_guard.unmonetised_links(
                                     audit, allowed_kinds, kinds=commission_guard.UNMONETISABLE_KINDS
                                 )][:3],

@@ -9,6 +9,8 @@ Examples
   python -m influencer_hub.cli pair-wa 1
   python -m influencer_hub.cli status
   python -m influencer_hub.cli render-demo 1
+  python -m influencer_hub.cli audit-links --text "Deal ... bit.ly/abc"
+  python -m influencer_hub.cli audit-links --file /tmp/post.txt --json
   python -m influencer_hub.cli vm-watch
 """
 from __future__ import annotations
@@ -129,6 +131,106 @@ def _cmd_render_demo(args):  # pragma: no cover - demo
     print("💬 CHANNEL 3: WHATSAPP CHANNEL / GROUP (Full deals)")
     print("-----------------------------------------------------------")
     print(link_router.render_for_influencer(sample, inf["amazon_tag"], ek, role="whatsapp"))
+
+
+def _cmd_audit_links(args):  # pragma: no cover - operator tool
+    """Show exactly what a source post becomes — read-only, nothing is posted.
+
+    Prints every link in the post, how it is classified, where a wrapper really
+    points, the text that would be published and the commission verdict. Exit
+    code 0 means the post would carry at least one of OUR affiliate links; 1
+    means it would carry none (the worker would hold it for a retry when a
+    conversion/wrapper can still be resolved).
+    """
+    import json
+    import pathlib
+
+    from . import commission_guard, earnkaro
+
+    text = args.text or ""
+    if getattr(args, "file", None):
+        text = pathlib.Path(args.file).read_text(encoding="utf-8")
+    if not text.strip():
+        print("Give a post with --text \"...\" or --file path", file=sys.stderr)
+        return 2
+
+    tag = (args.tag or config.AMAZON_ASSOCIATE_TAG or "").strip()
+    store = (args.store or config.HYPD_STORE_ID or "").strip()
+    pubid = (args.publisher_id or config.EARNKARO_PUBLISHER_ID or "").strip()
+    resolve = not args.offline
+    converted: dict[str, str] = {}
+    unresolved: list[str] = []
+
+    try:
+        db.init()
+    except Exception:
+        pass
+    try:
+        if db.get_global_setting("earnkaro_publisher_id"):
+            pubid = (db.get_global_setting("earnkaro_publisher_id") or pubid).strip()
+    except Exception:
+        pass
+
+    if resolve:
+        text, unresolved = asyncio.run(
+            link_router.resolve_opaque_links_in_text_async(text, tag)
+        )
+        merchant_urls = {
+            url for url, kind in link_router.collect_links(text).items() if kind == "merchant"
+        }
+        if merchant_urls:
+            converted = asyncio.run(earnkaro.convert_links(merchant_urls))
+
+    rendered = link_router.render_for_influencer(text, tag, converted)
+    rendered = link_router.deduplicate_urls_in_text(rendered)
+    audit = commission_guard.audit_rendered_text(rendered, tag, store, pubid, source_text=text)
+    ours = commission_guard.our_affiliate_urls(rendered, tag, store, pubid, source_text=text)
+
+    if args.json:
+        print(json.dumps({
+            "amazon_tag": tag,
+            "hypd_store": store,
+            "earnkaro_publisher_id": pubid,
+            "links": [
+                {
+                    "url": url,
+                    "kind": link_router.classify_url(url),
+                    "ours": url in set(ours),
+                    "note": next(
+                        (d.get("reason", "") for d in audit["details"] if d.get("url") == url), ""
+                    ),
+                }
+                for url in link_router.find_urls(rendered)
+            ],
+            "unresolved_wrappers": unresolved,
+            "our_links": list(ours),
+            "rendered": rendered,
+            "verdict": "our_link_present" if ours else "no_our_link",
+        }, indent=2, ensure_ascii=False))
+        return 0 if ours else 1
+
+    print(f"=== LINK AUDIT (tag={tag} store={store} publisher={pubid or 'unset'}) ===")
+    print(f"resolve wrappers over the network: {'yes' if resolve else 'no (--offline)'}")
+    print("\n-- links in the republished post --")
+    for url in link_router.find_urls(rendered):
+        kind = link_router.classify_url(url)
+        mark = "OUR" if url in set(ours) else "   "
+        note = next((d.get("reason", "") for d in audit["details"] if d.get("url") == url), "")
+        print(f"  [{mark}] {kind:9s} {url}")
+        if note:
+            print(f"        {note}")
+    if unresolved:
+        print("\n-- wrappers we could not resolve (attribution unknown) --")
+        for url in unresolved:
+            print(f"  {url}")
+    print("\n-- text that would be posted --")
+    print(rendered)
+    print("\n-- verdict --")
+    if ours:
+        print(f"POST: {len(ours)} of OUR affiliate link(s) present")
+        return 0
+    print("HOLD: no link in this post pays us (worker parks it for a retry)")
+    return 1
 
 
 def _cmd_vm_watch(args):  # pragma: no cover - side effect
@@ -455,6 +557,19 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("render-demo", help="show how a sample deal renders for an influencer")
     r.add_argument("id", type=int)
     r.set_defaults(func=_cmd_render_demo)
+
+    al = sub.add_parser(
+        "audit-links",
+        help="show what a source post becomes (read-only): links, wrappers, OUR links, verdict",
+    )
+    al.add_argument("--text", default="", help="the source post text")
+    al.add_argument("--file", default="", help="read the post text from a file instead")
+    al.add_argument("--tag", default="", help="override the Amazon Associate tag")
+    al.add_argument("--store", default="", help="override the HYPD store id")
+    al.add_argument("--publisher-id", default="", help="override the EarnKaro publisher id")
+    al.add_argument("--offline", action="store_true", help="skip resolution/conversion network calls")
+    al.add_argument("--json", action="store_true", help="machine-readable output")
+    al.set_defaults(func=_cmd_audit_links)
 
     v = sub.add_parser("vm-watch", help="snapshot VM health (or loop)")
     v.add_argument("--loop", action="store_true")

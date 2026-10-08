@@ -13,7 +13,9 @@ network call done by the pipeline and passed in as a precomputed map.
 """
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from . import config
@@ -112,6 +114,322 @@ def unresolved_amazon_shorts(text: str) -> list[str]:
     """
     return [url for url in find_urls(text or "") if is_amazon_short_host(url)]
 
+# Generic link wrappers: a shortener hides the real destination from every
+# classifier, so a post can carry somebody else's link (or a link that pays
+# nothing) while looking perfectly normal. Every wrapper is resolved to its real
+# destination before rendering; these are the hosts we know how to unwrap.
+SHORTENER_DOMAINS = {
+    "bit.ly",
+    "bitly.com",
+    "tinyurl.com",
+    "tiny.cc",
+    "cutt.ly",
+    "rb.gy",
+    "is.gd",
+    "shorturl.at",
+    "rebrand.ly",
+    "ow.ly",
+    "t.ly",
+    "shrtco.de",
+    "lnk.to",
+    # Flipkart's own shorteners: they carry whoever created the link's affid
+    # inside the code, so they must be resolved and re-converted like any other
+    # merchant link instead of being posted as-is.
+    "dl.flipkart.com",
+    "fkrt.it",
+}
+
+
+def is_shortener_host(url: str) -> bool:
+    """True for a generic shortener host (bit.ly, tinyurl, Flipkart's own\u2026)."""
+    host = _host_of(url)
+    return any(_is_domain(host, domain) for domain in SHORTENER_DOMAINS)
+
+
+def is_opaque_link(url: str) -> bool:
+    """True when the link hides its destination (shortener or Amazon short code)."""
+    return is_amazon_short_host(url) or is_shortener_host(url)
+
+
+#: Hosts we look for even without an ``http://`` prefix, longest first so
+#: ``dl.flipkart.com`` wins over a hypothetical ``flipkart.com`` entry.
+_BARE_OPAQUE_HOSTS = sorted(
+    {host.removeprefix("www.") for host in AMAZON_SHORT_HOSTS} | SHORTENER_DOMAINS,
+    key=len,
+    reverse=True,
+)
+_BARE_OPAQUE_RE = re.compile(
+    r"(?<![\w./@-])("
+    + "|".join(re.escape(host) for host in _BARE_OPAQUE_HOSTS)
+    + r")/[^\s)\]}>\"']+",
+    re.I,
+)
+_TRAILING_JUNK = ".,;!?:'\""
+
+
+def opaque_link_spans(text: str) -> list[tuple[int, int, str]]:
+    """``(start, end, url)`` for every opaque wrapper in ``text``.
+
+    Scheme-less wrappers (``bit.ly/xyz``, ``amzn.to/xyz``) are included because
+    deal channels post them without a protocol all the time, and an unseen short
+    link is exactly how an untagged link reaches the channel.
+    """
+    if not text:
+        return []
+    spans: list[tuple[int, int, str]] = []
+    scheme_ful: list[tuple[int, int]] = []
+    for match in URL_RE.finditer(text):
+        raw = match.group(0)
+        trimmed = raw
+        while trimmed and trimmed[-1] in _TRAILING_JUNK:
+            trimmed = trimmed[:-1]
+        end = match.start() + len(trimmed)
+        scheme_ful.append((match.start(), end))
+        if is_opaque_link(trimmed):
+            spans.append((match.start(), end, trimmed))
+    for match in _BARE_OPAQUE_RE.finditer(text):
+        start = match.start()
+        if any(begin <= start < end for begin, end in scheme_ful):
+            continue
+        trimmed = match.group(0)
+        while trimmed and trimmed[-1] in _TRAILING_JUNK:
+            trimmed = trimmed[:-1]
+        if not trimmed:
+            continue
+        spans.append((start, start + len(trimmed), "https://" + trimmed))
+    spans.sort(key=lambda item: item[0])
+    return spans
+
+
+def has_opaque_link(text: str) -> bool:
+    """True when the text carries at least one wrapper link (short or shortener)."""
+    return bool(opaque_link_spans(text or ""))
+
+
+def unresolved_opaque_links(text: str) -> list[str]:
+    """Every wrapper still present in ``text`` (used for warnings/audits)."""
+    seen: list[str] = []
+    for _, _, url in opaque_link_spans(text or ""):
+        if url not in seen:
+            seen.append(url)
+    return seen
+
+
+# --- resolution cache: one network round-trip per wrapper per process --------
+_RESOLVED_CACHE: dict[str, tuple[float, str | None]] = {}
+_RESOLVE_CACHE_MAX = 1024
+_RESOLVE_CACHE_TTL = 3600.0
+_RESOLVE_CACHE_NEGATIVE_TTL = 90.0
+
+
+def _cache_get(url: str) -> tuple[bool, str | None]:
+    entry = _RESOLVED_CACHE.get(url)
+    if not entry:
+        return False, None
+    stored_at, final = entry
+    ttl = _RESOLVE_CACHE_TTL if final else _RESOLVE_CACHE_NEGATIVE_TTL
+    if time.time() - stored_at > ttl:
+        _RESOLVED_CACHE.pop(url, None)
+        return False, None
+    return True, final
+
+
+def _cache_put(url: str, final: str | None) -> None:
+    if len(_RESOLVED_CACHE) >= _RESOLVE_CACHE_MAX:
+        _RESOLVED_CACHE.clear()
+    _RESOLVED_CACHE[url] = (time.time(), final)
+
+
+def clear_resolution_cache() -> None:
+    """Forget every remembered wrapper resolution (tests/operator tools)."""
+    _RESOLVED_CACHE.clear()
+
+
+_REFRESH_RE = re.compile(
+    r"""(?:http-equiv=["']?refresh["']?[^>]*?url=([^"'>\s]+))"""
+    r"""|(?:location\.(?:replace|assign|href)\s*=\s*["']([^"']+)["'])""",
+    re.I,
+)
+
+
+def _destination_from_html(body: str) -> str | None:
+    """Find a meta-refresh / JS redirect target in a shortener's HTML page.
+
+    Several shorteners answer ``200 OK`` with a redirect in the body instead of a
+    ``3xx``, so following redirects alone would leave the wrapper unresolved.
+    """
+    if not body:
+        return None
+    for match in _REFRESH_RE.finditer(body[:80000]):
+        candidate = (match.group(1) or match.group(2) or "").strip().strip("'\"")
+        if candidate.startswith("//"):
+            candidate = "https:" + candidate
+        if candidate.lower().startswith(("http://", "https://")):
+            return candidate
+    return None
+
+
+def _normalised_link(url: str) -> tuple[str, str, str]:
+    try:
+        parsed = urlparse(url)
+        return (
+            (parsed.hostname or "").lower().rstrip("."),
+            (parsed.path or "").rstrip("/"),
+            urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True))),
+        )
+    except (TypeError, ValueError):
+        return ("", "", "")
+
+
+def _same_link(left: str, right: str) -> bool:
+    return _normalised_link(left) == _normalised_link(right)
+
+
+async def _default_resolve(url: str, timeout: float = 4.0) -> str | None:
+    """Follow a wrapper link and return its real destination (or None)."""
+    try:
+        import aiohttp  # type: ignore
+    except Exception:
+        return None
+    final = ""
+    body = ""
+    try:
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; InfluencerHub/1.0)"}
+        async with aiohttp.ClientSession(timeout=client_timeout, headers=headers) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                final = str(getattr(resp, "url", "") or "")
+                try:
+                    body = await resp.text()
+                except Exception:
+                    body = ""
+    except Exception:
+        return None
+    body_target = _destination_from_html(body)
+    if body_target and _host_of(body_target):
+        # A body redirect beats a URL that did not actually move (many
+        # shorteners serve the landing page with a canonical/JS redirect).
+        if not _host_of(final) or _same_link(final, url) or is_opaque_link(final):
+            return body_target
+    return final or None
+
+
+async def _call_resolver(resolver, url: str, timeout: float) -> str | None:
+    try:
+        return await resolver(url, timeout=timeout)
+    except TypeError:
+        # A caller-supplied resolver may take only the URL.
+        return await resolver(url)
+
+
+def _replacement_for_wrapper(url: str, destination: str | None, tag: str) -> str | None:
+    """The link that should replace a wrapper, or None to keep it untouched.
+
+    * an Amazon destination becomes OUR canonical ``/dp/ASIN`` link with OUR tag
+    * a merchant/HYPD/Meesho destination is returned as-is so the normal
+      conversion stages (EarnKaro, HYPD retag) can monetise it
+    * an informational destination keeps the wrapper (we only rewrote links that
+      change what we earn — a promo/YouTube link is the source's own business)
+    """
+    if not destination:
+        return None
+    if _same_link(destination, url) or is_opaque_link(destination):
+        return None
+    if amazon_marketplace_host(destination):
+        return _amazon_short_replacement(destination, tag)
+    if classify_url(destination) in {"merchant", "hypd", "meesho", "lehlah"}:
+        return destination
+    return None
+
+
+async def resolve_opaque_links_in_text_async(
+    text: str,
+    tag: str | None = None,
+    *,
+    resolve=None,
+    max_links: int = 6,
+    timeout: float = 4.0,
+    budget: float | None = None,
+) -> tuple[str, list[str]]:
+    """Rewrite every wrapper link in ``text`` into its real destination.
+
+    Returns ``(new_text, unresolved_urls)``. ``unresolved_urls`` lists the
+    wrappers whose destination could not be determined — those are the links
+    whose attribution is unknown, and the caller must treat the post as
+    unmonetised instead of posting a link that (probably) pays nobody.
+
+    ``resolve`` injects an alternative resolver for tests; when it is omitted the
+    process-wide cache is used so a batch never resolves the same wrapper twice.
+    """
+    if not text:
+        return text, []
+    spans = opaque_link_spans(text)
+    if not spans:
+        return text, []
+
+    unique: list[str] = []
+    for _, _, url in spans:
+        if url not in unique:
+            unique.append(url)
+    targets = unique[:max_links]
+    unresolved: list[str] = list(unique[max_links:])
+
+    use_cache = resolve is None
+    destinations: dict[str, str | None] = {}
+    pending: list[str] = []
+    for url in targets:
+        if use_cache:
+            cached, final = _cache_get(url)
+            if cached:
+                destinations[url] = final
+                continue
+        pending.append(url)
+
+    if pending:
+        resolver = resolve or _default_resolve
+        tasks = {asyncio.ensure_future(_call_resolver(resolver, url, timeout)): url for url in pending}
+        wait_budget = (timeout * 2 + 1.0) if budget is None else budget
+        done, not_done = await asyncio.wait(set(tasks), timeout=wait_budget)
+        for task in done:
+            url = tasks[task]
+            try:
+                final = task.result()
+            except Exception:
+                final = None
+            destinations[url] = final
+            if use_cache:
+                _cache_put(url, final)
+        for task in not_done:
+            url = tasks[task]
+            task.cancel()
+            destinations[url] = None
+
+    replacements: dict[str, str | None] = {}
+    for url in targets:
+        destination = destinations.get(url)
+        replacement = _replacement_for_wrapper(url, destination, str(tag or ""))
+        replacements[url] = replacement
+        if replacement is None and not destination:
+            unresolved.append(url)
+        elif replacement is None and (is_opaque_link(destination) or _same_link(destination, url)):
+            unresolved.append(url)
+
+    out = text
+    for start, end, url in sorted(spans, key=lambda item: item[0], reverse=True):
+        if end > len(out):
+            continue
+        replacement = replacements.get(url)
+        if not replacement:
+            continue
+        out = out[:start] + replacement + out[end:]
+
+    deduped: list[str] = []
+    for url in unresolved:
+        if url not in deduped:
+            deduped.append(url)
+    return out, deduped
+
+
 # Merchant domains we route through EarnKaro (except Amazon, HYPD, and
 # Meesho). Meesho has its own HYPD path and must never be sent to EarnKaro.
 # Expanded to cover EarnKaro's 150+ supported brands - ensures sources from
@@ -191,6 +509,63 @@ MERCHANT_DOMAINS = {
     "nykaa.com",
     "myntra.com",
 }
+
+# --- scheme-less links --------------------------------------------------------
+# Deal posts constantly carry links without ``http://`` ("flipkart.com/...",
+# "amazon.in/dp/...", "amzn.to/..."). ``URL_RE`` only sees scheme-ful URLs, so
+# those links were never classified, never converted and never verified — they
+# simply travelled through the render untouched. They are promoted to real URLs
+# before anything classifies the deal.
+_BARE_KNOWN_HOSTS = sorted(
+    {domain.removeprefix("www.") for domain in MERCHANT_DOMAINS}
+    | set(AMAZON_MARKETPLACES)
+    | {"m.amazon.in", "m.amazon.com", "hypd.store", "meesho.com"}
+    | set(SHORTENER_DOMAINS)
+    | {host.removeprefix("www.") for host in AMAZON_SHORT_HOSTS},
+    key=len,
+    reverse=True,
+)
+_BARE_KNOWN_RE = re.compile(
+    r"(?<![\w./@-])((?:www\.)?"
+    + "|".join(re.escape(host) for host in _BARE_KNOWN_HOSTS)
+    + r")(/[\w\-./?=&%#+,;:!~*'()\[\]]*)?",
+    re.I,
+)
+
+
+def promote_scheme_less_links(text: str) -> str:
+    """Give ``https://`` to known hosts written without a scheme.
+
+    Only hosts this hub can actually act on (Amazon marketplaces and shorteners,
+    supported merchants, HYPD/Meesho, the wrappers above) are promoted, and only
+    at a word boundary, so prose, e-mail addresses and file paths are untouched.
+    """
+    if not text:
+        return text
+    out: list[str] = []
+    last = 0
+    for match in _BARE_KNOWN_RE.finditer(text):
+        start, end = match.span()
+        if start < last:
+            continue
+        following = text[end:end + 1]
+        if following and (following in ".-" or following.isalnum()):
+            # Part of a longer host/path (or a sentence continues straight on).
+            continue
+        host = match.group(1)
+        path = match.group(2) or ""
+        if not path:
+            # A bare hostname in prose ("available on amazon.in") is not a deal
+            # link; only real paths/queries are promoted.
+            continue
+        while path and path[-1] in _TRAILING_JUNK:
+            path = path[:-1]
+        out.append(text[last:start])
+        out.append("https://" + host + path)
+        last = start + len(host) + len(match.group(2) or "")
+    out.append(text[last:])
+    return "".join(out)
+
 
 # A reasonably permissive URL finder (http/https only).
 URL_RE = re.compile(r"https?://[^\s)>\]]+", re.I)
@@ -286,7 +661,7 @@ def is_known_merchant_host(url: str) -> bool:
 
 
 def classify_url(url: str) -> str:
-    """Return 'amazon' | 'hypd' | 'lehlah' | 'meesho' | 'merchant' | 'other'."""
+    """Return 'amazon' | 'hypd' | 'lehlah' | 'meesho' | 'merchant' | 'shortener' | 'other'."""
     host = _host_of(url)
     if any(_is_domain(host, domain) for domain in AMAZON_DOMAINS):
         return "amazon"
@@ -296,6 +671,9 @@ def classify_url(url: str) -> str:
         return "lehlah"
     if _is_domain(host, "meesho.com"):
         return "meesho"
+    if is_shortener_host(url):
+        # A wrapper: nothing downstream can classify it until it is resolved.
+        return "shortener"
     if any(_is_domain(host, domain.removeprefix("www.")) for domain in MERCHANT_DOMAINS):
         return "merchant"
     return "other"
@@ -561,8 +939,15 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
     if not asins_with_params:
         return text
 
-    # Use the most common ASIN (first) for all shorts in this deal
-    # If multiple different ASINs, we still use the first – the post likely has one product with two Link forms
+    # Only a deal that carries exactly ONE distinct ASIN can be mapped without a
+    # network round-trip: the shorts then certainly belong to that product. A
+    # post with two products and two shorts would otherwise get both shorts
+    # rewritten to the first product's ASIN — a wrong link is worse than an
+    # unresolved one, so multi-product posts are left to the async resolver.
+    distinct_asins = {asin for asin, _ in asins_with_params}
+    if len(distinct_asins) != 1:
+        return text
+
     primary_asin, primary_params = asins_with_params[0]
     # Deduplicate: if the text already contains a long link with this ASIN, we will replace shorts with that canonical
     # After replacement, the rendered text may have duplicate canonical URLs (short + long both become same)
@@ -587,83 +972,42 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
     return out
 
 
-async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None) -> str:
-    """Async version that also resolves standalone opaque shorts over the network.
-
-    First does the heuristic (ASIN from the same deal). If no ASIN is found and
-    the text carries any opaque Amazon short (``amzn.to``/``amzn.in``/``amzn.eu``/
-    ``amzn.asia``/``a.co``), resolve it with a real GET and rewrite every short in
-    the text into a long ``/dp/ASIN`` link signed with OUR tag on the same
-    marketplace the short pointed at. When the network fails or the target has no
-    ASIN the text is returned unchanged (best-effort attribution), and callers can
-    list what stayed unresolved with :func:`unresolved_amazon_shorts`.
-    """
-    # Fast heuristic first (sync, no network)
-    heuristic = expand_amazon_shorts_in_text(text, tag)
-    if heuristic != text:
-        return heuristic
-
-    # No ASIN in the same deal, but we may have an opaque short to resolve.
-    if not tag:
-        return text
-
-    urls = find_urls(text)
-    shorts = [u for u in urls if is_amazon_short_host(u)]
-    if not shorts:
-        return text
-
-    # Try to resolve the first short via network (production VM has internet)
+def _amazon_short_replacement(final_url: str, tag: str) -> str | None:
+    """Canonical ``/dp/ASIN?tag=OURTAG`` for a resolved Amazon destination."""
     try:
-        import aiohttp  # type: ignore
+        parsed = urlparse(final_url)
+    except (TypeError, ValueError):
+        return None
+    asin = _amazon_asin(parsed)
+    if not asin:
+        return None
+    marketplace_host = amazon_marketplace_host(final_url) or "www.amazon.in"
+    safe_params: list[tuple[str, str]] = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() in {"th", "psc"} and value.isdigit():
+            safe_params.append((key.lower(), value))
+    if tag:
+        safe_params.append(("tag", tag))
+    return urlunparse(("https", marketplace_host, f"/dp/{asin}", "", urlencode(safe_params), ""))
 
-        effective_tag = str(tag or "").strip()
-        for short_url in shorts:
-            try:
-                timeout = aiohttp.ClientTimeout(total=5.0)
-                headers = {"User-Agent": "Mozilla/5.0"}
-                async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-                    async with session.get(short_url, allow_redirects=True) as resp:
-                        final_url = str(resp.url)
-                        # Try to extract ASIN from final URL
-                        try:
-                            parsed_final = urlparse(final_url)
-                        except Exception:
-                            continue
-                        asin = _amazon_asin(parsed_final)
-                        if asin:
-                            # Build the canonical link on the marketplace the
-                            # short actually pointed at (OUR store when the short
-                            # is an India short), signed with OUR tag.
-                            marketplace_host = (
-                                amazon_marketplace_host(final_url) or "www.amazon.in"
-                            )
-                            q = dict(parse_qsl(parsed_final.query, keep_blank_values=True))
-                            safe = {}
-                            for k in ("th", "psc"):
-                                if k in q and q[k].isdigit():
-                                    safe[k] = q[k]
-                            canonical_q = list(safe.items())
-                            canonical_q.append(("tag", effective_tag))
-                            canonical = urlunparse(
-                                ("https", marketplace_host, f"/dp/{asin}", "", urlencode(canonical_q), "")
-                            )
-                            # Replace all shorts with this canonical (best we can do)
-                            out = text
-                            for s in shorts:
-                                if s in out:
-                                    out = out.replace(s, canonical)
-                                else:
-                                    base = s.split("?")[0]
-                                    if base in out:
-                                        out = out.replace(base, canonical)
-                            return out
-            except Exception:
-                continue
-    except Exception:
-        pass
 
-    return text
+async def expand_amazon_shorts_in_text_async(text: str, tag: str | None = None) -> str:
+    """Rewrite every opaque wrapper in a deal into a link we can verify.
 
+    Kept for backwards compatibility (pipeline + tests): it first tries the
+    offline heuristic (a single ASIN elsewhere in the same deal), then resolves
+    every remaining wrapper — Amazon short codes **and** generic shorteners such
+    as ``bit.ly``/``dl.flipkart.com`` — over the network via
+    :func:`resolve_opaque_links_in_text_async`. Text whose wrappers cannot be
+    resolved is returned unchanged; callers report those with
+    :func:`unresolved_amazon_shorts` / :func:`unresolved_opaque_links`.
+    """
+    out = text
+    if tag and text_has_amazon_short(out):
+        out = expand_amazon_shorts_in_text(out, tag)
+    if has_opaque_link(out):
+        out, _unresolved = await resolve_opaque_links_in_text_async(out, tag)
+    return out
 
 def deduplicate_urls_in_text(text: str) -> str:
     """Remove duplicate URL occurrences, keeping the first."""

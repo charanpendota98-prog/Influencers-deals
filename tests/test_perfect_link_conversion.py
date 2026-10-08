@@ -422,3 +422,285 @@ def test_money_radar_exposes_the_unconverted_switch(monkeypatch, tmp_path):
     )
     assert response.status_code == 302
     assert pipeline.allow_unconverted_posts_enabled() is True
+
+
+# --------------------------------------------------------------------------
+# 5. Wrapper links (bit.ly / tinyurl / Flipkart's own shorts / amzn shorts)
+#    hide their destination — and their attribution — until they are resolved.
+# --------------------------------------------------------------------------
+WRAPPERS = (
+    "https://bit.ly/3xyzFlip",
+    "https://tinyurl.com/amazdeal",
+    "https://dl.flipkart.com/s/abcXYZ",
+    "https://fkrt.it/abc123",
+    "https://cutt.ly/abc123",
+    "https://amzn.to/4dnF9lU",
+)
+
+
+def test_every_wrapper_host_is_classified_as_an_opaque_link():
+    for url in WRAPPERS:
+        assert link_router.is_opaque_link(url), url
+        # A wrapper is never filed away as "info": the guard must be able to see
+        # that its destination (and therefore its attribution) is unknown.
+        assert link_router.classify_url(url) == "shortener" or link_router.is_amazon_short_host(url), url
+        assert link_router.has_opaque_link(f"deal {url}")
+
+
+def test_wrappers_without_a_scheme_are_seen_too():
+    text = "🔥 Loot ₹499 bit.ly/3xyzFlip and amzn.to/4dnF9lU grab fast"
+    kinds = sorted(link_router.classify_url(url) for _, _, url in link_router.opaque_link_spans(text))
+    assert link_router.has_opaque_link(text)
+    assert len(kinds) == 2
+    assert link_router.unresolved_opaque_links(text) == [
+        "https://bit.ly/3xyzFlip",
+        "https://amzn.to/4dnF9lU",
+    ]
+
+
+def _resolve_with(final_urls: dict[str, str | None]):
+    """A fake resolver: wrapper -> final destination (or None when unresolved)."""
+
+    async def _fake(url: str, timeout: float = 0.0):
+        for wrapper, destination in final_urls.items():
+            if wrapper in url:
+                return destination
+        return None
+
+    return _fake
+
+
+def test_a_wrapper_around_an_amazon_link_becomes_our_canonical_link():
+    text = "🔥 Soundbar ₹1499 https://bit.ly/amazdeal"
+    out, unresolved = asyncio.run(
+        link_router.resolve_opaque_links_in_text_async(
+            text, TAG,
+            resolve=_resolve_with(
+                {"bit.ly/amazdeal": "https://www.amazon.in/Soundbar/dp/B08XYZ1234?th=1&tag=someone-21"}
+            ),
+        )
+    )
+    assert out == "🔥 Soundbar ₹1499 https://www.amazon.in/dp/B08XYZ1234?th=1&tag=creator-21"
+    assert unresolved == []
+
+
+def test_a_wrapper_around_a_merchant_link_becomes_convertible():
+    wrapper = "https://tinyurl.com/flipkart-deal"
+    target = "https://www.flipkart.com/nike-shoes/p/itmABC123?pid=SHO123"
+    out, unresolved = asyncio.run(
+        link_router.resolve_opaque_links_in_text_async(
+            f"🔥 Shoes ₹499 {wrapper}", TAG, resolve=_resolve_with({"tinyurl.com/flipkart-deal": target})
+        )
+    )
+    assert unresolved == []
+    # The real destination is a known merchant, so EarnKaro converts it.
+    assert link_router.classify_url(link_router.find_urls(out)[0]) == "merchant"
+    converted = {target: f"https://ekaro.in/ek987654?affExtParam2={PUB}"}
+    rendered = link_router.render_for_influencer(out, TAG, converted)
+    assert f"https://ekaro.in/ek987654?affExtParam2={PUB}" in rendered
+    assert commission_guard.our_affiliate_urls(rendered, TAG, STORE, PUB)
+
+
+def test_an_unresolvable_wrapper_is_reported_instead_of_posted_silently():
+    text = "🔥 Loot ₹199 https://tinyurl.com/abc123"
+    out, unresolved = asyncio.run(
+        link_router.resolve_opaque_links_in_text_async(text, TAG, resolve=_resolve_with({}))
+    )
+    assert out == text
+    assert unresolved == ["https://tinyurl.com/abc123"]
+    audit = commission_guard.audit_rendered_text(out, TAG, STORE, PUB, source_text=text)
+    wrapped = commission_guard.unmonetised_links(
+        audit, {"amazon", "merchant", "hypd", "meesho", "lehlah", "shortener"},
+        kinds=commission_guard.WRAPPED_KINDS,
+    )
+    assert [detail["kind"] for detail in wrapped] == ["shortener"]
+    assert "destination unknown" in wrapped[0]["reason"]
+
+
+def test_an_informational_wrapper_is_not_an_unresolved_one():
+    """A wrapper we *did* resolve to a promo page must not park the deal."""
+    text = "🔥 Loot ₹199 https://bit.ly/promo"
+    out, unresolved = asyncio.run(
+        link_router.resolve_opaque_links_in_text_async(
+            text, TAG, resolve=_resolve_with({"bit.ly/promo": "https://www.youtube.com/watch?v=x"})
+        )
+    )
+    assert unresolved == []
+    assert out == text  # the source's own promo link is left alone
+
+
+def test_a_wrapper_carried_by_the_source_post_is_never_counted_as_ours():
+    """Our own bit.ly wrappers are minted after rendering — a source wrapper is not ours."""
+    source = "🔥 Deal ₹499 https://bit.ly/3xyzFlip"
+    assert commission_guard.our_affiliate_urls(source, TAG, STORE, PUB, source_text=source) == []
+    audit = commission_guard.audit_rendered_text(source, TAG, STORE, PUB, source_text=source)
+    detail = next(d for d in audit["details"] if "bit.ly" in d["url"])
+    assert detail["ok"] is False and "not created by us" in detail["reason"]
+    # Without provenance (a post we rendered ourselves) the wrapper stays OURS.
+    assert commission_guard.our_affiliate_urls(source, TAG, STORE, PUB)
+
+
+def test_two_products_never_borrow_each_others_short_link():
+    """Two shorts + two different ASINs: the offline heuristic must not guess."""
+    text = (
+        "🔥 Combo\n"
+        "https://amzn.to/aaa111\n"
+        "https://www.amazon.in/dp/B08XYZ1234?tag=old-21\n"
+        "https://amzn.to/bbb222\n"
+        "https://www.amazon.in/dp/B0D9P2M1PB?tag=old-21"
+    )
+    assert link_router.expand_amazon_shorts_in_text(text, TAG) == text
+
+
+def _pipeline_for(monkeypatch, name: str):
+    influencer_id, channel_id, sent = _channel(monkeypatch, name)
+    db.set_global_setting("earnkaro_api_key", "fake-key")
+    db.set_global_setting("earnkaro_publisher_id", PUB)
+    return influencer_id, channel_id, sent
+
+
+def test_pipeline_parks_a_deal_whose_only_link_is_an_unresolved_wrapper(monkeypatch):
+    influencer_id, channel_id, sent = _pipeline_for(monkeypatch, "wrapped_only")
+    deal = "🔥 Loot ₹199 https://tinyurl.com/abc123"
+
+    async def fake_resolve(text, tag=None, **kwargs):
+        return text, ["https://tinyurl.com/abc123"]
+
+    monkeypatch.setattr(link_router, "resolve_opaque_links_in_text_async", fake_resolve)
+    monkeypatch.setattr(earnkaro, "convert_links", AsyncMock(return_value={}))
+    monkeypatch.setattr(pipeline, "DEFERRED_RETRY_DELAY_SECONDS", 0)
+    result = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer_id]))
+    assert result[influencer_id][channel_id] == "skipped:no_our_affiliate_after_guard"
+    assert sent == []
+    assert db.count_deferred_deals() == 1
+    assert db.due_deferred_deals()[0]["reason"] == "unresolved_wrapper"
+
+
+def test_pipeline_posts_our_link_when_a_wrapper_resolves_to_a_merchant(monkeypatch):
+    influencer_id, channel_id, sent = _pipeline_for(monkeypatch, "wrapped_ok")
+    target = "https://www.flipkart.com/nike-shoes/p/itmABC123?pid=SHO123"
+    deal = "🔥 Shoes ₹499 https://bit.ly/3xyzFlip"
+
+    async def fake_resolve(text, tag=None, **kwargs):
+        return text.replace("https://bit.ly/3xyzFlip", target), []
+
+    monkeypatch.setattr(link_router, "resolve_opaque_links_in_text_async", fake_resolve)
+    monkeypatch.setattr(
+        earnkaro, "convert_links",
+        AsyncMock(return_value={target: f"https://ekaro.in/ek555555?affExtParam2={PUB}"}),
+    )
+    result = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer_id]))
+    assert result[influencer_id][channel_id] == "posted"
+    assert f"https://ekaro.in/ek555555?affExtParam2={PUB}" in sent[0]
+    assert "bit.ly" not in sent[0]
+    assert db.count_deferred_deals() == 0
+
+
+def test_audit_links_cli_reports_the_verdict_and_exits_on_our_link(capsys):
+    from influencer_hub import cli
+
+    code = cli.main([
+        "audit-links", "--offline",
+        "--text", "🔥 Shoes ₹499 https://www.amazon.in/dp/B08XYZ1234?tag=old-21",
+    ])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "[OUR] amazon" in out
+    assert f"tag={TAG}" not in out  # the configured tag is used, not the test one
+    assert "POST: 1 of OUR affiliate link(s) present" in out
+
+
+def test_audit_links_cli_holds_a_deal_with_no_our_link(capsys):
+    from influencer_hub import cli
+
+    code = cli.main([
+        "audit-links", "--offline",
+        "--text", "🔥 Loot ₹199 https://tinystore.example/p/itm123",
+    ])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "HOLD: no link in this post pays us" in out
+
+
+# --------------------------------------------------------------------------
+# 6. Links written without http:// must be seen too — otherwise they travel
+#    through the post untouched (untagged Amazon, unconverted merchant).
+# --------------------------------------------------------------------------
+def test_scheme_less_known_links_are_promoted_and_then_converted():
+    promoted = link_router.promote_scheme_less_links(
+        "🔥 Loot ₹499 flipkart.com/nike-shoes/p/itmABC123?pid=SHO123 and amazon.in/dp/B08XYZ1234?tag=old-21"
+    )
+    urls = link_router.find_urls(promoted)
+    assert urls == [
+        "https://flipkart.com/nike-shoes/p/itmABC123?pid=SHO123",
+        "https://amazon.in/dp/B08XYZ1234?tag=old-21",
+    ]
+    assert {link_router.classify_url(url) for url in urls} == {"merchant", "amazon"}
+    rendered = link_router.render_for_influencer(promoted, TAG)
+    assert f"https://www.amazon.in/dp/B08XYZ1234?tag={TAG}" in rendered
+    assert "tag=old-21" not in rendered
+
+
+def test_scheme_less_promotion_leaves_prose_addresses_and_unknown_hosts_alone():
+    prose = "available on amazon.in today, mail deals@flipkart.com, see myflipkart.com.evil.com/x"
+    assert link_router.promote_scheme_less_links(prose) == prose
+    untouched = "already fine https://www.flipkart.com/x/p/itm1"
+    assert link_router.promote_scheme_less_links(untouched) == untouched
+
+
+def test_pipeline_converts_a_scheme_less_merchant_link(monkeypatch):
+    influencer_id, channel_id, sent = _pipeline_for(monkeypatch, "bare_flipkart")
+    target = "https://flipkart.com/nike-shoes/p/itmABC123?pid=SHO123"
+    monkeypatch.setattr(
+        earnkaro, "convert_links",
+        AsyncMock(return_value={target: f"https://ekaro.in/ek424242?affExtParam2={PUB}"}),
+    )
+    result = asyncio.run(pipeline.render_and_dispatch(
+        "🔥 Shoes ₹499 flipkart.com/nike-shoes/p/itmABC123?pid=SHO123",
+        influencer_ids=[influencer_id],
+    ))
+    assert result[influencer_id][channel_id] == "posted"
+    assert f"https://ekaro.in/ek424242?affExtParam2={PUB}" in sent[0]
+    assert "tag=old" not in sent[0]
+
+
+def test_a_wrapper_parked_deal_is_retried_and_published_converted(monkeypatch):
+    """The worker drain must rescue a deal that was held for an unresolved wrapper."""
+    from influencer_hub import worker
+
+    influencer_id, channel_id, sent = _pipeline_for(monkeypatch, "wrapped_retry")
+    target = "https://www.flipkart.com/nike-shoes/p/itmABC123?pid=SHO123"
+    deal = "🔥 Shoes ₹499 https://bit.ly/3xyzFlip"
+    monkeypatch.setattr(pipeline, "DEFERRED_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(earnkaro, "credentials_configured", lambda: True)
+    monkeypatch.setattr(
+        earnkaro, "convert_links",
+        AsyncMock(return_value={target: f"https://ekaro.in/ek777777?affExtParam2={PUB}"}),
+    )
+
+    async def unresolved_resolver(text, tag=None, **kwargs):
+        return text, ["https://bit.ly/3xyzFlip"]
+
+    monkeypatch.setattr(link_router, "resolve_opaque_links_in_text_async", unresolved_resolver)
+    first = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer_id]))
+    assert first[influencer_id][channel_id] == "skipped:no_our_affiliate_after_guard"
+    assert db.count_deferred_deals() == 1
+    assert sent == []
+
+    async def resolving(text, tag=None, **kwargs):
+        return text.replace("https://bit.ly/3xyzFlip", target), []
+
+    monkeypatch.setattr(link_router, "resolve_opaque_links_in_text_async", resolving)
+    drained = asyncio.run(worker.drain_deferred_deals(limit=5))
+    assert drained == 1
+    assert db.count_deferred_deals() == 0
+    assert f"https://ekaro.in/ek777777?affExtParam2={PUB}" in sent[0]
+
+
+def test_a_hypd_store_page_without_an_afflink_is_never_posted_as_ours(monkeypatch):
+    """Nothing can mint an affiliate token from a plain store page — skip it."""
+    status, sent = _run(
+        monkeypatch, "hypd_page", "🔥 Loot ₹499 https://hypd.store/products/abc123"
+    )
+    assert status == "skipped:no_our_affiliate_after_guard"
+    assert sent == []

@@ -362,13 +362,29 @@ Every link kind a source deal can carry has exactly one defined outcome:
 | Raw Meesho | Sent to EarnKaro when the fallback is on; otherwise posted as-is, because HYPD cannot mint an affiliate link from a product URL (with a `ZERO-COMMISSION post` log line) |
 | HYPD `hypd.store/<store>/afflink/<token>` | Retagged to our store id |
 | LehLah Meesho (`mcn=LEHLAH`, `af_siteid=lehlah`, `pid=lehlah`) | Kept exactly as it is — it already pays us |
+| Wrapper (`bit.ly`, `tinyurl.com`, `cutt.ly`, `dl.flipkart.com/…`, `fkrt.it/…`) | Resolved first: an Amazon destination becomes the canonical OUR link, a merchant destination is converted by EarnKaro; if the destination cannot be resolved the deal is parked and the run logs `UNRESOLVED WRAPPED LINK` |
+| Link written without `http://` (`flipkart.com/…`, `amazon.in/dp/…`, `amzn.to/…`) | Promoted to a real URL before anything else, then handled like every other link above (retagged/converted) |
 | Anything else (news, YouTube, blog) | Untouched |
+
+#### Check a post before it goes out
+
+```bash
+python3 -m influencer_hub.cli audit-links --text "🔥 deal … bit.ly/abc"
+python3 -m influencer_hub.cli audit-links --file /tmp/post.txt --json
+python3 -m influencer_hub.cli audit-links --offline --text "…"   # no network calls
+```
+
+Read-only: prints every link, its kind, where a wrapper really points, the text
+that would be published and the verdict — exit code `0` when at least one of OUR
+links is present, `1` when the worker would hold the deal instead of posting it.
 
 #### The retry queue — no free posts, no lost deals
 
 When the only link in a deal is a merchant URL EarnKaro should have converted
 but did not (key missing/expired, API outage, transient error), posting now
-would earn nothing and posting later would be too late. Instead the deal is
+would earn nothing and posting later would be too late. The same applies to a
+wrapper link (`bit.ly`, `fkrt.it`, …) whose destination could not be resolved —
+until it is, nobody can say whether the link pays us. Instead the deal is
 parked in `deferred_deals` and the worker retries it every
 `DEFERRED_RETRY_DELAY_SECONDS` (5 min) up to `DEFERRED_MAX_ATTEMPTS` (6) times —
 the source cursor has already moved on, so this queue is the only way the deal
