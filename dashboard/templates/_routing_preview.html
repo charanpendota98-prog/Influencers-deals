@@ -43,6 +43,12 @@
     {% endfor %}
   </tbody>
 </table>
+{% if preview.tag_proof %}
+  <p class="routing-note{% if not preview.tag_usable %} is-warn{% endif %}">
+    Amazon deals will post this exact link: <code class="routing-result">{{ preview.tag_proof }}</code>
+    {% if preview.tag_usable %}✅ with the tag you gave{% else %}⚠ this tag will be replaced by the configured fallback — check it{% endif %}
+  </p>
+{% endif %}
 {% if preview.earnkaro_on and not preview.earnkaro_ready %}
   <p class="routing-note is-warn">💰 EarnKaro is on but its API key is missing. Add it in <a class="text-link" href="{{ url_for('secret_vault_tab') }}">Vault &amp; Sources</a> to convert Flipkart/Myntra/Ajio links.</p>
 {% endif %}

@@ -192,6 +192,19 @@ def _run(coro):
     return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
 
+def _form_flag_or_none(name: str) -> bool | None:
+    """Checkbox/hidden pair -> True/False, or None when the field was not sent.
+
+    ``None`` means "this form does not manage the option". A caller that only
+    sends the channel identifier must inherit the creator's routing instead of
+    silently switching Amazon/EarnKaro/HYPD off (which used to leave a brand-new
+    channel with every network disabled, so nothing was ever posted to it).
+    """
+    if not request.form.getlist(name):
+        return None
+    return _form_flag(name, default=False)
+
+
 def _form_flag(name: str, default: bool | None = None) -> bool | None:
     """Parse select values and checkbox/hidden-input pairs consistently.
 
@@ -1694,6 +1707,11 @@ def update_channel_route(channel_id):
         ident = clean_identifier(ident)
 
     # A pending "undo removal" is stale once this channel is edited by hand.
+    tag_value, tag_note, tag_blocked = _normalize_amazon_tag(override_tag)
+    if tag_blocked:
+        flash(tag_note, "error")
+        return redirect(url_for("influencer_detail", inf_id=owner_id))
+    override_tag = tag_value
     session.pop(UNDO_CHANNEL_KEY, None)
     db.update_channel_details(
         channel_id,
@@ -1723,6 +1741,8 @@ def update_channel_route(channel_id):
         return redirect(url_for(
             "influencer_detail", inf_id=owner_id, wa_link_status="pending"
         ))
+    if tag_note:
+        flash("⚠ " + tag_note, "warning")
     return redirect(url_for("influencer_detail", inf_id=owner_id))
 
 
@@ -1759,6 +1779,9 @@ ROUTING_SAMPLES = (
     ("Plain info link", "https://example.com/deal-news", "other"),
 )
 
+
+#: The Amazon link the "what gets posted" preview proves the tag against.
+ROUTING_AMAZON_SAMPLE = ROUTING_SAMPLES[0][1]
 
 _LIVE_SELECTION_CACHE: dict = {"checked_at": 0.0, "report": None}
 LIVE_SELECTION_TTL_SECONDS = 45
@@ -2114,12 +2137,22 @@ def _routing_preview(
             f"Meesho → our HYPD store {store}" if hypd_on else "Meesho off",
         )
     )
+    # Offline proof for the exact Amazon link this tag produces, so the screen
+    # shows the result instead of only the rule.
+    proof = (
+        link_router.apply_amazon_tag(ROUTING_AMAZON_SAMPLE, tag)
+        if amazon_on else ""
+    )
+    tag_usable = link_router.amazon_tag_is_usable(tag)
     return {
         "rows": rows,
         "model": model,
         "summary": summary,
         "strict": strict,
         "amazon_on": amazon_on,
+        "tag": tag,
+        "tag_usable": tag_usable,
+        "tag_proof": proof,
         "earnkaro_on": ek_on,
         "hypd_on": hypd_on,
         "earnkaro_ready": ek_ready,
@@ -2155,6 +2188,63 @@ def _valid_telegram_identifier(value: str) -> tuple[bool, str]:
         "Enter a valid Telegram destination: a public @username (4-32 letters, "
         "numbers or underscores), a numeric channel id, or a private t.me/+… invite link."
     )
+
+
+def _normalize_amazon_tag(raw: str) -> tuple[str, str, bool]:
+    """Validate a hand-typed Amazon tag: ``(tag, message, blocked)``.
+
+    Delegates to the router, which is also what the renderer uses, so the
+    dashboard can never accept a value the pipeline would silently replace.
+    """
+    from influencer_hub import link_router
+
+    validator = getattr(link_router, "normalize_amazon_tag", None)
+    if validator is None:  # pragma: no cover - older checkout without the helper
+        value = str(raw or "").strip()
+        if not value:
+            return "", "", False
+        import re as _re
+
+        if not _re.fullmatch(r"[A-Za-z0-9_-]{3,30}", value):
+            return "", f"“{value}” is not a usable Amazon tag; nothing was saved.", True
+        return value, "", False
+    return validator(raw)
+
+
+def _channel_ready_message(inf_id: int, influencer: dict, ident: str, role: str,
+                          override_tag: str = "", tag_note: str = "") -> str:
+    """Tell the operator exactly which link the new channel will post.
+
+    Proof is generated offline with the same renderer + guard the pipeline uses,
+    so "saved" and "will post with my tag" are the same statement.
+    """
+    from influencer_hub import commission_guard
+
+    tag = (
+        override_tag
+        or str(influencer.get("amazon_tag") or "").strip()
+        or config.AMAZON_ASSOCIATE_TAG
+    )
+    proof = commission_guard.amazon_tag_proof(tag)
+    parts = [
+        f"✅ {ident} connected to {influencer['name']} as a "
+        f"{'approval' if role == 'approval' else 'broadcast'} channel."
+    ]
+    parts.append(
+        "Amazon deals will post as "
+        + proof["posted_link"]
+        + (" (verified ✅)" if proof["ok"] else " (⚠ not verified)")
+    )
+    if proof["fallback_used"]:
+        parts.append(
+            "⚠ No usable tag is set for this creator/channel, so the configured "
+            f"fallback tag {proof['tag']} will sign the links. Add the creator's own tag "
+            "on this page to earn from their id."
+        )
+    if tag_note:
+        parts.append("⚠ " + tag_note)
+    parts.append("Send a test post below to confirm the account can post there.")
+    return " ".join(parts)
 
 
 def _channel_feedback(inf_id: int, category: str, message: str):
@@ -2198,28 +2288,40 @@ def add_manual_channel(inf_id):
         return _channel_feedback(
             inf_id, "error", "That destination link is too long. Check the value and try again.",
         )
-    only_amz = bool(_form_flag("only_amazon", default=False))
-    strip_amz = bool(_form_flag("strip_amazon", default=False))
-    allow_amz = bool(_form_flag("allow_amazon", default=False))
-    allow_ek = bool(_form_flag("allow_earnkaro", default=False))
-    allow_hypd = bool(_form_flag("allow_hypd", default=False))
+    only_amz = _form_flag_or_none("only_amazon")
+    strip_amz = _form_flag_or_none("strip_amazon")
+    allow_amz = _form_flag_or_none("allow_amazon")
+    allow_ek = _form_flag_or_none("allow_earnkaro")
+    allow_hypd = _form_flag_or_none("allow_hypd")
     hypd_store_id = (
         request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
     )
+    # Validate the tag before anything is saved: the renderer only applies
+    # [A-Za-z0-9_-]{3,30}, so a typo would otherwise post under the fallback tag.
+    override_tag, tag_note, tag_blocked = _normalize_amazon_tag(
+        request.form.get("amazon_override_tag", "")
+    )
+    if tag_blocked:
+        return _channel_feedback(inf_id, "error", tag_note)
 
     channel_settings = {
-        "amazon_override_tag": override_tag,
-        "strip_amazon": strip_amz,
         "price_filter": price_filt,
         "bitly_api_key": bitly_key,
         "categories": categories,
         "posting_schedule": schedule,
-        "only_amazon": only_amz,
-        "allow_amazon": allow_amz,
-        "allow_earnkaro": allow_ek,
-        "allow_hypd": allow_hypd,
         "hypd_store_id": hypd_store_id,
     }
+    if override_tag:
+        channel_settings["amazon_override_tag"] = override_tag
+    for key, value in (
+        ("only_amazon", only_amz),
+        ("strip_amazon", strip_amz),
+        ("allow_amazon", allow_amz),
+        ("allow_earnkaro", allow_ek),
+        ("allow_hypd", allow_hypd),
+    ):
+        if value is not None:
+            channel_settings[key] = bool(value)
     if platform == "telegram":
         ident = clean_identifier(raw_ident)
         valid, error = _valid_telegram_identifier(ident)
@@ -2258,9 +2360,9 @@ def add_manual_channel(inf_id):
             **channel_settings,
         )
         return _channel_feedback(
-            inf_id, "success",
-            f"✅ {ident} connected to {influencer['name']} as a "
-            f"{'approval' if role == 'approval' else 'broadcast'} channel.",
+            inf_id,
+            "warning" if tag_note else "success",
+            _channel_ready_message(inf_id, influencer, ident, role, override_tag, tag_note),
         )
     elif platform in {"whatsapp_group", "whatsapp_channel"}:
         destination, error = _resolve_whatsapp_destination(inf_id, raw_ident)
@@ -2322,9 +2424,13 @@ def _easy_setup_form_values() -> dict:
         "approval": request.form.get("approval_channel", "").strip(),
         "main": request.form.get("main_channel", "").strip(),
         "whatsapp": request.form.get("whatsapp_channel", "").strip(),
-        "allow_amazon": bool(_form_flag("allow_amazon", default=False)),
-        "allow_earnkaro": bool(_form_flag("allow_earnkaro", default=False)),
-        "allow_hypd": bool(_form_flag("allow_hypd", default=False)),
+        # Absent means "not managed by this form": inherit the recommended
+        # default (all three on) instead of silently disabling every network.
+        # The screen's switches send an explicit 0/1 pair, so an operator can
+        # still switch any of them off.
+        "allow_amazon": bool(_form_flag("allow_amazon", default=True)),
+        "allow_earnkaro": bool(_form_flag("allow_earnkaro", default=True)),
+        "allow_hypd": bool(_form_flag("allow_hypd", default=True)),
         "only_amazon": bool(_form_flag("only_amazon", default=False)),
         "hypd_store_id": (
             request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
@@ -2356,6 +2462,18 @@ def easy_setup():
 
     if request.method == "POST":
         values = _easy_setup_form_values()
+        tag_value, tag_note, tag_blocked = _normalize_amazon_tag(values["amazon_tag"])
+        if tag_blocked:
+            errors.append(tag_note)
+        elif not tag_value:
+            values["amazon_tag"] = config.AMAZON_ASSOCIATE_TAG
+            tag_note = (
+                f"No Amazon tag was given, so the configured fallback "
+                f"{config.AMAZON_ASSOCIATE_TAG} will sign Amazon links. "
+                "Put the creator's own tag here to earn from their id."
+            )
+        else:
+            values["amazon_tag"] = tag_value
         if not values["name"]:
             errors.append("Enter the creator's name.")
         if not values["main"] and not values["approval"]:
@@ -2378,6 +2496,9 @@ def easy_setup():
         if not errors:
             applied = _apply_easy_setup(values, approval_ident, main_ident)
             session["_easy_setup_result"] = applied
+            from influencer_hub import commission_guard
+
+            proof = commission_guard.amazon_tag_proof(values["amazon_tag"])
             flash(
                 f"✅ {applied['name']} is set up and posting. "
                 f"Amazon → {values['amazon_tag']}"
@@ -2385,6 +2506,13 @@ def easy_setup():
                 + (f", Meesho → HYPD store {values['hypd_store_id']}" if values["allow_hypd"] else ""),
                 "success",
             )
+            flash(
+                "Amazon deals will post as " + proof["posted_link"]
+                + (" (verified ✅)" if proof["ok"] else " (⚠ not verified — check the tag)"),
+                "success" if proof["ok"] else "warning",
+            )
+            if tag_note:
+                flash("⚠ " + tag_note, "warning")
             return redirect(url_for("easy_setup", done=applied["inf_id"]))
 
     preview = _routing_preview(**_routing_arguments(values))
@@ -3045,6 +3173,26 @@ def api_test_render_deal():
     if not only_amazon and role != "approval":
         allowed_kinds.add("lehlah")
 
+    # Same first step as the pipeline: promote scheme-less links and unwrap
+    # shorteners so the preview shows the links that will really be posted.
+    sample_text = link_router.promote_scheme_less_links(sample_text)
+    unresolved_wrappers: list[str] = []
+    if link_router.has_opaque_link(sample_text):
+        try:
+            sample_text, unresolved_wrappers = _run(asyncio.wait_for(
+                link_router.resolve_opaque_links_in_text_async(sample_text, amz_tag), timeout=12
+            ))
+        except Exception:
+            unresolved_wrappers = link_router.unresolved_opaque_links(sample_text)
+            warnings_pre: list[str] = [
+                "Wrapper links could not be resolved in the preview; they stay visible and the "
+                "worker retries such a deal instead of posting it for free."
+            ]
+        else:
+            warnings_pre = []
+    else:
+        warnings_pre = []
+
     filtered_text = link_router.filter_disallowed_affiliate_links(sample_text, allowed_kinds)
     detected_links = link_router.collect_links(sample_text)
     merchant_urls = {
@@ -3074,12 +3222,30 @@ def api_test_render_deal():
         role=role,
         hypd_store_id=hypd_store,
     )
+    from influencer_hub import commission_guard
+
+    expected_pubid = (
+        db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or ""
+    ).strip()
+    our_links = commission_guard.our_affiliate_urls(
+        rendered, amz_tag or config.AMAZON_ASSOCIATE_TAG, hypd_store, expected_pubid,
+        source_text=sample_text,
+    )
+    if our_links:
+        verdict = "our_link_present"
+    elif unresolved_wrappers:
+        verdict = "held_for_retry"
+    else:
+        verdict = "no_our_link"
     return jsonify({
         "ok": True,
         "input": sample_text,
         "rendered": rendered,
         "detected_links": detected_links,
-        "warnings": warnings,
+        "our_links": our_links,
+        "unresolved_wrappers": unresolved_wrappers,
+        "verdict": verdict,
+        "warnings": warnings_pre + warnings,
         "network_settings": {
             "amazon": bool(allow_amazon),
             "earnkaro": bool(allow_earnkaro),

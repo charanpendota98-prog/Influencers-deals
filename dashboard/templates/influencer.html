@@ -502,12 +502,15 @@
         <option value="all">All Deals</option>
       </select>
       <label style="font-size: 12px; font-weight: 600; color: #86efac; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        <input type="hidden" name="allow_amazon" value="0" />
         <input type="checkbox" name="allow_amazon" value="1" {{ 'checked' if (inf.allow_amazon != 0 or inf.only_amazon) else '' }} title="Allow tagged Amazon links on this channel; other selected networks may also run" /> 📦 Amazon ON
       </label>
       <label style="font-size: 12px; font-weight: 600; color: #fde68a; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        <input type="hidden" name="allow_earnkaro" value="0" />
         <input type="checkbox" name="allow_earnkaro" value="1" {{ 'checked' if inf.allow_earnkaro != 0 else '' }} title="Supported non-Amazon, non-Meesho merchants route through EarnKaro" /> 💰 EarnKaro ON
       </label>
       <label style="font-size: 12px; font-weight: 600; color: #f472b6; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+        <input type="hidden" name="allow_hypd" value="0" />
         <input type="checkbox" name="allow_hypd" value="1" {{ 'checked' if inf.allow_hypd != 0 else '' }} title="Enable the Meesho/HYPD route; raw Meesho is unchanged without HYPD's official generator" /> 🛍️ HYPD ON (Meesho)
       </label>
       <input name="hypd_store_id" value="{{ inf.hypd_store_id or current_hypd_store }}" placeholder="HYPD Store ID" style="font-size: 11px; width: 85px; font-family:monospace;" title="HYPD Store ID for this channel" />

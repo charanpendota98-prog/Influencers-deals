@@ -371,6 +371,32 @@ def is_verified_our_link(
     return False
 
 
+def amazon_tag_proof(
+    requested_tag: str,
+    sample_url: str = "https://www.amazon.in/dp/B0D9P2M1PB?tag=someone-else-21",
+) -> dict:
+    """Offline proof of what a sample Amazon link becomes with this tag.
+
+    Used by the dashboard right after a creator/channel is saved, so the operator
+    sees the exact link that will be posted (and whether it is verified as OURS)
+    instead of trusting that the tag was picked up.
+    """
+    from . import link_router as _router
+
+    tag = _router.effective_amazon_tag(requested_tag)
+    rendered = _router.render_for_influencer(sample_url, tag)
+    links = our_affiliate_urls(rendered, tag, "", "")
+    return {
+        "requested_tag": str(requested_tag or "").strip(),
+        "tag": tag,
+        "fallback_used": tag != str(requested_tag or "").strip(),
+        "tag_usable": _router.amazon_tag_is_usable(requested_tag),
+        "posted_link": links[0] if links else rendered,
+        "ok": bool(links),
+        "rendered": rendered,
+    }
+
+
 def our_affiliate_urls(
     rendered: str,
     effective_amz_tag: str,

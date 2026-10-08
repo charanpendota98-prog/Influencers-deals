@@ -78,6 +78,10 @@ def only_earning_deals_enabled() -> bool:
 # A deal parked because its only link was a merchant URL EarnKaro had not
 # converted yet is retried after this long, this many times, then posted anyway
 # (see influencer_hub/worker.py:drain_deferred_deals).
+#: Channels already warned about an unusable Amazon tag (one warning per
+#: channel, not one per deal).
+_TAG_FALLBACK_WARNED: set[tuple] = set()
+
 DEFERRED_RETRY_DELAY_SECONDS = 300
 DEFERRED_MAX_ATTEMPTS = 6
 
@@ -310,6 +314,19 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             # Account model (influencer_hub/accounts.py): Amazon posts are
             # signed with THIS creator's own Associate tag.
             effective_amz_tag = accounts.creator_amazon_tag(inf, ch)
+            # A tag the Associates format cannot accept would be replaced by the
+            # configured fallback while rendering. Say so once per channel rather
+            # than silently signing the post with a tag nobody asked for.
+            if effective_amz_tag and not link_router.amazon_tag_is_usable(effective_amz_tag):
+                fallback_tag = link_router.effective_amazon_tag(effective_amz_tag)
+                warn_key = (inf.get("id"), ch.get("id"), effective_amz_tag)
+                if warn_key not in _TAG_FALLBACK_WARNED:
+                    _TAG_FALLBACK_WARNED.add(warn_key)
+                    logging.getLogger(__name__).warning(
+                        "AMAZON TAG UNUSABLE inf=%s ch=%s tag=%r — Amazon links will be signed "
+                        "with the configured fallback %s; fix the tag on the creator/channel page",
+                        inf.get("id"), ch.get("id"), effective_amz_tag, fallback_tag,
+                    )
 
             # 1. Source Specification Filter (an empty/all/unrestricted value means no restriction)
             allowed_sources = ch.get("allowed_sources") or inf.get("allowed_sources") or ""

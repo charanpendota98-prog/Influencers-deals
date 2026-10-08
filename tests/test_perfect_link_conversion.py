@@ -704,3 +704,258 @@ def test_a_hypd_store_page_without_an_afflink_is_never_posted_as_ours(monkeypatc
     )
     assert status == "skipped:no_our_affiliate_after_guard"
     assert sent == []
+
+
+# --------------------------------------------------------------------------
+# 7. "I add my Telegram channel, hit save, and it must post with MY tag"
+# --------------------------------------------------------------------------
+ADMIN_PASSWORD = "test-admin-password-123"
+
+
+def _csrf_token(html: str) -> str:
+    import re as _re
+
+    match = _re.search(r'name="_csrf_token" value="([^"]+)"', html)
+    assert match, "rendered page is missing its CSRF token"
+    return match.group(1)
+
+
+def _dash_client(monkeypatch, tmp_path, name: str):
+    """A logged-in dashboard client (the real path: password + CSRF token)."""
+    import dashboard.app as dashboard_module
+
+    monkeypatch.setitem(dashboard_module.app.config, "TESTING", False)
+    monkeypatch.setattr(config, "HUB_ENV", "development")
+    monkeypatch.setattr(config, "DASHBOARD_ADMIN_PASSWORD", ADMIN_PASSWORD)
+    monkeypatch.setattr(config, "ADMIN_DELETE_PASSWORD", ADMIN_PASSWORD)
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / f"{name}.sqlite3")
+    db.init()
+    db.migrate()
+    client = dashboard_module.app.test_client()
+    login_token = _csrf_token(client.get("/login").get_data(as_text=True))
+    assert client.post(
+        "/login", data={"password": ADMIN_PASSWORD, "_csrf_token": login_token}
+    ).status_code == 302
+    page = client.get("/influencer/1").get_data(as_text=True)
+    if "name=\"_csrf_token\"" not in page:
+        page = client.get("/easy-setup").get_data(as_text=True)
+    return client, _csrf_token(page)
+
+
+def _fake_dispatch(monkeypatch):
+    sent: list[str] = []
+
+    async def fake(_influencer, _channel, rendered):
+        sent.append(rendered)
+        return "posted"
+
+    monkeypatch.setattr(pipeline, "dispatch_to_channel", fake)
+    return sent
+
+
+def test_tag_validation_refuses_a_value_the_renderer_would_replace():
+    assert link_router.normalize_amazon_tag("mydealtag-21") == ("mydealtag-21", "", False)
+    value, note, blocked = link_router.normalize_amazon_tag("my tag")
+    assert (value, blocked) == ("", True) and "not a usable Amazon" in note
+    # Usable but non-standard: accepted, with a warning the operator can see.
+    value, note, blocked = link_router.normalize_amazon_tag("mytag2024")
+    assert (value, blocked) == ("mytag2024", False) and "does not look like" in note
+    assert link_router.normalize_amazon_tag("") == ("", "", False)
+
+
+def test_tag_proof_shows_the_exact_amazon_link_and_flags_a_broken_tag():
+    proof = commission_guard.amazon_tag_proof("mydealtag-21")
+    assert proof["ok"] is True
+    assert proof["posted_link"] == "https://www.amazon.in/dp/B0D9P2M1PB?tag=mydealtag-21"
+    assert proof["fallback_used"] is False
+    broken = commission_guard.amazon_tag_proof("my tag")
+    assert broken["ok"] is True  # the fallback tag still produces a paying link
+    assert broken["fallback_used"] is True and broken["tag_usable"] is False
+    assert broken["tag"] == config.AMAZON_ASSOCIATE_TAG
+
+
+def test_new_channel_posts_with_the_creators_tag_after_saving(monkeypatch, tmp_path):
+    """Identical to the operator's flow: type the channel, press Save."""
+    client, token = _dash_client(monkeypatch, tmp_path, "save-channel")
+    influencer_id = db.add_influencer("Save Creator", "mydealtag-21")
+
+    response = client.post(
+        f"/influencer/{influencer_id}/add-manual-channel",
+        data={
+            "platform": "telegram", "identifier": "@save_loots", "role": "broadcast",
+            "_csrf_token": token,
+        },
+    )
+    assert response.status_code == 302
+    channel = db.list_channels(influencer_id)[0]
+    # Every network the creator has on stays on: saving must not switch them off.
+    assert channel["status"] == "ready"
+    assert (channel["allow_amazon"], channel["allow_earnkaro"], channel["allow_hypd"]) == (1, 1, 1)
+
+    sent = _fake_dispatch(monkeypatch)
+    monkeypatch.setattr(
+        earnkaro, "convert_links",
+        AsyncMock(return_value={
+            "https://www.flipkart.com/nike/p/itmABC123": f"https://ekaro.in/ek123?affExtParam2={PUB}"
+        }),
+    )
+    asyncio.run(pipeline.render_and_dispatch(
+        "🔥 Loot\nAmazon: https://www.amazon.in/dp/B08XYZ1234?tag=old-21\n"
+        "Flipkart: https://www.flipkart.com/nike/p/itmABC123",
+        influencer_ids=[influencer_id],
+    ))
+    assert sent, "nothing was posted to the freshly saved channel"
+    assert f"tag=mydealtag-21" in sent[0]
+    assert "tag=old-21" not in sent[0]
+    assert f"https://ekaro.in/ek123?affExtParam2={PUB}" in sent[0]
+
+
+def test_new_channel_honours_an_explicit_off(monkeypatch, tmp_path):
+    """A ticked/unticked box in the form is still an explicit choice."""
+    client, token = _dash_client(monkeypatch, tmp_path, "save-channel-off")
+    influencer_id = db.add_influencer("Off Creator", "offtag-21")
+
+    client.post(
+        f"/influencer/{influencer_id}/add-manual-channel",
+        data={
+            "platform": "telegram", "identifier": "@off_loots", "role": "broadcast",
+            "allow_amazon": "0", "allow_earnkaro": "0", "allow_hypd": "0",
+            "_csrf_token": token,
+        },
+    )
+    channel = db.list_channels(influencer_id)[0]
+    assert (channel["allow_amazon"], channel["allow_earnkaro"]) == (0, 0)
+
+
+def test_new_channel_with_an_unusable_tag_is_refused_with_a_message(monkeypatch, tmp_path):
+    client, token = _dash_client(monkeypatch, tmp_path, "save-bad-tag")
+    influencer_id = db.add_influencer("Typo Creator", "typo-21")
+
+    response = client.post(
+        f"/influencer/{influencer_id}/add-manual-channel",
+        data={
+            "platform": "telegram", "identifier": "@typo_loots", "role": "broadcast",
+            "amazon_override_tag": "my tag", "_csrf_token": token,
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"not a usable Amazon" in response.data
+    assert db.list_channels(influencer_id) == []  # nothing was saved
+
+
+def test_channel_override_tag_wins_over_the_creator_tag(monkeypatch, tmp_path):
+    client, token = _dash_client(monkeypatch, tmp_path, "override-tag")
+    influencer_id = db.add_influencer("Override Creator", "creatortag-21")
+
+    client.post(
+        f"/influencer/{influencer_id}/add-manual-channel",
+        data={
+            "platform": "telegram", "identifier": "@override_loots", "role": "broadcast",
+            "amazon_override_tag": "channeltag-21", "_csrf_token": token,
+        },
+    )
+    channel = db.list_channels(influencer_id)[0]
+    assert channel["amazon_override_tag"] == "channeltag-21"
+
+    sent = _fake_dispatch(monkeypatch)
+    asyncio.run(pipeline.render_and_dispatch(
+        "🔥 Deal https://www.amazon.in/dp/B08XYZ1234?tag=old-21",
+        influencer_ids=[influencer_id],
+    ))
+    assert "tag=channeltag-21" in sent[0]
+
+
+def test_easy_setup_screen_posts_with_the_tag_typed_on_it(monkeypatch, tmp_path):
+    client, token = _dash_client(monkeypatch, tmp_path, "easy-setup")
+    response = client.post(
+        "/easy-setup",
+        data={
+            "name": "Easy Creator",
+            "amazon_tag": "easydeal-21",
+            "main_channel": "@easy_loots",
+            "allow_amazon": "1", "allow_earnkaro": "1", "allow_hypd": "1",
+            "_csrf_token": token,
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Amazon deals will post as" in response.data
+    assert b"tag=easydeal-21" in response.data
+
+    influencer = db.list_influencers()[0]
+    assert influencer["amazon_tag"] == "easydeal-21"
+    sent = _fake_dispatch(monkeypatch)
+    asyncio.run(pipeline.render_and_dispatch(
+        "🔥 Deal https://www.amazon.in/dp/B08XYZ1234?tag=old-21",
+        influencer_ids=[influencer["id"]],
+    ))
+    assert sent and "tag=easydeal-21" in sent[0]
+
+
+def test_easy_setup_without_the_switches_still_posts_every_network(monkeypatch, tmp_path):
+    client, token = _dash_client(monkeypatch, tmp_path, "easy-defaults")
+    client.post(
+        "/easy-setup",
+        data={
+            "name": "Default Creator", "amazon_tag": "deftag-21",
+            "main_channel": "@deftag_loots", "_csrf_token": token,
+        },
+    )
+    influencer = db.list_influencers()[0]
+    assert (influencer["allow_amazon"], influencer["allow_earnkaro"], influencer["allow_hypd"]) == (1, 1, 1)
+    channel = db.list_channels(influencer["id"])[0]
+    assert (channel["allow_amazon"], channel["allow_earnkaro"], channel["allow_hypd"]) == (1, 1, 1)
+    assert channel["status"] == "ready"
+
+
+def test_easy_setup_refuses_a_tag_that_cannot_be_used(monkeypatch, tmp_path):
+    client, token = _dash_client(monkeypatch, tmp_path, "easy-bad-tag")
+    response = client.post(
+        "/easy-setup",
+        data={
+            "name": "Bad Tag Creator", "amazon_tag": "my tag",
+            "main_channel": "@bad_tag_loots", "_csrf_token": token,
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"not a usable Amazon" in response.data
+    assert db.list_influencers() == []  # no creator was created
+
+
+def test_pipeline_warns_once_when_a_broken_tag_falls_back(monkeypatch, tmp_path, caplog):
+    _dash_client(monkeypatch, tmp_path, "fallback-warn")
+    influencer_id = db.add_influencer("Legacy Creator", "my tag")
+    db.add_channel(influencer_id, "telegram", "@legacy_loots", status="ready", role="broadcast")
+    _fake_dispatch(monkeypatch)
+    pipeline._TAG_FALLBACK_WARNED.clear()
+
+    with caplog.at_level("WARNING", logger="influencer_hub.pipeline"):
+        asyncio.run(pipeline.render_and_dispatch(
+            "🔥 Deal https://www.amazon.in/dp/B08XYZ1234", influencer_ids=[influencer_id]
+        ))
+        asyncio.run(pipeline.render_and_dispatch(
+            "🔥 Deal 2 https://www.amazon.in/dp/B0ABCDEFGH", influencer_ids=[influencer_id]
+        ))
+    warnings = [r.message for r in caplog.records if "AMAZON TAG UNUSABLE" in str(r.message)]
+    assert len(warnings) == 1, warnings
+
+
+def test_preview_endpoint_reports_our_links_wrappers_and_verdict(monkeypatch, tmp_path):
+    client, token = _dash_client(monkeypatch, tmp_path, "preview-links")
+    response = client.post(
+        "/api/test-render-deal",
+        data={
+            "sample_text": "🔥 Deal https://www.amazon.in/dp/B08XYZ1234?tag=old-21 and bit.ly/3xyzFlip",
+            "amazon_tag": "previewtag-21",
+            "role": "broadcast",
+            "_csrf_token": token,
+        },
+    )
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["verdict"] == "our_link_present"
+    assert payload["our_links"] == ["https://www.amazon.in/dp/B08XYZ1234?tag=previewtag-21"]
+    # The wrapper stays visible until it can be resolved (no network in tests).
+    assert "https://bit.ly/3xyzFlip" in payload["unresolved_wrappers"]

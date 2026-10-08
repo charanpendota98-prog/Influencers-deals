@@ -18,6 +18,18 @@
   </div>
 {% endif %}
 
+{# Saving must never be silent: the confirmation (and the exact Amazon link the
+   tag produces) is shown right here, not only on the creator page. #}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <div class="flash-stack" aria-live="polite">
+      {% for category, message in messages %}
+        <div class="flash flash-{{ 'success' if category == 'success' else ('warning' if category == 'warning' else 'error') }}" role="status">{{ message }}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
+
 {% if result %}
   <section class="easy-result" role="status" aria-live="polite">
     <h2>✅ {{ result.name }} {{ 'updated' if result.action == 'updated' else 'is ready' }}</h2>
@@ -93,6 +105,8 @@
     <div class="easy-switches">
       {% for switch in switches %}
         <label class="easy-switch" for="switch-{{ switch.name }}">
+          {# hidden 0 first: an unticked switch is an explicit OFF, never "absent" #}
+          <input type="hidden" name="{{ switch.name }}" value="0" />
           <input type="checkbox" id="switch-{{ switch.name }}" name="{{ switch.name }}" value="1"
                  {{ 'checked' if values[switch.name] else '' }} data-preview-input />
           <span class="easy-switch-body">

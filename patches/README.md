@@ -29,7 +29,7 @@ git apply patches/private-source-fallback.patch
 git apply patches/link-conversion-fixes.patch
 python3 patches/apply-private-source-fallback.py --with-tests
 python3 patches/apply-link-conversion-fixes.py --with-tests
-python3 -m pytest -q                         # 363 passed on this revision
+python3 -m pytest -q                         # 374 passed on this revision
 ```
 
 On a VM already at the merged `c6fa901` release, only the two appliers are
@@ -64,7 +64,7 @@ python3 patches/apply-link-conversion-fixes.py --check
 python3 patches/apply-link-conversion-fixes.py --dry-run
 python3 patches/apply-link-conversion-fixes.py --with-tests
 python3 -m influencer_hub.cli doctor --telegram-sources
-python3 -m pytest -q                          # 363 passed
+python3 -m pytest -q                          # 374 passed
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
 curl -s localhost:5000/api/flow | head -c 400

@@ -356,8 +356,12 @@
         <td>${row.result ? `<code class="routing-result">${escapeHtml(row.result)}</code>` : ''}
           <span class="routing-note">${escapeHtml(row.note)}</span></td>
       </tr>`).join('');
+    const proof = preview.tag_proof
+      ? `<p class="routing-note${preview.tag_usable ? '' : ' is-warn'}">Amazon deals will post this exact link: <code class="routing-result">${escapeHtml(preview.tag_proof)}</code> ${preview.tag_usable ? '✅ with the tag you gave' : '⚠ this tag will be replaced by the configured fallback — check it'}</p>`
+      : '';
     return `
       <p class="routing-summary"><strong>${escapeHtml(preview.summary)}</strong></p>
+      ${proof}
       ${preview.strict ? '<p class="routing-note">🔥 Strict mode is on: only Amazon deals are posted, with this creator\'s tag.</p>' : ''}
       <table class="routing-table">
         <thead><tr><th>Link found in a source deal</th><th>What your channel posts</th></tr></thead>

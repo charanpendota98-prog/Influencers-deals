@@ -366,6 +366,23 @@ Every link kind a source deal can carry has exactly one defined outcome:
 | Link written without `http://` (`flipkart.com/…`, `amazon.in/dp/…`, `amzn.to/…`) | Promoted to a real URL before anything else, then handled like every other link above (retagged/converted) |
 | Anything else (news, YouTube, blog) | Untouched |
 
+#### Add a channel → it posts with your tag
+
+Save a Telegram/WhatsApp destination and the hub uses the tag you gave, with no
+extra steps:
+
+| Where | What is saved | What is posted |
+| --- | --- | --- |
+| Easy Setup screen (`name` + your tag + channel) | creator tag + both channels (`status=ready`), every network you left switched on | the confirmation shows the exact link: `Amazon deals will post as https://www.amazon.in/dp/…?tag=<YOUR TAG> (verified ✅)` |
+| Creator page → Connect Channel (`@username` only) | channel inherits the creator's networks instead of switching them off | deals start flowing on the next worker poll — no restart |
+| A per-channel tag in `Alt Tag` | that channel's tag wins over the creator's | links on that channel are signed with the channel tag |
+
+A tag the Associates format cannot accept (`[A-Za-z0-9_-]{3,30}`, e.g. `ravi-21`)
+is **refused at save time** with the reason instead of being silently replaced by
+the fallback; an unusual-but-usable tag is accepted with a warning, and an empty
+tag is reported. The pipeline logs `AMAZON TAG UNUSABLE` once per channel if it
+ever has to fall back.
+
 #### Check a post before it goes out
 
 ```bash

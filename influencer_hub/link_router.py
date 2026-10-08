@@ -81,6 +81,60 @@ AMAZON_DOMAINS = {
 HYPD_DOMAINS = {"hypd.store"}
 
 
+# Amazon Associate tag values the renderer can actually apply. Anything outside
+# this shape would be silently replaced by the configured fallback, so the
+# dashboard validates with the same rule and the pipeline reports the fallback.
+AMAZON_TAG_VALUE_RE = re.compile(r"^[A-Za-z0-9_-]{3,30}$")
+#: What a normal Associates tag looks like (`name-21`). Other shapes still work,
+#: they are only reported so a typo cannot hide.
+AMAZON_TAG_STANDARD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,28}-[0-9]{2}$")
+
+
+def amazon_tag_is_usable(tag: str | None) -> bool:
+    """True when ``tag`` is a value the renderer will apply as-is."""
+    return bool(AMAZON_TAG_VALUE_RE.fullmatch(str(tag or "").strip()))
+
+
+def effective_amazon_tag(tag: str | None) -> str:
+    """The tag that will really sign a link: the given one, or the fallback.
+
+    ``compact_amazon_product_link`` replaces an unusable value with
+    ``config.AMAZON_ASSOCIATE_TAG``; this helper exposes the same decision so the
+    dashboard can show it and the pipeline can warn about it.
+    """
+    value = str(tag or "").strip()
+    if amazon_tag_is_usable(value):
+        return value
+    return str(config.AMAZON_ASSOCIATE_TAG or "").strip()
+
+
+def normalize_amazon_tag(raw: str | None) -> tuple[str, str, bool]:
+    """Validate a hand-typed Amazon tag: ``(tag, message, blocked)``.
+
+    The renderer only applies ``[A-Za-z0-9_-]{3,30}``; anything else would be
+    replaced by the configured fallback at post time. Rather than let a typo
+    silently post under the wrong tag, a value that cannot be used is refused
+    here with an explanation, and a value that merely looks unusual is accepted
+    with a warning shown to the operator.
+    """
+    value = str(raw or "").strip()
+    if not value:
+        return "", "", False
+    if not amazon_tag_is_usable(value):
+        return "", (
+            f"“{value}” is not a usable Amazon Associates tag — use letters, "
+            "numbers, dashes or underscores (3-30 characters), for example "
+            "ravi-21. Nothing was saved."
+        ), True
+    if not AMAZON_TAG_STANDARD_RE.match(value):
+        return value, (
+            f"“{value}” does not look like a standard Associates tag "
+            "(usually name-21). It will be used exactly as typed — "
+            "double-check it in Amazon Associates."
+        ), False
+    return value, "", False
+
+
 def is_amazon_short_host(url: str) -> bool:
     """True for an opaque Amazon short link whose short code decides the tag."""
     return _host_of(url) in AMAZON_SHORT_HOSTS
@@ -835,12 +889,11 @@ def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
             (value for key, value in query_values if key.lower() == "tag" and value),
             config.AMAZON_ASSOCIATE_TAG,
         )
-    # PERFECT AMAZON CONVERSION: Strict tag validation and ASIN handling
-    # Tag must be like "xxx-21" (Associates format). If invalid, fallback.
-    if effective_tag and not re.fullmatch(r"[A-Za-z0-9_-]+-21", effective_tag):
-        # Still allow custom tags but ensure non-empty; fallback to default if clearly invalid
-        if not re.fullmatch(r"[A-Za-z0-9_-]{3,30}", effective_tag):
-            effective_tag = config.AMAZON_ASSOCIATE_TAG
+    # Only a value the Associates link format accepts may sign our links; a
+    # broken tag is replaced by the configured fallback (and reported upstream by
+    # the pipeline / dashboard, never silently).
+    if not amazon_tag_is_usable(effective_tag):
+        effective_tag = config.AMAZON_ASSOCIATE_TAG
     asin = _amazon_asin(parsed)
     # Determine marketplace — an Amazon URL always keeps its own storefront.
     marketplace_host = amazon_marketplace_host(url)  # short links -> None, stay on their host

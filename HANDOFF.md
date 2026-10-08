@@ -148,6 +148,49 @@ sharp edges:
    heuristic only maps an opaque Amazon short when the deal carries exactly one
    distinct ASIN; otherwise resolution is left to the per-link network resolver.
 
+### 1d. "Add my Telegram channel, save, and it must post with MY tag" (`8f…`+, this round)
+
+Driving the operator's exact flow end-to-end (dashboard → save → pipeline →
+dispatch) exposed four ways a freshly added channel could end up posting nothing
+or posting under the wrong tag:
+
+9. **A channel added without ticking the network boxes saved every network OFF.**
+   `add-manual-channel` read an absent checkbox as `False`, so a channel added
+   with only its `@username` had `allow_amazon=0, allow_earnkaro=0, allow_hypd=0`
+   → every deal was skipped (`per_channel = skipped`) and the channel looked
+   fine on the dashboard. Absent now means **inherit the creator's routing**; the
+   forms send an explicit `0/1` hidden pair, so an operator can still switch a
+   network off on purpose. The same tolerance was added to Easy Setup.
+10. **Easy Setup silently swallowed every message.** Only the creator page
+    rendered flashed messages, so "saved" and "the tag was refused" looked
+    identical on the Easy Setup screen. The screen now shows the confirmation,
+    the warnings and the errors.
+11. **A tag the renderer cannot use was silently replaced.** The Associates
+    format only accepts `[A-Za-z0-9_-]{3,30}`; anything else (e.g. `"my tag"`)
+    was swapped for the configured fallback while rendering, so the post went out
+    under the wrong tag with no signal. Now:
+    * the dashboard validates with the same rule as the renderer and refuses the
+      save with a clear message (`"my tag" is not a usable Amazon Associates tag…`);
+    * a usable-but-unusual tag is accepted with a warning (`does not look like a
+      standard Associates tag`);
+    * an **empty** tag is reported instead of hiding behind the fallback;
+    * the pipeline logs `AMAZON TAG UNUSABLE` once per channel when it has to fall
+      back.
+12. **Saving now proves the outcome.** Every save (channel add, channel edit,
+    Easy Setup) flashes the exact link the tag produces, generated offline with
+    the same renderer + guard the pipeline uses:
+    `Amazon deals will post as https://www.amazon.in/dp/B0D9P2M1PB?tag=<MINE> (verified ✅)`.
+    The Easy Setup "what gets posted" preview shows the same proof line, and
+    `/api/test-render-deal` now returns `our_links`, `unresolved_wrappers` and a
+    `verdict` (`our_link_present` / `held_for_retry` / `no_our_link`).
+
+Proof (tests, offline): a channel saved with just `@username` sits at
+`status=ready` with all three networks on and the next deal is posted with the
+creator's tag and the EarnKaro link; an unticked box is still an explicit OFF; a
+bad tag is refused and **no channel is created**; the Easy Setup screen shows
+`tag=<typed tag>` in the confirmation; an untagged creator logs the fallback
+warning exactly once.
+
 Operator tool (read-only, nothing is posted): 
 
 ```bash
@@ -182,7 +225,7 @@ python3 -m venv .venv
 python3 -m influencer_hub.cli doctor --telegram-sources
 ```
 
-The test suite on this revision is expected to report **363 passed**. The
+The test suite on this revision is expected to report **374 passed**. The
 source doctor is read-only: it enumerates joined dialogs, checks the same
 selection rules as the worker, does not read message history, and does not
 check or join invites. It requires valid Telegram credentials/session on the
@@ -212,7 +255,7 @@ python3 patches/apply-link-conversion-fixes.py --dry-run
 python3 patches/apply-link-conversion-fixes.py --with-tests
 python3 -m influencer_hub.cli doctor --telegram-sources
 python3 -m influencer_hub.cli audit-links --offline --text "Deal https://www.amazon.in/dp/B08XYZ1234?tag=old-21"   # expect exit 0 + [OUR] amazon
-python3 -m pytest -q            # expect 363 passed
+python3 -m pytest -q            # expect 374 passed
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
 journalctl -u influencer-deal-worker -n 100 --no-pager
