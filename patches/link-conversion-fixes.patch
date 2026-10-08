@@ -1,5 +1,5 @@
 diff --git a/HANDOFF.md b/HANDOFF.md
-index 43668bd..c0ea009 100644
+index 43668bd..eca42d9 100644
 --- a/HANDOFF.md
 +++ b/HANDOFF.md
 @@ -6,6 +6,9 @@
@@ -12,7 +12,7 @@ index 43668bd..c0ea009 100644
  Read this before deploying. This handoff describes the current checkout; older
  notes referring to `0bf913f`, an unmerged branch, or the earlier VM rollout are
  historical and are not the current source of truth.
-@@ -64,6 +67,110 @@ before calling production delivery verified.
+@@ -64,6 +67,153 @@ before calling production delivery verified.
  
  ---
  
@@ -97,6 +97,49 @@ index 43668bd..c0ea009 100644
 +   heuristic only maps an opaque Amazon short when the deal carries exactly one
 +   distinct ASIN; otherwise resolution is left to the per-link network resolver.
 +
++### 1d. "Add my Telegram channel, save, and it must post with MY tag" (`8f…`+, this round)
++
++Driving the operator's exact flow end-to-end (dashboard → save → pipeline →
++dispatch) exposed four ways a freshly added channel could end up posting nothing
++or posting under the wrong tag:
++
++9. **A channel added without ticking the network boxes saved every network OFF.**
++   `add-manual-channel` read an absent checkbox as `False`, so a channel added
++   with only its `@username` had `allow_amazon=0, allow_earnkaro=0, allow_hypd=0`
++   → every deal was skipped (`per_channel = skipped`) and the channel looked
++   fine on the dashboard. Absent now means **inherit the creator's routing**; the
++   forms send an explicit `0/1` hidden pair, so an operator can still switch a
++   network off on purpose. The same tolerance was added to Easy Setup.
++10. **Easy Setup silently swallowed every message.** Only the creator page
++    rendered flashed messages, so "saved" and "the tag was refused" looked
++    identical on the Easy Setup screen. The screen now shows the confirmation,
++    the warnings and the errors.
++11. **A tag the renderer cannot use was silently replaced.** The Associates
++    format only accepts `[A-Za-z0-9_-]{3,30}`; anything else (e.g. `"my tag"`)
++    was swapped for the configured fallback while rendering, so the post went out
++    under the wrong tag with no signal. Now:
++    * the dashboard validates with the same rule as the renderer and refuses the
++      save with a clear message (`"my tag" is not a usable Amazon Associates tag…`);
++    * a usable-but-unusual tag is accepted with a warning (`does not look like a
++      standard Associates tag`);
++    * an **empty** tag is reported instead of hiding behind the fallback;
++    * the pipeline logs `AMAZON TAG UNUSABLE` once per channel when it has to fall
++      back.
++12. **Saving now proves the outcome.** Every save (channel add, channel edit,
++    Easy Setup) flashes the exact link the tag produces, generated offline with
++    the same renderer + guard the pipeline uses:
++    `Amazon deals will post as https://www.amazon.in/dp/B0D9P2M1PB?tag=<MINE> (verified ✅)`.
++    The Easy Setup "what gets posted" preview shows the same proof line, and
++    `/api/test-render-deal` now returns `our_links`, `unresolved_wrappers` and a
++    `verdict` (`our_link_present` / `held_for_retry` / `no_our_link`).
++
++Proof (tests, offline): a channel saved with just `@username` sits at
++`status=ready` with all three networks on and the next deal is posted with the
++creator's tag and the EarnKaro link; an unticked box is still an explicit OFF; a
++bad tag is refused and **no channel is created**; the Easy Setup screen shows
++`tag=<typed tag>` in the confirmation; an untagged creator logs the fallback
++warning exactly once.
++
 +Operator tool (read-only, nothing is posted): 
 +
 +```bash
@@ -123,16 +166,16 @@ index 43668bd..c0ea009 100644
  ## 2. Test and audit commands
  
  From the repo root:
-@@ -75,7 +182,7 @@ python3 -m venv .venv
+@@ -75,7 +225,7 @@ python3 -m venv .venv
  python3 -m influencer_hub.cli doctor --telegram-sources
  ```
  
 -The test suite on this revision is expected to report **320 passed**. The
-+The test suite on this revision is expected to report **363 passed**. The
++The test suite on this revision is expected to report **374 passed**. The
  source doctor is read-only: it enumerates joined dialogs, checks the same
  selection rules as the worker, does not read message history, and does not
  check or join invites. It requires valid Telegram credentials/session on the
-@@ -95,15 +202,29 @@ procedure. Never copy secrets into Git or chat. From the deployed checkout:
+@@ -95,15 +245,29 @@ procedure. Never copy secrets into Git or chat. From the deployed checkout:
  
  ```bash
  cd ~/Influencers-deals
@@ -146,7 +189,7 @@ index 43668bd..c0ea009 100644
 +python3 patches/apply-link-conversion-fixes.py --with-tests
  python3 -m influencer_hub.cli doctor --telegram-sources
 +python3 -m influencer_hub.cli audit-links --offline --text "Deal https://www.amazon.in/dp/B08XYZ1234?tag=old-21"   # expect exit 0 + [OUR] amazon
-+python3 -m pytest -q            # expect 363 passed
++python3 -m pytest -q            # expect 374 passed
  sudo systemctl restart influencer-deal-worker influencer-dashboard
  systemctl is-active influencer-deal-worker influencer-dashboard
  journalctl -u influencer-deal-worker -n 100 --no-pager
@@ -162,7 +205,7 @@ index 43668bd..c0ea009 100644
  The applier validates its bundled exact patch before writing. It aborts without
  writing if the VM checkout differs; inspect the diff rather than forcing it.
  If the code is already applied, `--check` exits successfully and a normal
-@@ -135,7 +256,12 @@ appear:
+@@ -135,7 +299,12 @@ appear:
  1. Read the source fallback / selector result in Setup Center or the CLI doctor.
  2. Check worker state, source activity, destination readiness, and failures on
     `/api/flow`.
@@ -176,7 +219,7 @@ index 43668bd..c0ea009 100644
  4. Confirm the EarnKaro token/publisher ID in Vault and run
     `python -m influencer_hub.cli verify-earnkaro` when eligible merchant links
     must earn. Amazon attribution uses each creator's configured tag; HYPD and
-@@ -153,10 +279,13 @@ named private invites.
+@@ -153,10 +322,13 @@ named private invites.
  
  ## 5. Replayable work and safety
  
@@ -195,10 +238,10 @@ index 43668bd..c0ea009 100644
    checks copies, patch presence, and applier state.
  - The original commission/account/password/deal-flow work and its four
 diff --git a/README.md b/README.md
-index 1c0662f..7ea7099 100644
+index 1c0662f..cbd19b3 100644
 --- a/README.md
 +++ b/README.md
-@@ -343,6 +343,60 @@ other setup change):
+@@ -343,6 +343,77 @@ other setup change):
    deal when none of its links would carry our attribution
    (`skipped:no_commission_link`). It trades volume for earnings, so it starts
    off and the Radar recommends it only once it has seen free posts.
@@ -224,6 +267,23 @@ index 1c0662f..7ea7099 100644
 +| Wrapper (`bit.ly`, `tinyurl.com`, `cutt.ly`, `dl.flipkart.com/…`, `fkrt.it/…`) | Resolved first: an Amazon destination becomes the canonical OUR link, a merchant destination is converted by EarnKaro; if the destination cannot be resolved the deal is parked and the run logs `UNRESOLVED WRAPPED LINK` |
 +| Link written without `http://` (`flipkart.com/…`, `amazon.in/dp/…`, `amzn.to/…`) | Promoted to a real URL before anything else, then handled like every other link above (retagged/converted) |
 +| Anything else (news, YouTube, blog) | Untouched |
++
++#### Add a channel → it posts with your tag
++
++Save a Telegram/WhatsApp destination and the hub uses the tag you gave, with no
++extra steps:
++
++| Where | What is saved | What is posted |
++| --- | --- | --- |
++| Easy Setup screen (`name` + your tag + channel) | creator tag + both channels (`status=ready`), every network you left switched on | the confirmation shows the exact link: `Amazon deals will post as https://www.amazon.in/dp/…?tag=<YOUR TAG> (verified ✅)` |
++| Creator page → Connect Channel (`@username` only) | channel inherits the creator's networks instead of switching them off | deals start flowing on the next worker poll — no restart |
++| A per-channel tag in `Alt Tag` | that channel's tag wins over the creator's | links on that channel are signed with the channel tag |
++
++A tag the Associates format cannot accept (`[A-Za-z0-9_-]{3,30}`, e.g. `ravi-21`)
++is **refused at save time** with the reason instead of being silently replaced by
++the fallback; an unusual-but-usable tag is accepted with a warning, and an empty
++tag is reported. The pipeline logs `AMAZON TAG UNUSABLE` once per channel if it
++ever has to fall back.
 +
 +#### Check a post before it goes out
 +
@@ -260,10 +320,30 @@ index 1c0662f..7ea7099 100644
  Per-creator and per-channel **⭐ Minimum Deal Quality** (S/A/B/C, resolved
  channel → creator → global) keeps a channel's attention for the deals worth a
 diff --git a/dashboard/app.py b/dashboard/app.py
-index 3d00119..d2b7e9c 100644
+index 3d00119..82c583f 100644
 --- a/dashboard/app.py
 +++ b/dashboard/app.py
-@@ -1114,6 +1114,13 @@ MONEY_SWITCHES: dict[str, tuple[str, str]] = {
+@@ -192,6 +192,19 @@ def _run(coro):
+     return asyncio.run_coroutine_threadsafe(coro, loop).result()
+ 
+ 
++def _form_flag_or_none(name: str) -> bool | None:
++    """Checkbox/hidden pair -> True/False, or None when the field was not sent.
++
++    ``None`` means "this form does not manage the option". A caller that only
++    sends the channel identifier must inherit the creator's routing instead of
++    silently switching Amazon/EarnKaro/HYPD off (which used to leave a brand-new
++    channel with every network disabled, so nothing was ever posted to it).
++    """
++    if not request.form.getlist(name):
++        return None
++    return _form_flag(name, default=False)
++
++
+ def _form_flag(name: str, default: bool | None = None) -> bool | None:
+     """Parse select values and checkbox/hidden-input pairs consistently.
+ 
+@@ -1114,6 +1127,13 @@ MONEY_SWITCHES: dict[str, tuple[str, str]] = {
          "Hold back a deal when none of its links would carry our attribution. "
          "Fewer posts, but no post goes out that pays nothing.",
      ),
@@ -277,7 +357,7 @@ index 3d00119..d2b7e9c 100644
  }
  
  
-@@ -1150,6 +1157,7 @@ def money_dashboard():
+@@ -1150,6 +1170,7 @@ def money_dashboard():
      defaults = {
          "meesho_earnkaro_fallback": bool(config.MEESHO_EARNKARO_FALLBACK),
          "only_earning_deals": bool(config.ONLY_EARNING_DEALS),
@@ -285,7 +365,38 @@ index 3d00119..d2b7e9c 100644
      }
      switches = [
          {
-@@ -1935,6 +1943,25 @@ def _flow_snapshot(
+@@ -1686,6 +1707,11 @@ def update_channel_route(channel_id):
+         ident = clean_identifier(ident)
+ 
+     # A pending "undo removal" is stale once this channel is edited by hand.
++    tag_value, tag_note, tag_blocked = _normalize_amazon_tag(override_tag)
++    if tag_blocked:
++        flash(tag_note, "error")
++        return redirect(url_for("influencer_detail", inf_id=owner_id))
++    override_tag = tag_value
+     session.pop(UNDO_CHANNEL_KEY, None)
+     db.update_channel_details(
+         channel_id,
+@@ -1715,6 +1741,8 @@ def update_channel_route(channel_id):
+         return redirect(url_for(
+             "influencer_detail", inf_id=owner_id, wa_link_status="pending"
+         ))
++    if tag_note:
++        flash("⚠ " + tag_note, "warning")
+     return redirect(url_for("influencer_detail", inf_id=owner_id))
+ 
+ 
+@@ -1752,6 +1780,9 @@ ROUTING_SAMPLES = (
+ )
+ 
+ 
++#: The Amazon link the "what gets posted" preview proves the tag against.
++ROUTING_AMAZON_SAMPLE = ROUTING_SAMPLES[0][1]
++
+ _LIVE_SELECTION_CACHE: dict = {"checked_at": 0.0, "report": None}
+ LIVE_SELECTION_TTL_SECONDS = 45
+ 
+@@ -1935,6 +1966,25 @@ def _flow_snapshot(
      except Exception:
          hourly_loot = False
      only_earning = bool(getattr(config, "ONLY_EARNING_DEALS", False))
@@ -311,7 +422,7 @@ index 3d00119..d2b7e9c 100644
      if live_channels and not posted_window and worker_alive:
          note_list.append(
              f"No post in the last {window_hours}h across {len(live_channels)} ready "
-@@ -1977,6 +2004,16 @@ def _flow_snapshot(
+@@ -1977,6 +2027,16 @@ def _flow_snapshot(
              "hourly_loot_enabled": hourly_loot,
              "only_earning_deals": only_earning,
          },
@@ -328,6 +439,376 @@ index 3d00119..d2b7e9c 100644
          "notes": note_list,
          "stall_seconds": stall_seconds,
      }
+@@ -2077,12 +2137,22 @@ def _routing_preview(
+             f"Meesho → our HYPD store {store}" if hypd_on else "Meesho off",
+         )
+     )
++    # Offline proof for the exact Amazon link this tag produces, so the screen
++    # shows the result instead of only the rule.
++    proof = (
++        link_router.apply_amazon_tag(ROUTING_AMAZON_SAMPLE, tag)
++        if amazon_on else ""
++    )
++    tag_usable = link_router.amazon_tag_is_usable(tag)
+     return {
+         "rows": rows,
+         "model": model,
+         "summary": summary,
+         "strict": strict,
+         "amazon_on": amazon_on,
++        "tag": tag,
++        "tag_usable": tag_usable,
++        "tag_proof": proof,
+         "earnkaro_on": ek_on,
+         "hypd_on": hypd_on,
+         "earnkaro_ready": ek_ready,
+@@ -2120,6 +2190,63 @@ def _valid_telegram_identifier(value: str) -> tuple[bool, str]:
+     )
+ 
+ 
++def _normalize_amazon_tag(raw: str) -> tuple[str, str, bool]:
++    """Validate a hand-typed Amazon tag: ``(tag, message, blocked)``.
++
++    Delegates to the router, which is also what the renderer uses, so the
++    dashboard can never accept a value the pipeline would silently replace.
++    """
++    from influencer_hub import link_router
++
++    validator = getattr(link_router, "normalize_amazon_tag", None)
++    if validator is None:  # pragma: no cover - older checkout without the helper
++        value = str(raw or "").strip()
++        if not value:
++            return "", "", False
++        import re as _re
++
++        if not _re.fullmatch(r"[A-Za-z0-9_-]{3,30}", value):
++            return "", f"“{value}” is not a usable Amazon tag; nothing was saved.", True
++        return value, "", False
++    return validator(raw)
++
++
++def _channel_ready_message(inf_id: int, influencer: dict, ident: str, role: str,
++                          override_tag: str = "", tag_note: str = "") -> str:
++    """Tell the operator exactly which link the new channel will post.
++
++    Proof is generated offline with the same renderer + guard the pipeline uses,
++    so "saved" and "will post with my tag" are the same statement.
++    """
++    from influencer_hub import commission_guard
++
++    tag = (
++        override_tag
++        or str(influencer.get("amazon_tag") or "").strip()
++        or config.AMAZON_ASSOCIATE_TAG
++    )
++    proof = commission_guard.amazon_tag_proof(tag)
++    parts = [
++        f"✅ {ident} connected to {influencer['name']} as a "
++        f"{'approval' if role == 'approval' else 'broadcast'} channel."
++    ]
++    parts.append(
++        "Amazon deals will post as "
++        + proof["posted_link"]
++        + (" (verified ✅)" if proof["ok"] else " (⚠ not verified)")
++    )
++    if proof["fallback_used"]:
++        parts.append(
++            "⚠ No usable tag is set for this creator/channel, so the configured "
++            f"fallback tag {proof['tag']} will sign the links. Add the creator's own tag "
++            "on this page to earn from their id."
++        )
++    if tag_note:
++        parts.append("⚠ " + tag_note)
++    parts.append("Send a test post below to confirm the account can post there.")
++    return " ".join(parts)
++
++
+ def _channel_feedback(inf_id: int, category: str, message: str):
+     """Flash the result of a channel action and return to the creator's page."""
+     flash(message, category)
+@@ -2161,28 +2288,40 @@ def add_manual_channel(inf_id):
+         return _channel_feedback(
+             inf_id, "error", "That destination link is too long. Check the value and try again.",
+         )
+-    only_amz = bool(_form_flag("only_amazon", default=False))
+-    strip_amz = bool(_form_flag("strip_amazon", default=False))
+-    allow_amz = bool(_form_flag("allow_amazon", default=False))
+-    allow_ek = bool(_form_flag("allow_earnkaro", default=False))
+-    allow_hypd = bool(_form_flag("allow_hypd", default=False))
++    only_amz = _form_flag_or_none("only_amazon")
++    strip_amz = _form_flag_or_none("strip_amazon")
++    allow_amz = _form_flag_or_none("allow_amazon")
++    allow_ek = _form_flag_or_none("allow_earnkaro")
++    allow_hypd = _form_flag_or_none("allow_hypd")
+     hypd_store_id = (
+         request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
+     )
++    # Validate the tag before anything is saved: the renderer only applies
++    # [A-Za-z0-9_-]{3,30}, so a typo would otherwise post under the fallback tag.
++    override_tag, tag_note, tag_blocked = _normalize_amazon_tag(
++        request.form.get("amazon_override_tag", "")
++    )
++    if tag_blocked:
++        return _channel_feedback(inf_id, "error", tag_note)
+ 
+     channel_settings = {
+-        "amazon_override_tag": override_tag,
+-        "strip_amazon": strip_amz,
+         "price_filter": price_filt,
+         "bitly_api_key": bitly_key,
+         "categories": categories,
+         "posting_schedule": schedule,
+-        "only_amazon": only_amz,
+-        "allow_amazon": allow_amz,
+-        "allow_earnkaro": allow_ek,
+-        "allow_hypd": allow_hypd,
+         "hypd_store_id": hypd_store_id,
+     }
++    if override_tag:
++        channel_settings["amazon_override_tag"] = override_tag
++    for key, value in (
++        ("only_amazon", only_amz),
++        ("strip_amazon", strip_amz),
++        ("allow_amazon", allow_amz),
++        ("allow_earnkaro", allow_ek),
++        ("allow_hypd", allow_hypd),
++    ):
++        if value is not None:
++            channel_settings[key] = bool(value)
+     if platform == "telegram":
+         ident = clean_identifier(raw_ident)
+         valid, error = _valid_telegram_identifier(ident)
+@@ -2221,9 +2360,9 @@ def add_manual_channel(inf_id):
+             **channel_settings,
+         )
+         return _channel_feedback(
+-            inf_id, "success",
+-            f"✅ {ident} connected to {influencer['name']} as a "
+-            f"{'approval' if role == 'approval' else 'broadcast'} channel.",
++            inf_id,
++            "warning" if tag_note else "success",
++            _channel_ready_message(inf_id, influencer, ident, role, override_tag, tag_note),
+         )
+     elif platform in {"whatsapp_group", "whatsapp_channel"}:
+         destination, error = _resolve_whatsapp_destination(inf_id, raw_ident)
+@@ -2285,9 +2424,13 @@ def _easy_setup_form_values() -> dict:
+         "approval": request.form.get("approval_channel", "").strip(),
+         "main": request.form.get("main_channel", "").strip(),
+         "whatsapp": request.form.get("whatsapp_channel", "").strip(),
+-        "allow_amazon": bool(_form_flag("allow_amazon", default=False)),
+-        "allow_earnkaro": bool(_form_flag("allow_earnkaro", default=False)),
+-        "allow_hypd": bool(_form_flag("allow_hypd", default=False)),
++        # Absent means "not managed by this form": inherit the recommended
++        # default (all three on) instead of silently disabling every network.
++        # The screen's switches send an explicit 0/1 pair, so an operator can
++        # still switch any of them off.
++        "allow_amazon": bool(_form_flag("allow_amazon", default=True)),
++        "allow_earnkaro": bool(_form_flag("allow_earnkaro", default=True)),
++        "allow_hypd": bool(_form_flag("allow_hypd", default=True)),
+         "only_amazon": bool(_form_flag("only_amazon", default=False)),
+         "hypd_store_id": (
+             request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
+@@ -2319,6 +2462,18 @@ def easy_setup():
+ 
+     if request.method == "POST":
+         values = _easy_setup_form_values()
++        tag_value, tag_note, tag_blocked = _normalize_amazon_tag(values["amazon_tag"])
++        if tag_blocked:
++            errors.append(tag_note)
++        elif not tag_value:
++            values["amazon_tag"] = config.AMAZON_ASSOCIATE_TAG
++            tag_note = (
++                f"No Amazon tag was given, so the configured fallback "
++                f"{config.AMAZON_ASSOCIATE_TAG} will sign Amazon links. "
++                "Put the creator's own tag here to earn from their id."
++            )
++        else:
++            values["amazon_tag"] = tag_value
+         if not values["name"]:
+             errors.append("Enter the creator's name.")
+         if not values["main"] and not values["approval"]:
+@@ -2341,6 +2496,9 @@ def easy_setup():
+         if not errors:
+             applied = _apply_easy_setup(values, approval_ident, main_ident)
+             session["_easy_setup_result"] = applied
++            from influencer_hub import commission_guard
++
++            proof = commission_guard.amazon_tag_proof(values["amazon_tag"])
+             flash(
+                 f"✅ {applied['name']} is set up and posting. "
+                 f"Amazon → {values['amazon_tag']}"
+@@ -2348,6 +2506,13 @@ def easy_setup():
+                 + (f", Meesho → HYPD store {values['hypd_store_id']}" if values["allow_hypd"] else ""),
+                 "success",
+             )
++            flash(
++                "Amazon deals will post as " + proof["posted_link"]
++                + (" (verified ✅)" if proof["ok"] else " (⚠ not verified — check the tag)"),
++                "success" if proof["ok"] else "warning",
++            )
++            if tag_note:
++                flash("⚠ " + tag_note, "warning")
+             return redirect(url_for("easy_setup", done=applied["inf_id"]))
+ 
+     preview = _routing_preview(**_routing_arguments(values))
+@@ -3008,6 +3173,26 @@ def api_test_render_deal():
+     if not only_amazon and role != "approval":
+         allowed_kinds.add("lehlah")
+ 
++    # Same first step as the pipeline: promote scheme-less links and unwrap
++    # shorteners so the preview shows the links that will really be posted.
++    sample_text = link_router.promote_scheme_less_links(sample_text)
++    unresolved_wrappers: list[str] = []
++    if link_router.has_opaque_link(sample_text):
++        try:
++            sample_text, unresolved_wrappers = _run(asyncio.wait_for(
++                link_router.resolve_opaque_links_in_text_async(sample_text, amz_tag), timeout=12
++            ))
++        except Exception:
++            unresolved_wrappers = link_router.unresolved_opaque_links(sample_text)
++            warnings_pre: list[str] = [
++                "Wrapper links could not be resolved in the preview; they stay visible and the "
++                "worker retries such a deal instead of posting it for free."
++            ]
++        else:
++            warnings_pre = []
++    else:
++        warnings_pre = []
++
+     filtered_text = link_router.filter_disallowed_affiliate_links(sample_text, allowed_kinds)
+     detected_links = link_router.collect_links(sample_text)
+     merchant_urls = {
+@@ -3037,12 +3222,30 @@ def api_test_render_deal():
+         role=role,
+         hypd_store_id=hypd_store,
+     )
++    from influencer_hub import commission_guard
++
++    expected_pubid = (
++        db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or ""
++    ).strip()
++    our_links = commission_guard.our_affiliate_urls(
++        rendered, amz_tag or config.AMAZON_ASSOCIATE_TAG, hypd_store, expected_pubid,
++        source_text=sample_text,
++    )
++    if our_links:
++        verdict = "our_link_present"
++    elif unresolved_wrappers:
++        verdict = "held_for_retry"
++    else:
++        verdict = "no_our_link"
+     return jsonify({
+         "ok": True,
+         "input": sample_text,
+         "rendered": rendered,
+         "detected_links": detected_links,
+-        "warnings": warnings,
++        "our_links": our_links,
++        "unresolved_wrappers": unresolved_wrappers,
++        "verdict": verdict,
++        "warnings": warnings_pre + warnings,
+         "network_settings": {
+             "amazon": bool(allow_amazon),
+             "earnkaro": bool(allow_earnkaro),
+diff --git a/dashboard/static/app.js b/dashboard/static/app.js
+index 47584ab..c161930 100644
+--- a/dashboard/static/app.js
++++ b/dashboard/static/app.js
+@@ -356,8 +356,12 @@
+         <td>${row.result ? `<code class="routing-result">${escapeHtml(row.result)}</code>` : ''}
+           <span class="routing-note">${escapeHtml(row.note)}</span></td>
+       </tr>`).join('');
++    const proof = preview.tag_proof
++      ? `<p class="routing-note${preview.tag_usable ? '' : ' is-warn'}">Amazon deals will post this exact link: <code class="routing-result">${escapeHtml(preview.tag_proof)}</code> ${preview.tag_usable ? '✅ with the tag you gave' : '⚠ this tag will be replaced by the configured fallback — check it'}</p>`
++      : '';
+     return `
+       <p class="routing-summary"><strong>${escapeHtml(preview.summary)}</strong></p>
++      ${proof}
+       ${preview.strict ? '<p class="routing-note">🔥 Strict mode is on: only Amazon deals are posted, with this creator\'s tag.</p>' : ''}
+       <table class="routing-table">
+         <thead><tr><th>Link found in a source deal</th><th>What your channel posts</th></tr></thead>
+diff --git a/dashboard/static/style.css b/dashboard/static/style.css
+index 22a95f6..cef6b70 100644
+--- a/dashboard/static/style.css
++++ b/dashboard/static/style.css
+@@ -823,6 +823,8 @@ button[aria-disabled="true"] {
+ .flash-stack { display: grid; gap: 8px; margin-top: 14px; }
+ .flash { padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+ .flash-error { border: 1px solid #ef4444; background: #450a0a; color: #fecaca; }
++.flash-success { border: 1px solid #10b981; background: #052e25; color: #a7f3d0; }
++.flash-warning { border: 1px solid #f59e0b; background: #422006; color: #fde68a; }
+ 
+ /* ---------- Routing preview table ---------- */
+ .routing-summary {
+diff --git a/dashboard/templates/_routing_preview.html b/dashboard/templates/_routing_preview.html
+index 45b4785..7acf1bc 100644
+--- a/dashboard/templates/_routing_preview.html
++++ b/dashboard/templates/_routing_preview.html
+@@ -43,6 +43,12 @@
+     {% endfor %}
+   </tbody>
+ </table>
++{% if preview.tag_proof %}
++  <p class="routing-note{% if not preview.tag_usable %} is-warn{% endif %}">
++    Amazon deals will post this exact link: <code class="routing-result">{{ preview.tag_proof }}</code>
++    {% if preview.tag_usable %}✅ with the tag you gave{% else %}⚠ this tag will be replaced by the configured fallback — check it{% endif %}
++  </p>
++{% endif %}
+ {% if preview.earnkaro_on and not preview.earnkaro_ready %}
+   <p class="routing-note is-warn">💰 EarnKaro is on but its API key is missing. Add it in <a class="text-link" href="{{ url_for('secret_vault_tab') }}">Vault &amp; Sources</a> to convert Flipkart/Myntra/Ajio links.</p>
+ {% endif %}
+diff --git a/dashboard/templates/easy_setup.html b/dashboard/templates/easy_setup.html
+index 9cfdd89..897d823 100644
+--- a/dashboard/templates/easy_setup.html
++++ b/dashboard/templates/easy_setup.html
+@@ -18,6 +18,18 @@
+   </div>
+ {% endif %}
+ 
++{# Saving must never be silent: the confirmation (and the exact Amazon link the
++   tag produces) is shown right here, not only on the creator page. #}
++{% with messages = get_flashed_messages(with_categories=true) %}
++  {% if messages %}
++    <div class="flash-stack" aria-live="polite">
++      {% for category, message in messages %}
++        <div class="flash flash-{{ 'success' if category == 'success' else ('warning' if category == 'warning' else 'error') }}" role="status">{{ message }}</div>
++      {% endfor %}
++    </div>
++  {% endif %}
++{% endwith %}
++
+ {% if result %}
+   <section class="easy-result" role="status" aria-live="polite">
+     <h2>✅ {{ result.name }} {{ 'updated' if result.action == 'updated' else 'is ready' }}</h2>
+@@ -93,6 +105,8 @@
+     <div class="easy-switches">
+       {% for switch in switches %}
+         <label class="easy-switch" for="switch-{{ switch.name }}">
++          {# hidden 0 first: an unticked switch is an explicit OFF, never "absent" #}
++          <input type="hidden" name="{{ switch.name }}" value="0" />
+           <input type="checkbox" id="switch-{{ switch.name }}" name="{{ switch.name }}" value="1"
+                  {{ 'checked' if values[switch.name] else '' }} data-preview-input />
+           <span class="easy-switch-body">
+diff --git a/dashboard/templates/influencer.html b/dashboard/templates/influencer.html
+index f75fe9b..56b1c53 100644
+--- a/dashboard/templates/influencer.html
++++ b/dashboard/templates/influencer.html
+@@ -502,12 +502,15 @@
+         <option value="all">All Deals</option>
+       </select>
+       <label style="font-size: 12px; font-weight: 600; color: #86efac; cursor: pointer; display: flex; align-items: center; gap: 5px;">
++        <input type="hidden" name="allow_amazon" value="0" />
+         <input type="checkbox" name="allow_amazon" value="1" {{ 'checked' if (inf.allow_amazon != 0 or inf.only_amazon) else '' }} title="Allow tagged Amazon links on this channel; other selected networks may also run" /> 📦 Amazon ON
+       </label>
+       <label style="font-size: 12px; font-weight: 600; color: #fde68a; cursor: pointer; display: flex; align-items: center; gap: 5px;">
++        <input type="hidden" name="allow_earnkaro" value="0" />
+         <input type="checkbox" name="allow_earnkaro" value="1" {{ 'checked' if inf.allow_earnkaro != 0 else '' }} title="Supported non-Amazon, non-Meesho merchants route through EarnKaro" /> 💰 EarnKaro ON
+       </label>
+       <label style="font-size: 12px; font-weight: 600; color: #f472b6; cursor: pointer; display: flex; align-items: center; gap: 5px;">
++        <input type="hidden" name="allow_hypd" value="0" />
+         <input type="checkbox" name="allow_hypd" value="1" {{ 'checked' if inf.allow_hypd != 0 else '' }} title="Enable the Meesho/HYPD route; raw Meesho is unchanged without HYPD's official generator" /> 🛍️ HYPD ON (Meesho)
+       </label>
+       <input name="hypd_store_id" value="{{ inf.hypd_store_id or current_hypd_store }}" placeholder="HYPD Store ID" style="font-size: 11px; width: 85px; font-family:monospace;" title="HYPD Store ID for this channel" />
 diff --git a/influencer_hub/cli.py b/influencer_hub/cli.py
 index 1fb229b..ad067dc 100644
 --- a/influencer_hub/cli.py
@@ -469,7 +950,7 @@ index 1fb229b..ad067dc 100644
      v.add_argument("--loop", action="store_true")
      v.set_defaults(func=_cmd_vm_watch)
 diff --git a/influencer_hub/commission_guard.py b/influencer_hub/commission_guard.py
-index 8997ad9..fa0c601 100644
+index 8997ad9..b7ffe62 100644
 --- a/influencer_hub/commission_guard.py
 +++ b/influencer_hub/commission_guard.py
 @@ -63,6 +63,7 @@ def audit_rendered_text(
@@ -542,7 +1023,7 @@ index 8997ad9..fa0c601 100644
          else:
              # Other URLs (t.me, etc.) — not affiliate, ignore
              entry["reason"] = f"Non-affiliate URL (other): {url}"
-@@ -270,6 +294,142 @@ def audit_rendered_text(
+@@ -270,6 +294,168 @@ def audit_rendered_text(
      }
  
  
@@ -621,6 +1102,32 @@ index 8997ad9..fa0c601 100644
 +            return True
 +        return is_verified_our_link(long_url, tag, store, expected_pubid)
 +    return False
++
++
++def amazon_tag_proof(
++    requested_tag: str,
++    sample_url: str = "https://www.amazon.in/dp/B0D9P2M1PB?tag=someone-else-21",
++) -> dict:
++    """Offline proof of what a sample Amazon link becomes with this tag.
++
++    Used by the dashboard right after a creator/channel is saved, so the operator
++    sees the exact link that will be posted (and whether it is verified as OURS)
++    instead of trusting that the tag was picked up.
++    """
++    from . import link_router as _router
++
++    tag = _router.effective_amazon_tag(requested_tag)
++    rendered = _router.render_for_influencer(sample_url, tag)
++    links = our_affiliate_urls(rendered, tag, "", "")
++    return {
++        "requested_tag": str(requested_tag or "").strip(),
++        "tag": tag,
++        "fallback_used": tag != str(requested_tag or "").strip(),
++        "tag_usable": _router.amazon_tag_is_usable(requested_tag),
++        "posted_link": links[0] if links else rendered,
++        "ok": bool(links),
++        "rendered": rendered,
++    }
 +
 +
 +def our_affiliate_urls(
@@ -857,10 +1364,10 @@ index 693cfad..fabb5e1 100644
                        include_meesho: bool = False) -> str:
      # Amazon has its own Associates tag, so it never goes to EarnKaro. Raw
 diff --git a/influencer_hub/link_router.py b/influencer_hub/link_router.py
-index 92258f8..3270c1b 100644
+index 92258f8..702eb62 100644
 --- a/influencer_hub/link_router.py
 +++ b/influencer_hub/link_router.py
-@@ -13,15 +13,423 @@ network call done by the pipeline and passed in as a precomputed map.
+@@ -13,15 +13,477 @@ network call done by the pipeline and passed in as a precomputed map.
  """
  from __future__ import annotations
  
@@ -933,6 +1440,60 @@ index 92258f8..3270c1b 100644
 +
  HYPD_DOMAINS = {"hypd.store"}
  
++
++# Amazon Associate tag values the renderer can actually apply. Anything outside
++# this shape would be silently replaced by the configured fallback, so the
++# dashboard validates with the same rule and the pipeline reports the fallback.
++AMAZON_TAG_VALUE_RE = re.compile(r"^[A-Za-z0-9_-]{3,30}$")
++#: What a normal Associates tag looks like (`name-21`). Other shapes still work,
++#: they are only reported so a typo cannot hide.
++AMAZON_TAG_STANDARD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,28}-[0-9]{2}$")
++
++
++def amazon_tag_is_usable(tag: str | None) -> bool:
++    """True when ``tag`` is a value the renderer will apply as-is."""
++    return bool(AMAZON_TAG_VALUE_RE.fullmatch(str(tag or "").strip()))
++
++
++def effective_amazon_tag(tag: str | None) -> str:
++    """The tag that will really sign a link: the given one, or the fallback.
++
++    ``compact_amazon_product_link`` replaces an unusable value with
++    ``config.AMAZON_ASSOCIATE_TAG``; this helper exposes the same decision so the
++    dashboard can show it and the pipeline can warn about it.
++    """
++    value = str(tag or "").strip()
++    if amazon_tag_is_usable(value):
++        return value
++    return str(config.AMAZON_ASSOCIATE_TAG or "").strip()
++
++
++def normalize_amazon_tag(raw: str | None) -> tuple[str, str, bool]:
++    """Validate a hand-typed Amazon tag: ``(tag, message, blocked)``.
++
++    The renderer only applies ``[A-Za-z0-9_-]{3,30}``; anything else would be
++    replaced by the configured fallback at post time. Rather than let a typo
++    silently post under the wrong tag, a value that cannot be used is refused
++    here with an explanation, and a value that merely looks unusual is accepted
++    with a warning shown to the operator.
++    """
++    value = str(raw or "").strip()
++    if not value:
++        return "", "", False
++    if not amazon_tag_is_usable(value):
++        return "", (
++            f"“{value}” is not a usable Amazon Associates tag — use letters, "
++            "numbers, dashes or underscores (3-30 characters), for example "
++            "ravi-21. Nothing was saved."
++        ), True
++    if not AMAZON_TAG_STANDARD_RE.match(value):
++        return value, (
++            f"“{value}” does not look like a standard Associates tag "
++            "(usually name-21). It will be used exactly as typed — "
++            "double-check it in Amazon Associates."
++        ), False
++    return value, "", False
++
 +
 +def is_amazon_short_host(url: str) -> bool:
 +    """True for an opaque Amazon short link whose short code decides the tag."""
@@ -1286,7 +1847,7 @@ index 92258f8..3270c1b 100644
  # Merchant domains we route through EarnKaro (except Amazon, HYPD, and
  # Meesho). Meesho has its own HYPD path and must never be sent to EarnKaro.
  # Expanded to cover EarnKaro's 150+ supported brands - ensures sources from
-@@ -102,6 +510,63 @@ MERCHANT_DOMAINS = {
+@@ -102,6 +564,63 @@ MERCHANT_DOMAINS = {
      "myntra.com",
  }
  
@@ -1350,7 +1911,7 @@ index 92258f8..3270c1b 100644
  # A reasonably permissive URL finder (http/https only).
  URL_RE = re.compile(r"https?://[^\s)>\]]+", re.I)
  
-@@ -185,8 +650,18 @@ def _is_lehlah_meesho_affiliate(url: str) -> bool:
+@@ -185,8 +704,18 @@ def _is_lehlah_meesho_affiliate(url: str) -> bool:
      )
  
  
@@ -1370,7 +1931,7 @@ index 92258f8..3270c1b 100644
      host = _host_of(url)
      if any(_is_domain(host, domain) for domain in AMAZON_DOMAINS):
          return "amazon"
-@@ -196,6 +671,9 @@ def classify_url(url: str) -> str:
+@@ -196,6 +725,9 @@ def classify_url(url: str) -> str:
          return "lehlah"
      if _is_domain(host, "meesho.com"):
          return "meesho"
@@ -1380,9 +1941,21 @@ index 92258f8..3270c1b 100644
      if any(_is_domain(host, domain.removeprefix("www.")) for domain in MERCHANT_DOMAINS):
          return "merchant"
      return "other"
-@@ -364,17 +842,8 @@ def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
-         if not re.fullmatch(r"[A-Za-z0-9_-]{3,30}", effective_tag):
-             effective_tag = config.AMAZON_ASSOCIATE_TAG
+@@ -357,24 +889,14 @@ def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
+             (value for key, value in query_values if key.lower() == "tag" and value),
+             config.AMAZON_ASSOCIATE_TAG,
+         )
+-    # PERFECT AMAZON CONVERSION: Strict tag validation and ASIN handling
+-    # Tag must be like "xxx-21" (Associates format). If invalid, fallback.
+-    if effective_tag and not re.fullmatch(r"[A-Za-z0-9_-]+-21", effective_tag):
+-        # Still allow custom tags but ensure non-empty; fallback to default if clearly invalid
+-        if not re.fullmatch(r"[A-Za-z0-9_-]{3,30}", effective_tag):
+-            effective_tag = config.AMAZON_ASSOCIATE_TAG
++    # Only a value the Associates link format accepts may sign our links; a
++    # broken tag is replaced by the configured fallback (and reported upstream by
++    # the pipeline / dashboard, never silently).
++    if not amazon_tag_is_usable(effective_tag):
++        effective_tag = config.AMAZON_ASSOCIATE_TAG
      asin = _amazon_asin(parsed)
 -    # Determine marketplace - must preserve original marketplace perfectly
 -    if _is_domain(host, "amazon.in"):
@@ -1400,7 +1973,7 @@ index 92258f8..3270c1b 100644
  
      if asin and marketplace_host:
          # PERFECT CANONICALIZATION: Always https://www.amazon.in/dp/<ASIN>?tag=YOURTAG
-@@ -421,17 +890,19 @@ def apply_amazon_tag(url: str, tag: str | None = None) -> str:
+@@ -421,17 +943,19 @@ def apply_amazon_tag(url: str, tag: str | None = None) -> str:
  
  
  def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
@@ -1429,7 +2002,7 @@ index 92258f8..3270c1b 100644
  
      This handles the user's case:
        amzn.to/4dnF9lU?tag=mama086-21  (short, old tag inside)
-@@ -449,8 +920,7 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
+@@ -449,8 +973,7 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
      # Collect all ASINs and their th/psc from long links in the same text
      asins_with_params: list[tuple[str, dict[str, str]]] = []
      for u in urls:
@@ -1439,7 +2012,7 @@ index 92258f8..3270c1b 100644
              continue
          try:
              parsed = urlparse(u)
-@@ -469,8 +939,15 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
+@@ -469,8 +992,15 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
      if not asins_with_params:
          return text
  
@@ -1457,7 +2030,7 @@ index 92258f8..3270c1b 100644
      primary_asin, primary_params = asins_with_params[0]
      # Deduplicate: if the text already contains a long link with this ASIN, we will replace shorts with that canonical
      # After replacement, the rendered text may have duplicate canonical URLs (short + long both become same)
-@@ -478,8 +955,7 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
+@@ -478,8 +1008,7 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
  
      out = text
      for u in urls:
@@ -1467,7 +2040,7 @@ index 92258f8..3270c1b 100644
              continue
          # Build canonical for this short using the primary ASIN + OUR tag + th/psc
          canonical_q = list(primary_params.items())
-@@ -496,75 +972,42 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
+@@ -496,75 +1025,42 @@ def expand_amazon_shorts_in_text(text: str, tag: str | None = None) -> str:
      return out
  
  
@@ -1576,7 +2149,7 @@ index 92258f8..3270c1b 100644
  
  def deduplicate_urls_in_text(text: str) -> str:
      """Remove duplicate URL occurrences, keeping the first."""
-@@ -710,6 +1153,9 @@ def _approval_render(text: str, amazon_tag: str) -> str:
+@@ -710,6 +1206,9 @@ def _approval_render(text: str, amazon_tag: str) -> str:
      result = "\n".join(kept_lines).strip()
      # Normalize excessive blank lines
      result = re.sub(r"\n{3,}", "\n\n", result)
@@ -1587,7 +2160,7 @@ index 92258f8..3270c1b 100644
      if "#ad" not in result.lower():
          result = result + "\n\n#ad (paid link)"
 diff --git a/influencer_hub/pipeline.py b/influencer_hub/pipeline.py
-index 15afe00..1a83a89 100644
+index 15afe00..e33bc07 100644
 --- a/influencer_hub/pipeline.py
 +++ b/influencer_hub/pipeline.py
 @@ -13,6 +13,7 @@ twice to the same place while its dedup record is retained.
@@ -1598,13 +2171,17 @@ index 15afe00..1a83a89 100644
  import random
  from typing import Iterable
  
-@@ -74,6 +75,28 @@ def only_earning_deals_enabled() -> bool:
+@@ -74,6 +75,32 @@ def only_earning_deals_enabled() -> bool:
      return str(value).strip().lower() in {"1", "true", "yes", "on"}
  
  
 +# A deal parked because its only link was a merchant URL EarnKaro had not
 +# converted yet is retried after this long, this many times, then posted anyway
 +# (see influencer_hub/worker.py:drain_deferred_deals).
++#: Channels already warned about an unusable Amazon tag (one warning per
++#: channel, not one per deal).
++_TAG_FALLBACK_WARNED: set[tuple] = set()
++
 +DEFERRED_RETRY_DELAY_SECONDS = 300
 +DEFERRED_MAX_ATTEMPTS = 6
 +
@@ -1627,7 +2204,7 @@ index 15afe00..1a83a89 100644
  async def _earnkaro_map_for(text: str) -> dict[str, str]:
      include_meesho = meesho_earnkaro_fallback_enabled()
      collected = link_router.collect_links(text)
-@@ -83,8 +106,18 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
+@@ -83,8 +110,18 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
      if not urls:
          return {}
      # Conversion is best-effort: the original clean merchant URL is retained
@@ -1648,7 +2225,7 @@ index 15afe00..1a83a89 100644
  
  
  async def apply_whatsapp_safety_pacing(session_key: str) -> None:
-@@ -233,9 +266,13 @@ def _is_source_allowed(source_name: str, allowed_spec: str) -> bool:
+@@ -233,9 +270,13 @@ def _is_source_allowed(source_name: str, allowed_spec: str) -> bool:
  
  
  async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | None = None,
@@ -1663,7 +2240,27 @@ index 15afe00..1a83a89 100644
      Returns {influencer_id: {channel_id: status}}.
      """
      sig = link_router.deal_signature(deal_text)
-@@ -298,7 +335,47 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -273,6 +314,19 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+             # Account model (influencer_hub/accounts.py): Amazon posts are
+             # signed with THIS creator's own Associate tag.
+             effective_amz_tag = accounts.creator_amazon_tag(inf, ch)
++            # A tag the Associates format cannot accept would be replaced by the
++            # configured fallback while rendering. Say so once per channel rather
++            # than silently signing the post with a tag nobody asked for.
++            if effective_amz_tag and not link_router.amazon_tag_is_usable(effective_amz_tag):
++                fallback_tag = link_router.effective_amazon_tag(effective_amz_tag)
++                warn_key = (inf.get("id"), ch.get("id"), effective_amz_tag)
++                if warn_key not in _TAG_FALLBACK_WARNED:
++                    _TAG_FALLBACK_WARNED.add(warn_key)
++                    logging.getLogger(__name__).warning(
++                        "AMAZON TAG UNUSABLE inf=%s ch=%s tag=%r — Amazon links will be signed "
++                        "with the configured fallback %s; fix the tag on the creator/channel page",
++                        inf.get("id"), ch.get("id"), effective_amz_tag, fallback_tag,
++                    )
+ 
+             # 1. Source Specification Filter (an empty/all/unrestricted value means no restriction)
+             allowed_sources = ch.get("allowed_sources") or inf.get("allowed_sources") or ""
+@@ -298,7 +352,47 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                  per_channel[ch["id"]] = "skipped"
                  continue
  
@@ -1712,7 +2309,7 @@ index 15afe00..1a83a89 100644
              kinds = {link_router.classify_url(url) for url in urls}
              has_amz = "amazon" in kinds
              present_affiliate_kinds = kinds.intersection(
-@@ -381,16 +458,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -381,16 +475,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                              continue
              except Exception:
                  pass
@@ -1733,7 +2330,7 @@ index 15afe00..1a83a89 100644
  
              # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
              if db.already_posted(inf["id"], ch["id"], sig):
-@@ -437,6 +508,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -437,6 +525,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                  meesho_fallback = meesho_earnkaro_fallback_enabled()
              except Exception:
                  meesho_fallback = bool(config.MEESHO_EARNKARO_FALLBACK)
@@ -1744,7 +2341,7 @@ index 15afe00..1a83a89 100644
              try:
                  only_earning = only_earning_deals_enabled()
              except Exception:
-@@ -512,63 +587,106 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -512,63 +604,106 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                  # We audit FINAL rendered text before dispatch. Any non-OUR leak is logged and sanitized.
                  try:
                      from . import commission_guard
@@ -1890,7 +2487,7 @@ index 15afe00..1a83a89 100644
                      logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
  
              # 8b-2. MONEY FILTER: never spend a post on a deal that pays nothing.
-@@ -590,7 +708,6 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -590,7 +725,6 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                          per_channel[ch["id"]] = "skipped:no_commission_link"
                          continue
                  except Exception as _money_exc:  # pragma: no cover - defensive
@@ -1898,7 +2495,7 @@ index 15afe00..1a83a89 100644
                      logging.getLogger(__name__).exception("money filter failed: %s", _money_exc)
              # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
              # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
-@@ -645,8 +762,13 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -645,8 +779,13 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
      return results
  
  
@@ -1914,7 +2511,7 @@ index 15afe00..1a83a89 100644
      # Periodically prune old post/stat rows to bound database growth.
      try:
          if random.random() < 0.05:  # ~5% of run cycles
-@@ -661,7 +783,9 @@ async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] |
+@@ -661,7 +800,9 @@ async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] |
          else:
              d_text = str(deal)
              d_src = ""
