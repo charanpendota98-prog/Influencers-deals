@@ -1,213 +1,403 @@
 # HANDOFF — Influencers-deals
 
-Read this first. It documents what exists where, how to get it into a new
-session, and the traps that already cost a session once.
+**Updated:** 2026-10-10 (Asia/Kolkata)
+
+**Session branch:** `arena/9056711b-influencers-deals`
+
+**Checkout base:** `c6fa901` — PR #7 merged to `main`
+
+**Branch commits:** `fb70433` through `9c6fa4c` are already pushed on PR #8;
+the current short-link hardening follows on this same branch (see section 1e).
+
+Read this before deploying. This handoff describes the current checkout; older
+notes referring to `0bf913f`, an unmerged branch, or the earlier VM rollout are
+historical and are not the current source of truth.
 
 ---
 
-## 0. Reality check (do this before believing anything)
+## 1. Current state
 
-An earlier session's notes claimed a `patches/` folder and a `HANDOFF.md` were
-committed to `main`. **They never were.** A new session starting from `main`
-(`0bf913f`) gets none of the work below. Everything that matters therefore lives
-inside the repo — and this branch is pushed, so a fetch is enough.
+The merged `c6fa901` release already includes the commission-leak fixes,
+creator/central-account model, dashboard password policy, worker heartbeat,
+`/api/flow`, and the Easy Setup flow card. Do not replay those older patches on
+top of this release.
 
-| item | state |
-| --- | --- |
-| `origin/main` | `0bf913f` "Merge PR #6" — PRs #1–#6 all merged, none open |
-| PR #6 content | Password login, ⚡ Easy Setup, 💰 Money Radar, gunicorn `0.0.0.0:5000`, Telegram ingestion — **already on `main`, do not redo** |
-| branch `arena/a54d6a1d-influencers-deals` | commission fixes + password policy + account model + deal-flow board + the patch bundle |
-| tests | `main` = **234 passed**, this branch = **302 passed** (`--with-tests` replay: **287**, see §1) |
-| VM | commission fixes live; password policy + account model + deal-flow board still to apply |
+This follow-up fixes a separate ingestion bug: named private Telegram invite
+links such as a source labelled **“Priority Source”** could fail matching when
+the label was not the joined group's exact title. The old fallback only ran for
+unnamed invites, leaving `selected_sources = 0` and no messages to process.
 
-Fastest path into a new session:
+The fix in this branch:
 
-```bash
-git fetch origin arena/a54d6a1d-influencers-deals
-git checkout -b arena/a54d6a1d-influencers-deals origin/arena/a54d6a1d-influencers-deals
+- treats a private invite name as a title hint, not as the invite's identity;
+- matches private invite hints only to an exact normalized title;
+- if a private invite hint is unmatched, logs one warning per configuration and
+  reads the eligible dialogs the Telegram account has already joined;
+- never checks an invite or joins a channel; known output channels and
+  unconfigured account-owned channels remain excluded;
+- explains the fallback in Setup Center live checks and in
+  `python -m influencer_hub.cli doctor --telegram-sources`;
+- shows the **live** selection on the deal-flow board: `/api/flow` (and the
+  Easy Setup card) name the dialogs the worker would read right now, with the
+  selection mode, counts and a capped dialog list. The probe is read-only,
+  cached ~45 s and can be skipped with `?live=0`;
+- records each source's joined-dialog title in `source_activity.source_name`
+  (auto-migrated), so per-source rows show the real group name, not just the
+  configured selector;
+- lets operators save a private invite without inventing a required label; and
+  uses `Private Telegram source` rather than displaying the invite hash as its
+  label;
+- adds an autouse pytest fixture that redirects every test to a new temporary
+  SQLite database, protecting the real operator DB.
+
+The requested `236 → 236` result is reproduced by a unit test with 236 eligible
+joined dialogs. The actual number on a VM depends on which eligible dialogs are
+joined and which known output/owned channels are excluded.
+
+**Important scope note:** when a private invite label does not match, fallback
+means all eligible joined groups/channels, not a Telegram join of the private
+invite and not only the three private links. Use public usernames or the exact
+joined-dialog title when you want a narrower, deterministic source set. The
+worker will then poll the selected dialogs and may post their deals according
+to the configured creator/channel filters and affiliate routes.
+
+No live Telegram account or VM was available to this checkout. The live
+fallback and warning are covered by fake-client tests; run the VM checks below
+before calling production delivery verified.
+
+---
+
+## 1b. Link conversion — every shape becomes OUR link, none posts for free
+
+A deep offline audit (23 link shapes through the real `render_for_influencer` +
+`commission_guard`, 16 deals through the real `pipeline.run_once` with a stubbed
+EarnKaro, temp DBs, no network) confirmed the main conversion paths were already
+exact and found four real defects. All four are fixed in `f46f165`:
+
+1. **Opaque Amazon shorts were only known on `amzn.to`/`amzn.in`.** A deal with
+   `amzn.eu`, `amzn.asia`, `a.co`, an upper-case host or an `http://` short was
+   classified as an *informational link* and posted **untagged** (zero
+   commission). Now every Amazon shortener host is resolved over the network
+   into `https://www.amazon.in/dp/<ASIN>?tag=<OURS>` on the marketplace the
+   short pointed at; if it cannot be resolved the run logs
+   `UNRESOLVED AMAZON SHORT` instead of staying quiet.
+2. **EarnKaro down meant a raw merchant URL was posted silently** — the guard
+   reported `ok=True`, the process exited 0, the link earned nothing. Now the
+   guard asks "does this post contain at least one link that pays us?" after
+   every render. When the only links are merchant URLs EarnKaro should have
+   converted (known merchant + credentials configured), the deal is parked in
+   the new `deferred_deals` table and the worker retries it every
+   `DEFERRED_RETRY_DELAY_SECONDS` (300 s) up to `DEFERRED_MAX_ATTEMPTS` (6)
+   times, then posts it anyway with a warning. A converter outage delays a deal
+   instead of dropping it or posting it free.
+   Switch: `ALLOW_UNCONVERTED_POSTS=1` (or the Money page switch
+   `allow_unconverted_posts`) restores the old "post the raw link now" behaviour.
+   Raw Meesho and stores EarnKaro does not cover keep the documented retention
+   behaviour and are logged as `ZERO-COMMISSION post`.
+3. **The approval renderer printed the same canonical Amazon link twice** when a
+   post carried both the short and the long link for one product.
+4. **Opaque shorts were invisible to the guard and Money Radar**, so
+   `amzn.eu`/`a.co` links were filed as neutral instead of being audited.
+
+Unchanged and verified: Amazon `/dp/`, `/gp/product/`, `?asin=`, search and
+storefront pages → one canonical link with exactly our tag; short + long in the
+same post → one canonical link; Flipkart/Shopsy/Myntra/Ajio/Nykaa/Croma/TataCliq
+→ EarnKaro short verified by following the redirect; HYPD afflinks retagged to
+our store; LehLah preserved; informational links untouched.
+
+`/api/flow` reports the retry queue as
+`deferred: {waiting, retry_seconds, allow_unconverted_posts}` and adds
+"*N deal(s) are waiting for a retry*" (a missing paying link: an unconverted merchant link or an unresolved wrapper) to the flow notes. The
+README documents the per-link-shape outcome table and the retry queue.
+
+### 1c. Wrapper links and scheme-less links (second audit round, `7d68e75`+)
+
+A second, pipeline-faithful audit (55 link shapes through
+`promote_scheme_less_links` → `resolve_opaque_links_in_text_async` →
+`filter_disallowed_affiliate_links` → EarnKaro conversion → `render_for_influencer`
+→ `commission_guard`, all offline) found one more class of silent leaks and three
+sharp edges:
+
+5. **Generic shorteners were filed as "informational"** (`bit.ly`, `tinyurl.com`,
+   `cutt.ly`, `dl.flipkart.com/…`, `fkrt.it/…`). Whatever they pointed at — a
+   Flipkart product, an Amazon page, someone else's affiliate link — travelled
+   through the post untouched and unverified. `classify_url` now returns
+   `shortener` for them and `resolve_opaque_links_in_text_async()` unwraps every
+   wrapper before anything classifies, filters or converts the deal: an Amazon
+   destination becomes OUR canonical `/dp/ASIN?tag=OURTAG`, a merchant
+   destination becomes the real URL that the normal EarnKaro conversion turns
+   into OUR `ekaro.in` link. Wrappers that cannot be resolved are logged as
+   `UNRESOLVED WRAPPED LINK`, the guard reports them (`commission_guard.WRAPPED_KINDS`),
+   and the deal is **parked** (`reason="unresolved_wrapper"`) and retried by the
+   worker exactly like a failed conversion — never posted as if it paid.
+   Resolutions are cached per process (`clear_resolution_cache()`), bounded to 6
+   links / 4 s each, and some shorteners answer `200 OK` with a meta-refresh body
+   redirect, which the resolver also follows.
+6. **Links written without `http://` were invisible.** `promote_scheme_less_links()`
+   now rewrites known hosts (`flipkart.com/…`, `amazon.in/dp/…`, `amzn.to/…`,
+   `myshop…`) into real URLs at a word boundary before classification, so a
+   scheme-less Amazon link is retagged and a scheme-less Flipkart link is
+   converted. Prose ("available on amazon.in"), e-mail addresses and longer
+   domains are left alone.
+7. **A wrapper carried by the source post is not OURS.** Our own Bitly wrappers
+   are minted *after* rendering, so the guard now takes the untouched source text
+   (`source_text=`) and refuses to count a short link that was already in it —
+   closing the hole where `bit.ly/3xyzFlip` (someone else's link) was reported as
+   "OUR link present" and the post went out free.
+8. **Two-product deals no longer borrow each other's short link.** The offline
+   heuristic only maps an opaque Amazon short when the deal carries exactly one
+   distinct ASIN; otherwise resolution is left to the per-link network resolver.
+
+### 1d. "Add my Telegram channel, save, and it must post with MY tag" (`8f…`+, this round)
+
+Driving the operator's exact flow end-to-end (dashboard → save → pipeline →
+dispatch) exposed four ways a freshly added channel could end up posting nothing
+or posting under the wrong tag:
+
+9. **A channel added without ticking the network boxes saved every network OFF.**
+   `add-manual-channel` read an absent checkbox as `False`, so a channel added
+   with only its `@username` had `allow_amazon=0, allow_earnkaro=0, allow_hypd=0`
+   → every deal was skipped (`per_channel = skipped`) and the channel looked
+   fine on the dashboard. Absent now means **inherit the creator's routing**; the
+   forms send an explicit `0/1` hidden pair, so an operator can still switch a
+   network off on purpose. The same tolerance was added to Easy Setup.
+10. **Easy Setup silently swallowed every message.** Only the creator page
+    rendered flashed messages, so "saved" and "the tag was refused" looked
+    identical on the Easy Setup screen. The screen now shows the confirmation,
+    the warnings and the errors.
+11. **A tag the renderer cannot use was silently replaced.** The Associates
+    format only accepts `[A-Za-z0-9_-]{3,30}`; anything else (e.g. `"my tag"`)
+    was swapped for the configured fallback while rendering, so the post went out
+    under the wrong tag with no signal. Now:
+    * the dashboard validates with the same rule as the renderer and refuses the
+      save with a clear message (`"my tag" is not a usable Amazon Associates tag…`);
+    * a usable-but-unusual tag is accepted with a warning (`does not look like a
+      standard Associates tag`);
+    * an **empty** tag is reported instead of hiding behind the fallback;
+    * the pipeline logs `AMAZON TAG UNUSABLE` once per channel when it has to fall
+      back.
+12. **Saving now proves the outcome.** Every save (channel add, channel edit,
+    Easy Setup) flashes the exact link the tag produces, generated offline with
+    the same renderer + guard the pipeline uses:
+    `Amazon deals will post as https://www.amazon.in/dp/B0D9P2M1PB?tag=<MINE> (verified ✅)`.
+    The Easy Setup "what gets posted" preview shows the same proof line, and
+    `/api/test-render-deal` now returns `our_links`, `unresolved_wrappers` and a
+    `verdict` (`our_link_present` / `held_for_retry` / `no_our_link`).
+
+Proof (tests, offline): a channel saved with just `@username` sits at
+`status=ready` with all three networks on and the next deal is posted with the
+creator's tag and the EarnKaro link; an unticked box is still an explicit OFF; a
+bad tag is refused and **no channel is created**; the Easy Setup screen shows
+`tag=<typed tag>` in the confirmation; an untagged creator logs the fallback
+warning exactly once.
+
+### 1e. Compact branded links — click opens the exact creator-tagged target (`current`)
+
+The earlier tree already had optional first-party short routes, but an audit of
+what counted as an "OUR" link found a correctness gap: the guard and Money Radar
+trusted names such as `go.*`, `/amazon/…`, or `/m/…` without proving that the
+link belonged to this deployment. A lookalike URL on another host could be
+reported as earning. That is not acceptable for commission reporting.
+
+This round makes compact links both shorter **and** verifiable:
+
+13. **One simple domain setting:** put one operator-owned public HTTPS origin in
+    `AFFILIATE_SHORT_LINK_BASE_URL`, for example `https://go.your-domain.in`.
+    It is inherited by Amazon, HYPD and approved LehLah links; the older
+    `AMAZON_SHORT_LINK_BASE_URL` / `MEESHO_SHORT_LINK_BASE_URL` remain optional
+    per-network overrides. No VM IP, localhost, path, credentials or query
+    string is accepted as the origin.
+14. **Amazon broadcast / WhatsApp links are now compact:**
+    `https://go.your-domain.in/a/<8-char-code>?tag=<creator-tag>`. The code is
+    durable; it redirects with `302` only to its stored canonical
+    `https://www.amazon.in/dp/<ASIN>?…&tag=<the-same-creator-tag>` target.
+    The older `/amazon/<code>` route remains live, so existing posts do not
+    break. Approval-channel links deliberately remain native Amazon URLs.
+15. **No name-based trust:** a compact URL earns / passes the guard only when
+    all facts agree: **configured HTTPS origin + exact route/code + durable DB
+    record + safe target + exact tag/store**. A forged host, changed tag,
+    extra attribution query, stale/deleted code or unsafe target is a hard guard
+    failure, is sanitized before posting, and Money Radar counts it as a leak —
+    never as OUR commission.
+16. **Every saved/tested link is proof:** channel save and Easy Setup now show
+    the actual compact Amazon URL (when configured) and `→ opens only <canonical
+    target>`. `/api/test-render-deal` runs the same final compacting pass as the
+    worker, allocates a local route only (no post) and returns that real clickable
+    URL in `our_links`. The Setup Center shows **ACTIVE** vs **CANONICAL MODE**
+    with the exact safe `.env` setting; `doctor --short-links` validates the
+    local origin configuration without making an external request.
+17. **All eligible existing OUR links stay short safely:** Amazon `/a/`, HYPD
+    `/m/`, approved LehLah `/l/`; EarnKaro's `ekaro.in`/`fktr.in` output is
+    already network-short and is not double-wrapped (so its publisher proof is
+    not obscured). Raw/foreign/unresolved URLs are converted, held/retried or
+    logged—not branded as ours.
+
+Proof: six adversarial tests cover one common origin through the real pipeline,
+Amazon code/tag redirect and legacy compatibility, incorrect-tag/open-redirect
+attempts, forged/stale foreign routes, unsafe bases/targets, save/test preview,
+and HYPD/LehLah target validation. Full suite: **380 passed**. This proves the
+app's redirect and attribution logic locally; public DNS/TLS reachability still
+requires the operator to point an owned hostname at the VM proxy and click one
+returned link after deployment—do not claim external reachability before that
+real check.
+
+**VM enablement (private `.env`, never commit it):**
+
+```dotenv
+AFFILIATE_SHORT_LINK_BASE_URL=https://go.your-domain.in
+# DASHBOARD_TRUST_PROXY=true only when one trusted TLS proxy forwards this host
 ```
 
-If the branch cannot be fetched, use `patches/` (upload it from the workspace);
-`patches/HANDOFF.md` is a byte-identical copy of this file, so the bundle is
-self-contained.
+Route that HTTPS host to the dashboard service, restart dashboard + worker, then
+run `python3 -m influencer_hub.cli doctor --short-links`; save a channel or run
+**Test a Deal**, open the returned `/a/<code>?tag=<creator-tag>` link once and
+verify its redirect location has the identical creator tag.
 
----
-
-## 1. Bootstrap a session
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -q pytest aiohttp flask
-.venv/bin/python -m pytest -q      # 302 passed here, 234 on main
-```
-
-From a **clean `main`** checkout, either replay path reproduces this branch
-byte for byte:
+Operator tool (read-only, nothing is posted): 
 
 ```bash
-# A. git patches (recommended for a fresh clone)
-git apply patches/commission-leaks.patch
-git apply patches/password-policy.patch
-git apply patches/tests.patch
-git apply patches/deal-flow.patch
-git apply patches/docs.patch
-
-# B. surgical appliers (for a VM that already has some of the work)
-python3 patches/apply-commission-fixes.py --with-tests
-python3 patches/apply-password-policy.py  --with-tests
-python3 patches/apply-account-model.py    --with-tests
-python3 patches/apply-deal-flow.py        --with-tests
-
-.venv/bin/python -m pytest -q      # expect 287 passed via B, 302 via A
+python3 -m influencer_hub.cli audit-links --text "🔥 deal … bit.ly/abc"
+python3 -m influencer_hub.cli audit-links --file /tmp/post.txt --json
+python3 -m influencer_hub.cli audit-links --offline --text "…"   # no network
 ```
 
-(`302` is the count **on this branch**: it includes the 15 guards in
-`tests/test_patch_bundle.py`, which `--with-tests` intentionally does not
-install — hence `287` on path B. Path A installs them through `tests.patch` and
-`docs.patch` carries this file, so path A is complete. Path B installs code and
-tests only — the copy you are reading travels as `patches/HANDOFF.md`.)
+It prints every link, its kind, where a wrapper really points, the text that
+would be published and the verdict; exit code `0` = at least one of OUR links is
+present, `1` = the worker would hold the deal. Audit result on the 55-shape
+corpus: 8 unmonetised/unverified links before this round → 1 after, and that last
+one (a HYPD store page with no `afflink` token) is *skipped*, never posted.
 
-`patches/conftest.py` keeps pytest out of `patches/tests/`; `pytest.ini` is not
-needed. `tests/test_patch_bundle.py` fails if the bundle ever drifts from the
-tree.
+
+Two-cycle proof on a temp DB: cycle 1 with EarnKaro down → merchant-only deals
+parked (`deferred queue: 2`), Amazon and raw-Meesho deals posted; cycle 2 with
+EarnKaro recovered → `drain: 2`, posts carry
+`fktr.in/ek402049?affExtParam2=5478322` and `ekaro.in/ek352378?affExtParam2=5478322`,
+queue `0`.
 
 ---
 
-## 2. Commission leaks (done)
+## 2. Test and audit commands
 
-| # | Leak | Fix |
-| --- | --- | --- |
-| 1 | Amazon **search / storefront** pages carrying OUR tag were deleted as "not OUR canonical" | attribution now follows the tag: `advanced_shortener.is_our_amazon_attribution()` keeps any Amazon URL with exactly one tag equal to ours (guard, Money Radar, pipeline "still earns?" check) |
-| 2 | Wrong EarnKaro body → HTTP 200 with no link → Flipkart/Myntra/Ajio/Nykaa/Croma/Shopsy posted free | payload is `{"deal": <clean url>, "convert_option": "convert_only"}` + Bearer token, in `convert_one` **and** the live verifier |
-| 3 | Another publisher's EarnKaro link accepted as ours | `link_router.publisher_ids_in_url()` reads `affExtParam2` **and** numeric `id=`; a mismatch falls back to the raw URL (direct results and after redirect resolution) |
-
-Verify on the VM (needs the configured token):
+From the repo root:
 
 ```bash
-python3 -m influencer_hub.cli verify-earnkaro
-# expect: ok: True, publisher_id: '5478322', publisher_provenance_verified: True
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest -q
+python3 -m influencer_hub.cli doctor --telegram-sources --short-links
 ```
 
-Tests: `tests/test_amazon_tag_attribution.py` (new), `tests/test_earnkaro_live.py`,
-`tests/test_earnkaro_provenance.py`.
+The test suite on this revision is expected to report **380 passed**. The
+source doctor is read-only: it enumerates joined dialogs, checks the same
+selection rules as the worker, does not read message history, and does not
+check or join invites. It requires valid Telegram credentials/session on the
+VM. Its fallback warning is not a delivery guarantee.
+
+The dashboard has the same bounded check under **Setup Center → Launch
+readiness → Run live checks**. With the sample 3-source/236-dialog situation,
+expect 3 unmatched private invite labels, fallback mode, and up to 236 eligible
+joined dialogs selected (subject to output exclusions).
 
 ---
 
-## 3. Account model (done) — their Amazon id, our EarnKaro/HYPD
+## 3. Apply on the VM
 
-`influencer_hub/accounts.py` is the single source of truth:
-
-| network | who earns | rule |
-| --- | --- | --- |
-| **Amazon** | the **creator** | `creator_amazon_tag()` = channel override → the creator's own tag → configured fallback; `amazon_tag_source()` reports `fallback` so profiles missing their own id are visible (`creators_missing_own_tag()`) |
-| **EarnKaro** | **us** | vault API token + publisher id (`central_earnkaro_api_key()`, `central_earnkaro_publisher_id()`) |
-| **Meesho / HYPD** | **us** | `hypd_store_for()` returns OUR store; with `central_network_accounts` on (default, `CENTRAL_NETWORK_ACCOUNTS=1`) a per-creator or per-channel `hypd_store_id` cannot move HYPD commission |
-| LehLah | the source | attribution preserved |
-
-Pipeline, Money Radar and both dashboard previews resolve the pair through this
-module, so what we post and what we audit are the same accounts. Easy Setup's
-routing table now shows a **"whose account earns"** section.
-
-Turn the central half off only if a creator must keep their own HYPD store:
-
-```bash
-python3 -c "from influencer_hub import db; db.init(); db.set_global_setting('central_network_accounts','0')"
-```
-
----
-
-## 4. Password policy (done) — first login + removals only
-
-* `REAUTH_REQUIRED_ENDPOINTS`: 28 → 3 (`delete_channel`, `delete_influencer`,
-  `delete_deal_source`).
-* `data-require-reauth` removed from the 20 add / save / toggle / poll /
-  Easy-Setup / money-switch forms; kept on the four removal tags.
-* Delete-Influencer lost its separate `prompt()` + hidden `admin_password` and
-  uses the shared unlock dialog. Copy says **Removals** everywhere.
-* The Vault tab keeps its own password gate (it stores credentials) — unchanged.
-* `tests/test_reauth_policy.py` pins the gated set, the tags, the copy and that
-  add/toggle/save never ask.
-
----
-
-## 5. Deal flow (done) — sources keep feeding posts, and you can see it
-
-The engine was already self-healing (`worker.py`: a source cursor advances only
-after a message is handled, the heartbeat is refreshed every loop, backoff is
-capped, the poll queue is separate). What was missing was *evidence*:
-
-* `db.source_activity` + `worker._record_source_activity()` record, per source:
-  deals seen, posts dispatched, failures and the failure reason. A cursor is
-  still held on a failed delivery — and now the retry is visible instead of
-  only being in logs.
-* `GET /api/flow` (read-only, no network) returns the worker heartbeat, per
-  source last-seen / stalled / never-delivered, per channel last post and
-  posted/failed counts, plus `hourly_loot_enabled` and `only_earning_deals` and
-  plain-language notes ("3 of 7 active sources have not delivered a deal yet").
-* Easy Setup ends with a **Deal flow — sources → posts** card; per-source and
-  per-channel tables sit in its Advanced section.
-* Tests: `tests/test_deal_flow.py` (13) — including "a failed delivery holds the
-  cursor and is counted", "a crash is a failure, not a lost cursor", "media-only
-  messages advance so they cannot block the queue" and "a stalled source is
-  reported as stalled".
-
-Two honest gaps in ingestion as it stands:
-
-1. **Hourly loot is off unless asked for**: `scheduler.py` runs the extra hourly
-   sweep only when the global setting `hourly_loot_enabled=1`. `/api/flow` now
-   says so when a day is idle.
-2. **Priority sources are hardcoded** in `puller.py` (`PRIORITY_SOURCE_SPECS`,
-   three invite links) and the puller reads only dialogs the Telegram account
-   has already joined — it never joins. A source that is not joined looks
-   "never delivered" on the flow card.
-
----
-
-## 6. Apply on the VM (what is still missing there)
+First back up the private `.env` and SQLite DB using the VM's normal backup
+procedure. Never copy secrets into Git or chat. From the deployed checkout:
 
 ```bash
 cd ~/Influencers-deals
-python3 patches/apply-password-policy.py --with-tests
-python3 patches/apply-account-model.py   --with-tests
-python3 patches/apply-deal-flow.py       --with-tests
+# 1) source fallback + live source visibility (skip if already applied)
+python3 patches/apply-private-source-fallback.py --check
+python3 patches/apply-private-source-fallback.py --dry-run
+python3 patches/apply-private-source-fallback.py --with-tests
+# 2) link conversion fixes, retry queue, flow board (diffed against state 1)
+python3 patches/apply-link-conversion-fixes.py --check
+python3 patches/apply-link-conversion-fixes.py --dry-run
+python3 patches/apply-link-conversion-fixes.py --with-tests
+python3 -m influencer_hub.cli doctor --telegram-sources --short-links
+python3 -m influencer_hub.cli audit-links --offline --text "Deal https://www.amazon.in/dp/B08XYZ1234?tag=old-21"   # expect exit 0 + [OUR] amazon
+python3 -m pytest -q            # expect 380 passed
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
+journalctl -u influencer-deal-worker -n 100 --no-pager
 curl -s localhost:5000/api/flow | head -c 400
 ```
 
-* The commission fixes are **already live** on the VM, so
-  `apply-commission-fixes.py` and the `.patch` files are not needed there.
-* Each applier stops with exit `1` on a second run and exit `2` (writing nothing)
-  if a file does not match the verified revision.
-* `--check` reports; `--dry-run` validates.
+The second applier validates its bundled exact patch with `git apply --check`
+before writing anything and refuses to run on a checkout that does not have the
+first bundle installed (it prints that hint). Both are idempotent reporters:
+`--check` exits 0 when the work is already in place and a plain repeat run exits
+1 without touching a file.
+
+The applier validates its bundled exact patch before writing. It aborts without
+writing if the VM checkout differs; inspect the diff rather than forcing it.
+If the code is already applied, `--check` exits successfully and a normal
+second run is refused. `--with-tests` refreshes the verified tests and installs
+the test-only DB-isolating conftest.
+
+After restart, use Setup Center's live check and `/api/flow`. Confirm that the
+worker is alive, source selection is non-zero, source `last_seen` advances, and
+ready destinations show posts or explain failures. Check worker logs for the
+one-time private-invite fallback warning. A warning is expected when the label
+is only a label. It is not evidence that a deal was successfully delivered.
+
+The worker can scan many joined dialogs sequentially. On a 236-dialog fallback,
+monitor Telegram flood-wait logs, worker poll duration, and channel posting
+filters. If only the three intended sources should be read, replace private
+invites with public usernames where possible, or save each exact joined group
+title as its label so fallback is not needed.
 
 ---
 
-## 7. Next decisions, in order
+## 4. Affiliate and delivery verification
 
-1. **EarnKaro / Affiliaters token vault — biggest earning gap.** Until a valid
-   token + publisher id sit in the Vault tab, every non-Amazon link earns
-   nothing. Confirm with `verify-earnkaro`.
-2. Then open **`/money`** and decide whether to turn on `ONLY_EARNING_DEALS`
-   (config default `False`) so no post is spent on a link that pays zero.
-3. **Give every creator their own Amazon tag** — check
-   `python3 -c "from influencer_hub import accounts; print(accounts.creators_missing_own_tag())"`.
-   Those profiles currently post Amazon under the fallback tag.
-4. VM hygiene: remove `dashboard/app.py.save`; decide on the legacy
-   `new-deals-bot-zip-main (1).zip` (1.2 MB) in the repo root.
+The source fix only addresses source selection. It does not repair missing
+Telegram authorization, inactive sources, no ready destination channels,
+creator/channel source filters, categories/schedules, disabled networks, or a
+missing affiliate credential. If sources are selected but posts still do not
+appear:
+
+1. Read the source fallback / selector result in Setup Center or the CLI doctor.
+2. Check worker state, source activity, destination readiness, and failures on
+   `/api/flow`.
+3. Check the worker log for pipeline filtering or delivery errors. After this
+   branch, a quiet channel can also mean deals are parked for a conversion
+   retry: read `deferred.waiting` on `/api/flow` and look for
+   `EARNKARO UNCONVERTED` / `EARNKARO CONVERSION FAILED` lines, which name the
+   links and tell you whether `EARNKARO_API_KEY` or the publisher id needs
+   attention.
+4. Confirm the EarnKaro token/publisher ID in Vault and run
+   `python -m influencer_hub.cli verify-earnkaro` when eligible merchant links
+   must earn. Amazon attribution uses each creator's configured tag; HYPD and
+   EarnKaro use the configured central accounts per the existing account model.
+5. Use a deliberate test post to verify destination permissions; the read-only
+   source doctor does not send a post.
+
+No software can guarantee a “perfect” stream: Telegram group content, account
+permissions, external affiliate conversion, filtering, rate limits and network
+availability are outside the app's control. The code now makes the source
+selection failure visible and avoids silently returning zero for unmatched
+named private invites.
 
 ---
 
-## 8. Traps — do not relearn these
+## 5. Replayable work and safety
 
-* **Never** `git checkout -- <file>` on the VM: it reverts fixes that are not in
-  `origin/main`.
-* **`patch -U0` will not apply these bundles** — use `git apply` or the appliers.
-* **Keep artifacts inside the repo.** `/home/user/*.patch` and anything outside
-  the checkout are lost when the sandbox restarts.
-* `git pull` on a new session gives you `main` (`0bf913f`) — none of sections
-  2–4 unless you replay `patches/`.
-* Python is externally managed (PEP 668): `pip install` needs a venv.
-* Test counts in older notes (244 / 251) do not match this tree; the real
-  numbers are **234 on `main`**, **302 on this branch** and **287 via the
-  `--with-tests` applier path** (the bundle's own 15 guards are not installed
-  there).
+- `patches/private-source-fallback.patch` contains the source-visibility patch for
+  the merged `c6fa901` release; `patches/link-conversion-fixes.patch` (diffed
+  against that state) contains the conversion fixes, retry queue and docs.
+- `patches/apply-private-source-fallback.py` and
+  `patches/apply-link-conversion-fixes.py` support `--check`, `--dry-run`, and
+  `--with-tests`; they use `git apply --check`, never reset the checkout, and
+  never touch `.env`, the Telegram session or the SQLite DB.
+- `patches/tests/` carries byte-identical test copies; `tests/test_patch_bundle.py`
+  checks copies, patch presence, and applier state.
+- The original commission/account/password/deal-flow work and its four
+  historical appliers remain documented in `patches/README.md`; they are
+  already in the current base release.
+- This checkout did not contain a reachable `6b6c1a8` commit despite the earlier
+  handoff message. The fix here was recreated on the session's required branch;
+  verify `git status` before committing or opening a PR.
+- Never run pytest against a provisioned/live DB: root `tests/conftest.py`
+  redirects every test to `tmp_path`.

@@ -2,7 +2,7 @@
 
 This module implements the user's request:
 - ONLY HYPD links with OUR store ID (93944) are shortened, via first-party /m/ or Bitly fallback
-- ONLY Amazon links with OUR Associate tag are shortened, via first-party /amazon/ or Bitly fallback
+- ONLY Amazon links with OUR Associate tag are shortened, via verified first-party /a/ or Bitly fallback
 - Generic merchant links (Flipkart etc.) are NOT shortened here; they use EarnKaro's own ekaro.in shortener
 - This is an ADVANCED system: short codes are stored in DB, redirects are verified, tags are preserved
 
@@ -99,7 +99,7 @@ async def shorten_our_links_advanced(
     Advanced shortener that ONLY shortens OUR affiliate links.
 
     Priority:
-    1. For Amazon OUR links: try first-party /amazon/<code>?tag=... if AMAZON_SHORT_LINK_BASE_URL configured,
+    1. For Amazon OUR links: try first-party /a/<code>?tag=... if one trusted short-link base is configured,
        else fallback to Bitly if bitly_token available and link is long or user wants all OUR links shortened
     2. For HYPD OUR links: try first-party /m/<code> if MEESHO_SHORT_LINK_BASE_URL configured,
        else fallback to Bitly if bitly_token available

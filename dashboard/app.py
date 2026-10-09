@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
-    config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
+    amazon_shortlinks, config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
     puller, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
@@ -190,6 +190,19 @@ def _run(coro):
     if active_loop is loop:
         raise RuntimeError("dashboard _run cannot block its own asyncio event loop")
     return asyncio.run_coroutine_threadsafe(coro, loop).result()
+
+
+def _form_flag_or_none(name: str) -> bool | None:
+    """Checkbox/hidden pair -> True/False, or None when the field was not sent.
+
+    ``None`` means "this form does not manage the option". A caller that only
+    sends the channel identifier must inherit the creator's routing instead of
+    silently switching Amazon/EarnKaro/HYPD off (which used to leave a brand-new
+    channel with every network disabled, so nothing was ever posted to it).
+    """
+    if not request.form.getlist(name):
+        return None
+    return _form_flag(name, default=False)
 
 
 def _form_flag(name: str, default: bool | None = None) -> bool | None:
@@ -799,33 +812,26 @@ def lock_setup_changes():
     return redirect(_local_referrer(with_reauth=False) or url_for("index"))
 
 
-@app.route("/amazon/<code>")
+@app.route("/a/<code>")
+@app.route("/amazon/<code>")  # legacy links stay live after compact /a/ rollout
 def amazon_short_link(code: str):
-    """Resolve a transparent first-party short link to a tagged Amazon.in item."""
-    if not re.fullmatch(r"[A-Za-z0-9_-]{8}", code):
+    """Resolve one stored compact Amazon link to its exact tagged product target."""
+    if not amazon_shortlinks.is_valid_short_code(code):
         abort(404)
     record = db.get_amazon_short_link(code)
     if not record:
         abort(404)
 
     requested_tags = request.args.getlist("tag")
-    if len(requested_tags) != 1 or requested_tags[0].strip() != record["associate_tag"]:
+    tag = str(record.get("associate_tag") or "")
+    if len(requested_tags) != 1 or requested_tags[0].strip() != tag:
         abort(404)
 
-    target = str(record["target_url"])
-    parsed = urlparse(target)
-    target_tags = [
-        value for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if key.lower() == "tag" and value
-    ]
-    if (
-        parsed.scheme != "https"
-        or (parsed.hostname or "").lower() not in {"amazon.in", "www.amazon.in"}
-        or not re.fullmatch(r"/dp/[A-Za-z0-9]{10}", parsed.path, re.I)
-        or target_tags != [record["associate_tag"]]
-    ):
-        # Only redirect to generated Amazon.in product links; never accept an
-        # arbitrary destination from the short-link URL or query string.
+    target = str(record.get("target_url") or "")
+    if not amazon_shortlinks.is_valid_amazon_target(target, tag):
+        # Only redirect to a generated canonical Amazon product URL with this
+        # exact creator tag; never treat the DB or query string as an open
+        # redirect instruction.
         abort(404)
     return redirect(target, code=302)
 
@@ -1089,6 +1095,7 @@ def setup():
         current_ek_key=current_ek_key,
         current_ek_pubid=current_ek_pubid,
         current_hypd_store=current_hypd_store,
+        short_links=amazon_shortlinks.short_link_status(),
         default_amazon_tag=config.AMAZON_ASSOCIATE_TAG,
         sources_added=request.args.get("sources_added", type=int),
         source_saved=request.args.get("source_saved", type=int),
@@ -1113,6 +1120,13 @@ MONEY_SWITCHES: dict[str, tuple[str, str]] = {
         "Only post deals that earn",
         "Hold back a deal when none of its links would carry our attribution. "
         "Fewer posts, but no post goes out that pays nothing.",
+    ),
+    "allow_unconverted_posts": (
+        "Post unconverted links anyway",
+        "Off (recommended): a deal whose only link is a merchant URL EarnKaro "
+        "has not converted yet is parked and retried, so it is posted with OUR "
+        "link a few minutes later instead of earning nothing. On: post the raw "
+        "merchant link immediately, for volume over commission.",
     ),
 }
 
@@ -1150,6 +1164,7 @@ def money_dashboard():
     defaults = {
         "meesho_earnkaro_fallback": bool(config.MEESHO_EARNKARO_FALLBACK),
         "only_earning_deals": bool(config.ONLY_EARNING_DEALS),
+        "allow_unconverted_posts": bool(config.ALLOW_UNCONVERTED_POSTS),
     }
     switches = [
         {
@@ -1239,22 +1254,32 @@ def setup_live_checks():
                     "state": "connected",
                     "message": "Telegram account authorization succeeded. No message was sent.",
                 }
+                configured_sources = int(source_report.get("configured_sources", 0) or 0)
+                selected_sources = int(source_report.get("selected_sources", 0) or 0)
+                selection_mode = str(source_report.get("selection_mode") or "")
                 source_state = (
-                    "fallback" if source_report.get("selected_sources")
-                    and source_report.get("selection_mode") == "joined_dialog_fallback" else
-                    "matched" if source_report.get("selected_sources") else
-                    "no_matches" if source_report.get("configured_sources") else
-                    "no_sources"
+                    "no_sources" if not configured_sources else
+                    "fallback" if selected_sources and selection_mode == "joined_dialog_fallback" else
+                    "matched" if selected_sources else
+                    "no_matches"
                 )
                 details = (
-                    f"{source_report.get('selected_sources', 0)} joined dialog(s) selected from "
-                    f"{source_report.get('configured_sources', 0)} production selector(s); "
+                    f"{selected_sources} joined dialog(s) selected from "
+                    f"{configured_sources} production selector(s); "
                     f"{source_report.get('joined_group_channels', 0)} joined group/channel dialog(s) were visible."
                 )
-                if source_report.get("unresolved_private_invites"):
+                if selection_mode == "joined_dialog_fallback":
                     details += (
-                        " Some private invite selectors have no display name; the worker's safe fallback uses already-joined dialogs only."
+                        f" {source_report.get('unresolved_private_invites', 0)} private invite label(s) "
+                        "did not match an exact joined-dialog title; the worker falls back to the "
+                        "already-joined eligible dialog allowlist, with output channels excluded."
                     )
+                    if not selected_sources:
+                        details += " No eligible joined dialogs were found, so there is nothing to read."
+                elif source_state == "no_sources":
+                    details += " No production source selectors are configured; add a source to avoid broad joined-dialog ingestion."
+                elif source_state == "no_matches":
+                    details += " Join the configured source with the Telegram account, or verify its public username / exact private-dialog title."
                 details += " No invite was checked or joined, and no history was read."
                 checks["sources"] = {"state": source_state, "message": details}
         except asyncio.TimeoutError:
@@ -1323,13 +1348,15 @@ def add_deal_source():
     from_setup = request.form.get("from_setup") == "1"
     if kind not in {"production", "dummy"}:
         kind = "production"
-    if spec and len(spec) <= 512:
-        _, _, is_private_invite = puller._source_parts(spec)
-        if is_private_invite and not name:
-            return redirect(url_for("setup", source_error="private_name_required"))
-        if not name:
-            name = spec.split("/")[-1].replace("+", "").replace("@", "")
-        db.add_source(name[:120], spec, kind=kind)
+    if not spec or len(spec) > 512:
+        return redirect(url_for("setup", source_error="invalid_spec"))
+    _, _, is_private_invite = puller._source_parts(spec)
+    if not name:
+        # Invite hashes are secrets/identifiers, not useful display names. A
+        # generic label is fine because private invites are resolved only by
+        # an exact joined-dialog title; otherwise puller.py uses safe fallback.
+        name = "Private Telegram source" if is_private_invite else spec.split("/")[-1].replace("+", "").replace("@", "")
+    db.add_source(name[:120], spec, kind=kind)
     if from_setup:
         return redirect(url_for("setup", source_saved=1))
     if from_vault:
@@ -1674,6 +1701,11 @@ def update_channel_route(channel_id):
         ident = clean_identifier(ident)
 
     # A pending "undo removal" is stale once this channel is edited by hand.
+    tag_value, tag_note, tag_blocked = _normalize_amazon_tag(override_tag)
+    if tag_blocked:
+        flash(tag_note, "error")
+        return redirect(url_for("influencer_detail", inf_id=owner_id))
+    override_tag = tag_value
     session.pop(UNDO_CHANNEL_KEY, None)
     db.update_channel_details(
         channel_id,
@@ -1703,6 +1735,8 @@ def update_channel_route(channel_id):
         return redirect(url_for(
             "influencer_detail", inf_id=owner_id, wa_link_status="pending"
         ))
+    if tag_note:
+        flash("⚠ " + tag_note, "warning")
     return redirect(url_for("influencer_detail", inf_id=owner_id))
 
 
@@ -1740,12 +1774,79 @@ ROUTING_SAMPLES = (
 )
 
 
-def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dict:
+#: The Amazon link the "what gets posted" preview proves the tag against.
+ROUTING_AMAZON_SAMPLE = ROUTING_SAMPLES[0][1]
+
+_LIVE_SELECTION_CACHE: dict = {"checked_at": 0.0, "report": None}
+LIVE_SELECTION_TTL_SECONDS = 45
+
+
+def _live_source_selection(ttl: int = LIVE_SELECTION_TTL_SECONDS) -> dict:
+    """Which joined dialogs would the worker read right now? Cached, read-only.
+
+    This calls the same inspect_source_selection() the Setup Center uses, so the
+    flow board can prove the *real* selection instead of only repeating the
+    configured selectors. It never joins or checks an invite, never reads
+    message history and never sends anything. Results are cached briefly so
+    opening the dashboard cannot hammer Telegram; when the check is unavailable
+    the board simply reports the last known state.
+    """
+    if not (config.TELEGRAM_API_ID and config.TELEGRAM_API_HASH):
+        return {"checked": False, "reason": "telegram_not_configured"}
+    if _running_under_pytest():
+        # Tests monkeypatch the inspector; a cached mock must not leak onward.
+        ttl = 0
+    now = time.time()
+    cached = _LIVE_SELECTION_CACHE.get("report")
+    if cached is not None and ttl > 0 and (
+        now - float(_LIVE_SELECTION_CACHE.get("checked_at") or 0)
+    ) < ttl:
+        return cached
+    try:
+        report = _run(asyncio.wait_for(
+            puller.inspect_source_selection(include_dialog_names=True), timeout=20
+        ))
+    except Exception as exc:
+        if cached is not None:
+            return {**cached, "stale": True, "error": type(exc).__name__}
+        return {"checked": False, "reason": "inspection_failed", "error": type(exc).__name__}
+
+    result = {
+        "checked": True,
+        "authorized": bool(report.get("authorized")),
+        "selection_mode": str(report.get("selection_mode") or ""),
+        "fallback_reason": str(report.get("fallback_reason") or ""),
+        "configured_sources": int(report.get("configured_sources", 0) or 0),
+        "matched_source_selectors": int(report.get("matched_source_selectors", 0) or 0),
+        "joined_group_channels": int(report.get("joined_group_channels", 0) or 0),
+        "eligible_joined_dialogs": int(report.get("eligible_joined_dialogs", 0) or 0),
+        "selected_sources": int(report.get("selected_sources", 0) or 0),
+        "unresolved_private_invites": int(report.get("unresolved_private_invites", 0) or 0),
+        "dialogs": list(report.get("selected_dialogs") or []),
+        "dialogs_truncated": int(report.get("selected_dialogs_truncated", 0) or 0),
+        "stale": False,
+        "error": "",
+    }
+    if ttl > 0:
+        _LIVE_SELECTION_CACHE.update({"checked_at": now, "report": result})
+    return result
+
+
+def _wants_live_probe() -> bool:
+    """The Telegram selection probe runs unless the caller opts out (?live=0)."""
+    value = str(request.args.get("live", "1")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _flow_snapshot(
+    stall_seconds: int = 3 * 3600, window_hours: int = 24, live_probe: bool = True
+) -> dict:
     """Is posting still flowing from the sources? One honest answer.
 
     Sources that have produced a deal before but nothing for `stall_seconds` are
     marked stalled, channels show their last successful post, and the worker's
-    heartbeat says whether anything is pulling at all. Pure reads; no network.
+    heartbeat says whether anything is pulling at all. Database reads are local;
+    the optional Telegram selection probe is read-only and briefly cached.
     """
     now = time.time()
     note_list: list[str] = []
@@ -1785,6 +1886,7 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
         delivered = bool(row)
         flow_sources.append({
             "spec": spec,
+            "source_name": str(row.get("source_name") or ""),
             "deals_seen": int(row.get("deals_seen") or 0),
             "posts_dispatched": int(row.get("posts_dispatched") or 0),
             "failures": int(row.get("failures") or 0),
@@ -1815,6 +1917,32 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
             f"{stall_seconds // 3600}h."
         )
 
+    live = _live_source_selection() if live_probe else {
+        "checked": False, "reason": "probe_disabled"
+    }
+    if live.get("checked"):
+        if live.get("selection_mode") == "joined_dialog_fallback":
+            note_list.append(
+                f"Live check: {live.get('unresolved_private_invites', 0)} private invite label(s) did "
+                f"not match an exact joined-dialog title, so the worker reads "
+                f"{live.get('selected_sources', 0)} eligible already-joined dialog(s) instead. "
+                "Invites are never checked or joined."
+            )
+        if not live.get("selected_sources"):
+            note_list.append(
+                "Live check: the worker currently has no joined dialog to read. Join the configured "
+                "source with the Telegram account or use its exact dialog title."
+            )
+        if live.get("stale"):
+            note_list.append(
+                f"Live check is showing the last good result ({live.get('error') or 'inspection error'}); "
+                "the Telegram selection probe could not run just now."
+            )
+    elif live.get("reason") == "inspection_failed":
+        note_list.append(
+            "Live Telegram selection probe failed; the configured selectors above are the last known state."
+        )
+
     try:
         channels = db.channel_post_activity(hours=window_hours)
     except Exception:
@@ -1832,6 +1960,25 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
     except Exception:
         hourly_loot = False
     only_earning = bool(getattr(config, "ONLY_EARNING_DEALS", False))
+    try:
+        deferred_deals = db.count_deferred_deals()
+    except Exception:
+        deferred_deals = 0
+    retry_seconds = 300
+    try:
+        from influencer_hub import pipeline as _pipeline
+
+        retry_seconds = max(1, int(getattr(_pipeline, "DEFERRED_RETRY_DELAY_SECONDS", 300)))
+    except Exception:  # pragma: no cover - the board must still render
+        pass
+    if deferred_deals:
+        note_list.append(
+            f"{deferred_deals} deal(s) are waiting for a retry (a link that pays us is "
+            f"missing: EarnKaro has not converted the merchant link yet, or a wrapper "
+            f"link such as bit.ly could not be resolved). The worker retries every "
+            f"{max(1, retry_seconds // 60)} min, then posts them anyway. None of them "
+            "was posted for free."
+        )
     if live_channels and not posted_window and worker_alive:
         note_list.append(
             f"No post in the last {window_hours}h across {len(live_channels)} ready "
@@ -1862,6 +2009,7 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
             "never_delivered": len(never),
             "rows": flow_sources,
         },
+        "live": live,
         "channels": {
             "ready": len(live_channels),
             "posted_in_window": posted_window,
@@ -1872,6 +2020,16 @@ def _flow_snapshot(stall_seconds: int = 3 * 3600, window_hours: int = 24) -> dic
         "settings": {
             "hourly_loot_enabled": hourly_loot,
             "only_earning_deals": only_earning,
+        },
+        # Deals parked for a conversion retry (nothing posted for free, nothing
+        # dropped): the board shows how many are waiting and how long the retry
+        # gap is, so "why is the channel quiet?" has a concrete answer.
+        "deferred": {
+            "waiting": deferred_deals,
+            "retry_seconds": retry_seconds,
+            "allow_unconverted_posts": bool(
+                getattr(config, "ALLOW_UNCONVERTED_POSTS", False)
+            ),
         },
         "notes": note_list,
         "stall_seconds": stall_seconds,
@@ -1904,6 +2062,10 @@ def _routing_preview(
     tag = str(amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG
     store = str(hypd_store_id or "").strip() or _effective_hypd_store_id()
     ek_ready = _earnkaro_ready()
+    short_link_status = amazon_shortlinks.short_link_status()
+    compact_amazon_active = bool(
+        amazon_on and channel_role != "approval" and short_link_status["active"]
+    )
     try:
         from influencer_hub import accounts
 
@@ -1920,10 +2082,22 @@ def _routing_preview(
         if kind == "amazon":
             if amazon_on:
                 row["result"] = link_router.apply_amazon_tag(sample, tag)
-                row["note"] = (
-                    f"Posted with this creator's OWN tag ({tag}) — Amazon commission is theirs. "
-                    "Never shortened away from Amazon."
-                )
+                if channel_role == "approval":
+                    row["note"] = (
+                        f"Posted with this creator's OWN tag ({tag}) as a native Amazon URL. "
+                        "Approval channels deliberately stay native."
+                    )
+                elif compact_amazon_active:
+                    row["note"] = (
+                        f"Posted with this creator's OWN tag ({tag}); broadcast/WhatsApp then "
+                        f"uses a verified compact {short_link_status['base_url']}/a/<code>?tag={tag} "
+                        "that redirects only to this canonical target."
+                    )
+                else:
+                    row["note"] = (
+                        f"Posted with this creator's OWN tag ({tag}) as the canonical Amazon URL. "
+                        "Set one public HTTPS branded short-link origin to make it compact."
+                    )
             else:
                 row["state"] = "off"
                 row["note"] = "Amazon is OFF — this link is removed from the post."
@@ -1973,12 +2147,27 @@ def _routing_preview(
             f"Meesho → our HYPD store {store}" if hypd_on else "Meesho off",
         )
     )
+    # Offline proof for the exact Amazon link this tag produces, so the screen
+    # shows the result instead of only the rule.
+    proof = (
+        link_router.apply_amazon_tag(ROUTING_AMAZON_SAMPLE, tag)
+        if amazon_on else ""
+    )
+    tag_usable = link_router.amazon_tag_is_usable(tag)
     return {
         "rows": rows,
         "model": model,
         "summary": summary,
         "strict": strict,
         "amazon_on": amazon_on,
+        "tag": tag,
+        "tag_usable": tag_usable,
+        "tag_proof": proof,
+        "short_links": {
+            **short_link_status,
+            "active_for_this_channel": compact_amazon_active,
+            "native_for_approval": bool(amazon_on and channel_role == "approval"),
+        },
         "earnkaro_on": ek_on,
         "hypd_on": hypd_on,
         "earnkaro_ready": ek_ready,
@@ -2014,6 +2203,70 @@ def _valid_telegram_identifier(value: str) -> tuple[bool, str]:
         "Enter a valid Telegram destination: a public @username (4-32 letters, "
         "numbers or underscores), a numeric channel id, or a private t.me/+… invite link."
     )
+
+
+def _normalize_amazon_tag(raw: str) -> tuple[str, str, bool]:
+    """Validate a hand-typed Amazon tag: ``(tag, message, blocked)``.
+
+    Delegates to the router, which is also what the renderer uses, so the
+    dashboard can never accept a value the pipeline would silently replace.
+    """
+    from influencer_hub import link_router
+
+    validator = getattr(link_router, "normalize_amazon_tag", None)
+    if validator is None:  # pragma: no cover - older checkout without the helper
+        value = str(raw or "").strip()
+        if not value:
+            return "", "", False
+        import re as _re
+
+        if not _re.fullmatch(r"[A-Za-z0-9_-]{3,30}", value):
+            return "", f"“{value}” is not a usable Amazon tag; nothing was saved.", True
+        return value, "", False
+    return validator(raw)
+
+
+def _channel_ready_message(inf_id: int, influencer: dict, ident: str, role: str,
+                          override_tag: str = "", tag_note: str = "") -> str:
+    """Tell the operator exactly which link the new channel will post.
+
+    Proof is generated offline with the same renderer + guard the pipeline uses,
+    so "saved" and "will post with my tag" are the same statement.
+    """
+    from influencer_hub import commission_guard
+
+    tag = (
+        override_tag
+        or str(influencer.get("amazon_tag") or "").strip()
+        or config.AMAZON_ASSOCIATE_TAG
+    )
+    proof = commission_guard.amazon_tag_proof(tag, compact=(role != "approval"))
+    parts = [
+        f"✅ {ident} connected to {influencer['name']} as a "
+        f"{'approval' if role == 'approval' else 'broadcast'} channel."
+    ]
+    parts.append(
+        "Amazon deals will post as "
+        + proof["posted_link"]
+        + (" (verified ✅)" if proof["ok"] else " (⚠ not verified)")
+    )
+    if proof.get("shortened"):
+        parts.append(
+            "Click proof: this compact URL redirects only to "
+            + proof["redirect_target"]
+        )
+    elif proof.get("short_link_status", {}).get("active") and proof.get("short_link_error"):
+        parts.append("⚠ " + proof["short_link_error"] + " Using the canonical tagged URL instead.")
+    if proof["fallback_used"]:
+        parts.append(
+            "⚠ No usable tag is set for this creator/channel, so the configured "
+            f"fallback tag {proof['tag']} will sign the links. Add the creator's own tag "
+            "on this page to earn from their id."
+        )
+    if tag_note:
+        parts.append("⚠ " + tag_note)
+    parts.append("Send a test post below to confirm the account can post there.")
+    return " ".join(parts)
 
 
 def _channel_feedback(inf_id: int, category: str, message: str):
@@ -2057,28 +2310,40 @@ def add_manual_channel(inf_id):
         return _channel_feedback(
             inf_id, "error", "That destination link is too long. Check the value and try again.",
         )
-    only_amz = bool(_form_flag("only_amazon", default=False))
-    strip_amz = bool(_form_flag("strip_amazon", default=False))
-    allow_amz = bool(_form_flag("allow_amazon", default=False))
-    allow_ek = bool(_form_flag("allow_earnkaro", default=False))
-    allow_hypd = bool(_form_flag("allow_hypd", default=False))
+    only_amz = _form_flag_or_none("only_amazon")
+    strip_amz = _form_flag_or_none("strip_amazon")
+    allow_amz = _form_flag_or_none("allow_amazon")
+    allow_ek = _form_flag_or_none("allow_earnkaro")
+    allow_hypd = _form_flag_or_none("allow_hypd")
     hypd_store_id = (
         request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
     )
+    # Validate the tag before anything is saved: the renderer only applies
+    # [A-Za-z0-9_-]{3,30}, so a typo would otherwise post under the fallback tag.
+    override_tag, tag_note, tag_blocked = _normalize_amazon_tag(
+        request.form.get("amazon_override_tag", "")
+    )
+    if tag_blocked:
+        return _channel_feedback(inf_id, "error", tag_note)
 
     channel_settings = {
-        "amazon_override_tag": override_tag,
-        "strip_amazon": strip_amz,
         "price_filter": price_filt,
         "bitly_api_key": bitly_key,
         "categories": categories,
         "posting_schedule": schedule,
-        "only_amazon": only_amz,
-        "allow_amazon": allow_amz,
-        "allow_earnkaro": allow_ek,
-        "allow_hypd": allow_hypd,
         "hypd_store_id": hypd_store_id,
     }
+    if override_tag:
+        channel_settings["amazon_override_tag"] = override_tag
+    for key, value in (
+        ("only_amazon", only_amz),
+        ("strip_amazon", strip_amz),
+        ("allow_amazon", allow_amz),
+        ("allow_earnkaro", allow_ek),
+        ("allow_hypd", allow_hypd),
+    ):
+        if value is not None:
+            channel_settings[key] = bool(value)
     if platform == "telegram":
         ident = clean_identifier(raw_ident)
         valid, error = _valid_telegram_identifier(ident)
@@ -2117,9 +2382,9 @@ def add_manual_channel(inf_id):
             **channel_settings,
         )
         return _channel_feedback(
-            inf_id, "success",
-            f"✅ {ident} connected to {influencer['name']} as a "
-            f"{'approval' if role == 'approval' else 'broadcast'} channel.",
+            inf_id,
+            "warning" if tag_note else "success",
+            _channel_ready_message(inf_id, influencer, ident, role, override_tag, tag_note),
         )
     elif platform in {"whatsapp_group", "whatsapp_channel"}:
         destination, error = _resolve_whatsapp_destination(inf_id, raw_ident)
@@ -2181,9 +2446,13 @@ def _easy_setup_form_values() -> dict:
         "approval": request.form.get("approval_channel", "").strip(),
         "main": request.form.get("main_channel", "").strip(),
         "whatsapp": request.form.get("whatsapp_channel", "").strip(),
-        "allow_amazon": bool(_form_flag("allow_amazon", default=False)),
-        "allow_earnkaro": bool(_form_flag("allow_earnkaro", default=False)),
-        "allow_hypd": bool(_form_flag("allow_hypd", default=False)),
+        # Absent means "not managed by this form": inherit the recommended
+        # default (all three on) instead of silently disabling every network.
+        # The screen's switches send an explicit 0/1 pair, so an operator can
+        # still switch any of them off.
+        "allow_amazon": bool(_form_flag("allow_amazon", default=True)),
+        "allow_earnkaro": bool(_form_flag("allow_earnkaro", default=True)),
+        "allow_hypd": bool(_form_flag("allow_hypd", default=True)),
         "only_amazon": bool(_form_flag("only_amazon", default=False)),
         "hypd_store_id": (
             request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
@@ -2215,6 +2484,18 @@ def easy_setup():
 
     if request.method == "POST":
         values = _easy_setup_form_values()
+        tag_value, tag_note, tag_blocked = _normalize_amazon_tag(values["amazon_tag"])
+        if tag_blocked:
+            errors.append(tag_note)
+        elif not tag_value:
+            values["amazon_tag"] = config.AMAZON_ASSOCIATE_TAG
+            tag_note = (
+                f"No Amazon tag was given, so the configured fallback "
+                f"{config.AMAZON_ASSOCIATE_TAG} will sign Amazon links. "
+                "Put the creator's own tag here to earn from their id."
+            )
+        else:
+            values["amazon_tag"] = tag_value
         if not values["name"]:
             errors.append("Enter the creator's name.")
         if not values["main"] and not values["approval"]:
@@ -2237,6 +2518,11 @@ def easy_setup():
         if not errors:
             applied = _apply_easy_setup(values, approval_ident, main_ident)
             session["_easy_setup_result"] = applied
+            from influencer_hub import commission_guard
+
+            proof = commission_guard.amazon_tag_proof(
+                values["amazon_tag"], compact=bool(main_ident)
+            )
             flash(
                 f"✅ {applied['name']} is set up and posting. "
                 f"Amazon → {values['amazon_tag']}"
@@ -2244,6 +2530,17 @@ def easy_setup():
                 + (f", Meesho → HYPD store {values['hypd_store_id']}" if values["allow_hypd"] else ""),
                 "success",
             )
+            proof_message = (
+                "Amazon deals will post as " + proof["posted_link"]
+                + (" (verified ✅)" if proof["ok"] else " (⚠ not verified — check the tag)")
+            )
+            if proof.get("shortened"):
+                proof_message += " → opens only " + proof["redirect_target"]
+            elif proof.get("short_link_status", {}).get("active") and proof.get("short_link_error"):
+                proof_message += " ⚠ " + proof["short_link_error"] + " Using canonical tagged URL instead."
+            flash(proof_message, "success" if proof["ok"] else "warning")
+            if tag_note:
+                flash("⚠ " + tag_note, "warning")
             return redirect(url_for("easy_setup", done=applied["inf_id"]))
 
     preview = _routing_preview(**_routing_arguments(values))
@@ -2256,7 +2553,7 @@ def easy_setup():
         switches=ROUTING_SWITCHES,
         source_count=len(sources),
         active_source_count=active_sources,
-        flow=_flow_snapshot(),
+        flow=_flow_snapshot(live_probe=_wants_live_probe()),
     )
 
 
@@ -2346,7 +2643,9 @@ def api_flow():
         window_hours = max(1, min(168, int(request.args.get("window_hours", 24))))
     except (TypeError, ValueError):
         window_hours = 24
-    return jsonify(_flow_snapshot(stall_seconds=stall_seconds, window_hours=window_hours))
+    return jsonify(_flow_snapshot(
+        stall_seconds=stall_seconds, window_hours=window_hours, live_probe=_wants_live_probe(),
+    ))
 
 
 @app.route("/api/routing-preview")
@@ -2885,7 +3184,10 @@ def api_test_render_deal():
             "3. Flipkart Shoes: https://www.flipkart.com/shoes/p/itm123456"
         )
 
-    from influencer_hub import earnkaro, link_router
+    from influencer_hub import advanced_shortener, earnkaro, link_router
+
+    requested_amz_tag = amz_tag or config.AMAZON_ASSOCIATE_TAG
+    effective_amz_tag = link_router.effective_amazon_tag(requested_amz_tag)
 
     if only_amazon:
         allow_amazon, allow_earnkaro, allow_hypd = True, False, False
@@ -2901,6 +3203,26 @@ def api_test_render_deal():
         allowed_kinds.update({"hypd", "meesho"})
     if not only_amazon and role != "approval":
         allowed_kinds.add("lehlah")
+
+    # Same first step as the pipeline: promote scheme-less links and unwrap
+    # shorteners so the preview shows the links that will really be posted.
+    sample_text = link_router.promote_scheme_less_links(sample_text)
+    unresolved_wrappers: list[str] = []
+    if link_router.has_opaque_link(sample_text):
+        try:
+            sample_text, unresolved_wrappers = _run(asyncio.wait_for(
+                link_router.resolve_opaque_links_in_text_async(sample_text, effective_amz_tag), timeout=12
+            ))
+        except Exception:
+            unresolved_wrappers = link_router.unresolved_opaque_links(sample_text)
+            warnings_pre: list[str] = [
+                "Wrapper links could not be resolved in the preview; they stay visible and the "
+                "worker retries such a deal instead of posting it for free."
+            ]
+        else:
+            warnings_pre = []
+    else:
+        warnings_pre = []
 
     filtered_text = link_router.filter_disallowed_affiliate_links(sample_text, allowed_kinds)
     detected_links = link_router.collect_links(sample_text)
@@ -2926,22 +3248,65 @@ def api_test_render_deal():
 
     rendered = link_router.render_for_influencer(
         filtered_text,
-        amazon_tag=amz_tag or config.AMAZON_ASSOCIATE_TAG,
+        amazon_tag=effective_amz_tag,
         earnkaro_links=earnkaro_links,
         role=role,
         hypd_store_id=hypd_store,
     )
+    # The preview must use the same final compacting pass as the worker. This
+    # allocates only a local stored redirect record (no deal is dispatched), so
+    # the returned /a/<code> link is genuinely clickable evidence.
+    if role != "approval":
+        try:
+            rendered = _run(advanced_shortener.shorten_our_links_advanced(
+                rendered, effective_amz_tag, hypd_store
+            ))
+            if config.LEHLAH_SHORTLINKS_ENABLED:
+                rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
+            rendered = link_router.deduplicate_urls_in_text(rendered)
+        except Exception as exc:
+            warnings.append(
+                f"Branded shortening preview could not complete ({type(exc).__name__}); "
+                "the canonical attributed links are shown instead."
+            )
+
+    from influencer_hub import commission_guard
+
+    expected_pubid = (
+        db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or ""
+    ).strip()
+    our_links = commission_guard.our_affiliate_urls(
+        rendered, effective_amz_tag, hypd_store, expected_pubid,
+        source_text=sample_text,
+    )
+    if our_links:
+        verdict = "our_link_present"
+    elif unresolved_wrappers:
+        verdict = "held_for_retry"
+    else:
+        verdict = "no_our_link"
+    preview_short_link_status = amazon_shortlinks.short_link_status()
     return jsonify({
         "ok": True,
         "input": sample_text,
         "rendered": rendered,
         "detected_links": detected_links,
-        "warnings": warnings,
+        "our_links": our_links,
+        "unresolved_wrappers": unresolved_wrappers,
+        "verdict": verdict,
+        "warnings": warnings_pre + warnings,
         "network_settings": {
             "amazon": bool(allow_amazon),
             "earnkaro": bool(allow_earnkaro),
             "hypd": bool(allow_hypd),
             "only_amazon": bool(only_amazon),
+        },
+        "amazon_tag": effective_amz_tag,
+        "short_links": {
+            **preview_short_link_status,
+            "active_for_this_preview": bool(
+                role != "approval" and allow_amazon and preview_short_link_status["active"]
+            ),
         },
     })
 

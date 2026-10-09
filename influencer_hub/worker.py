@@ -50,13 +50,18 @@ def _first_failure_reason(results: dict) -> str:
 
 
 def _record_source_activity(
-    source_key: str, *, message_id: int = 0, posted: int = 0, failed: int = 0,
-    error: str = "",
+    source_key: str, *, source_name: str = "", message_id: int = 0, posted: int = 0,
+    failed: int = 0, error: str = "",
 ) -> None:
-    """Per-source flow bookkeeping; never allowed to stop ingestion."""
+    """Per-source flow bookkeeping; never allowed to stop ingestion.
+
+    ``source_name`` is the joined dialog's live title, so the flow board can
+    show which real group/channel a selected source actually read.
+    """
     try:
         db.record_source_activity(
-            source_key, message_id=message_id, posted=posted, failed=failed, error=error
+            source_key, source_name=source_name, message_id=message_id,
+            posted=posted, failed=failed, error=error,
         )
     except Exception:
         logger.warning("Could not record source activity", exc_info=True)
@@ -110,6 +115,78 @@ async def _poll_dispatch_loop(stop_event: asyncio.Event) -> None:
             pass
 
 
+async def drain_deferred_deals(limit: int = 3) -> int:
+    """Retry deals the pipeline parked because their link had not converted.
+
+    A deal is parked only while its only link is a merchant URL EarnKaro did not
+    convert (API/key down or a transient failure). Retrying costs one render and
+    converts the deal into OUR affiliate link, so nothing is posted free and
+    nothing is dropped. Once the retry budget is used up the deal is posted
+    anyway — the operator's channel keeps flowing and the log states why.
+    """
+    try:
+        due = db.due_deferred_deals(limit=limit)
+    except Exception:
+        logger.exception("Deferred-deal lookup failed; it will be retried next cycle")
+        return 0
+
+    drained = 0
+    for item in due:
+        deal_hash = str(item.get("deal_hash") or "")
+        text = str(item.get("text") or "").strip()
+        if not text:
+            db.delete_deferred_deal(deal_hash)
+            continue
+        exhausted = int(item.get("attempts") or 0) >= int(item.get("max_attempts") or 1)
+        try:
+            result = await pipeline.run_once(
+                [{"text": text, "source": item.get("source") or ""}],
+                force_unconverted=exhausted,
+            )
+        except Exception as exc:
+            logger.exception("Deferred-deal retry failed for %s", deal_hash[:8])
+            db.note_deferred_attempt(
+                deal_hash, delay_seconds=pipeline.DEFERRED_RETRY_DELAY_SECONDS,
+                reason=f"{type(exc).__name__}: {exc}"[:200],
+            )
+            continue
+
+        statuses = [
+            str(status).strip().lower()
+            for per_channel in (result or {}).values()
+            for status in (per_channel or {}).values()
+        ]
+        still_held = any(status == "skipped:no_our_affiliate_after_guard" for status in statuses)
+        if not still_held:
+            # Posted (or skipped for an unrelated reason): the retry queue entry
+            # has done its job.
+            db.delete_deferred_deal(deal_hash)
+            drained += 1
+            logger.info(
+                "Deferred deal %s processed after %s retry attempt(s)",
+                deal_hash[:8], int(item.get("attempts") or 0),
+            )
+            continue
+        if exhausted:
+            # force_unconverted was set, so a hold-back here means the deal was
+            # skipped for a different reason; stop retrying it.
+            db.delete_deferred_deal(deal_hash)
+            logger.warning(
+                "Deferred deal %s dropped after %s retries without a conversion",
+                deal_hash[:8], int(item.get("attempts") or 0),
+            )
+            continue
+        db.note_deferred_attempt(
+            deal_hash, delay_seconds=pipeline.DEFERRED_RETRY_DELAY_SECONDS,
+            reason="still_unconverted",
+        )
+        logger.info(
+            "Deferred deal %s still unconverted (attempt %s/%s)",
+            deal_hash[:8], int(item.get("attempts") or 0) + 1, int(item.get("max_attempts") or 1),
+        )
+    return drained
+
+
 async def process_pending_batch(limit: int | None = None, use_dummy: bool = False) -> dict[str, int]:
     """Process one pull batch and advance each source cursor only when safe."""
     records = await puller.pull_new_deals(limit=limit, use_dummy=use_dummy)
@@ -132,6 +209,7 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                 continue
 
             text = str(record.get("text") or "").strip()
+            source_name = str(record.get("source") or "").strip()
             # Early batch dedup: if same product already handled in this pull cycle from another source, skip but advance cursor
             if text:
                 try:
@@ -139,6 +217,9 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                     _sig = _sig_for_batch(text)
                     if _sig in seen_sigs_this_batch:
                         logger.info("Batch dedup: skipping duplicate deal from source %s message %s sig %s", source_key, message_id, _sig[:8])
+                        _record_source_activity(
+                            source_key, source_name=source_name, message_id=message_id
+                        )
                         db.set_worker_offset(source_key, message_id)
                         handled += 1
                         continue
@@ -154,7 +235,7 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                 except Exception as exc:
                     logger.exception("Pipeline failed for source %s message %s", source_key, message_id)
                     _record_source_activity(
-                        source_key, message_id=message_id, failed=1,
+                        source_key, source_name=source_name, message_id=message_id, failed=1,
                         error=f"{type(exc).__name__}: {exc}",
                     )
                     retried += 1
@@ -170,19 +251,27 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                     )
                     failure_note = _first_failure_reason(result)
                     _record_source_activity(
-                        source_key, message_id=message_id, posted=posted,
-                        failed=max(1, failed), error=failure_note,
+                        source_key, source_name=source_name, message_id=message_id,
+                        posted=posted, failed=max(1, failed), error=failure_note,
                     )
                     retried += 1
                     break
                 _record_source_activity(
-                    source_key, message_id=message_id, posted=posted, failed=failed
+                    source_key, source_name=source_name, message_id=message_id,
+                    posted=posted, failed=failed,
                 )
 
             # Empty/media-only Telegram posts have no text parser input; mark
             # them handled so they cannot block later deals forever.
             db.set_worker_offset(source_key, message_id)
             handled += 1
+
+    # Deals parked for a conversion retry are drained after the fresh pull, so a
+    # converter outage delays a deal instead of posting it free or dropping it.
+    try:
+        await drain_deferred_deals()
+    except Exception:
+        logger.exception("Deferred-deal drain failed; it will run again next cycle")
 
     return {"pulled": len(records), "handled": handled, "retry_sources": retried}
 

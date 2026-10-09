@@ -823,6 +823,8 @@ button[aria-disabled="true"] {
 .flash-stack { display: grid; gap: 8px; margin-top: 14px; }
 .flash { padding: 10px 12px; border-radius: 8px; font-size: 13px; }
 .flash-error { border: 1px solid #ef4444; background: #450a0a; color: #fecaca; }
+.flash-success { border: 1px solid #10b981; background: #052e25; color: #a7f3d0; }
+.flash-warning { border: 1px solid #f59e0b; background: #422006; color: #fde68a; }
 
 /* ---------- Routing preview table ---------- */
 .routing-summary {

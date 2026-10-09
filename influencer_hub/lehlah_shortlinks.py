@@ -19,9 +19,12 @@ _SHORT_CODE_RE = re.compile(r"[A-Za-z0-9_-]{8}\Z")
 
 def configured_base_url(value: str | None = None) -> str:
     """Return a safe HTTPS origin, or blank when branded shortening is disabled."""
-    base = str(
-        value if value is not None else config.MEESHO_SHORT_LINK_BASE_URL
-    ).strip().rstrip("/")
+    configured = (
+        value
+        if value is not None
+        else (config.MEESHO_SHORT_LINK_BASE_URL or config.AFFILIATE_SHORT_LINK_BASE_URL)
+    )
+    base = str(configured or "").strip().rstrip("/")
     if not base:
         return ""
     parsed = urlparse(base)
@@ -88,6 +91,47 @@ def shorten_lehlah_links(text: str, base_url: str | None = None) -> str:
         code = db.get_or_create_lehlah_short_link(url)
         rendered = rendered.replace(url, f"{base}/l/{code}")
     return rendered
+
+
+def _same_origin(left, right) -> bool:
+    try:
+        left_port = left.port
+        right_port = right.port
+    except ValueError:
+        return False
+    return (
+        left.scheme.lower() == right.scheme.lower() == "https"
+        and (left.hostname or "").lower() == (right.hostname or "").lower()
+        and left_port == right_port
+    )
+
+
+def is_our_lehlah_short_url(url: str, base_url: str | None = None) -> bool:
+    """Return true only for a stored branded link preserving LehLah attribution."""
+    base = configured_base_url(base_url)
+    if not base:
+        return False
+    try:
+        parsed = urlparse(str(url or ""))
+        trusted = urlparse(base)
+        if (
+            not _same_origin(parsed, trusted)
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            return False
+    except (TypeError, ValueError):
+        return False
+    match = re.fullmatch(r"/l/([A-Za-z0-9_-]{8})", parsed.path)
+    if not match:
+        return False
+    try:
+        record = db.get_lehlah_short_link(match.group(1))
+    except Exception:
+        return False
+    return bool(record and is_valid_lehlah_meesho_url(str(record.get("target_url") or "")))
 
 
 def is_valid_short_code(code: str) -> bool:

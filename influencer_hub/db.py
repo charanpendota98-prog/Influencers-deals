@@ -122,11 +122,28 @@ CREATE TABLE IF NOT EXISTS worker_offsets (
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Deals whose only link was a merchant URL EarnKaro had not converted yet.
+-- Instead of spending a post on a link that pays nothing, the pipeline parks the
+-- deal here and the worker retries it (bounded) — so a converter outage delays
+-- the deal, it never drops it and never posts it for free.
+CREATE TABLE IF NOT EXISTS deferred_deals (
+    deal_hash     TEXT PRIMARY KEY,
+    text          TEXT NOT NULL,
+    source        TEXT NOT NULL DEFAULT '',
+    reason        TEXT NOT NULL DEFAULT '',
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    max_attempts  INTEGER NOT NULL DEFAULT 6,
+    created_at    REAL NOT NULL DEFAULT 0,
+    not_before    REAL NOT NULL DEFAULT 0,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Per-source deal flow: when a source last produced a deal, how many were
 -- dispatched, and how many failed. This is what makes "is posting still
 -- flowing?" answerable per source instead of guessing from logs.
 CREATE TABLE IF NOT EXISTS source_activity (
     source_key        TEXT PRIMARY KEY,
+    source_name       TEXT NOT NULL DEFAULT '',
     last_seen_at      REAL NOT NULL DEFAULT 0,
     last_message_at   REAL NOT NULL DEFAULT 0,
     last_message_id   INTEGER NOT NULL DEFAULT 0,
@@ -308,6 +325,14 @@ def migrate() -> None:
         if "deal_text" not in posts_cols:
             try:
                 con.execute("ALTER TABLE posts ADD COLUMN deal_text TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+
+        activity_cols = {r["name"] for r in con.execute("PRAGMA table_info(source_activity)")}
+        if activity_cols and "source_name" not in activity_cols:
+            try:
+                con.execute("ALTER TABLE source_activity ADD COLUMN source_name TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
@@ -1270,6 +1295,102 @@ def get_worker_heartbeat() -> Optional[dict]:
         con.close()
 
 
+def _deferred_hash(text: str, source: str = "") -> str:
+    blob = f"{str(source or '').strip()}\n{str(text or '').strip()}".encode("utf-8", "replace")
+    return hashlib.sha1(blob).hexdigest()
+
+
+def defer_deal(text: str, source: str = "", reason: str = "", delay_seconds: int = 300,
+               max_attempts: int = 6) -> str | None:
+    """Park a deal for a bounded retry instead of posting a free link.
+
+    Idempotent per (source, text): re-rendering the same deal for several
+    channels does not add duplicate rows. ``delay_seconds=0`` parks it as due
+    immediately. Returns the deal hash, or None for an empty deal.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return None
+    now = time.time()
+    deal_hash = _deferred_hash(body, source)
+    attempts = max(1, int(max_attempts))
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO deferred_deals "
+            "(deal_hash, text, source, reason, attempts, max_attempts, created_at, not_before, updated_at) "
+            "VALUES (?,?,?,?,0,?,?,?,datetime('now')) "
+            "ON CONFLICT(deal_hash) DO UPDATE SET "
+            "reason=excluded.reason, updated_at=excluded.updated_at",
+            (deal_hash, body, str(source or "").strip(), str(reason or "").strip(),
+             attempts, now, now + max(0, int(delay_seconds))),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return deal_hash
+
+
+def due_deferred_deals(limit: int = 5, now: float | None = None) -> list[dict]:
+    """Deals whose retry delay has elapsed, oldest first."""
+    moment = time.time() if now is None else float(now)
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT * FROM deferred_deals WHERE not_before <= ? ORDER BY not_before ASC LIMIT ?",
+            (moment, max(1, int(limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        con.close()
+
+
+def deferred_deal_attempts(text: str, source: str = "") -> int:
+    """How many retries a parked deal already used (0 when it is not parked)."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT attempts FROM deferred_deals WHERE deal_hash=?",
+            (_deferred_hash(text, source),),
+        ).fetchone()
+        return int(row["attempts"]) if row else 0
+    finally:
+        con.close()
+
+
+def note_deferred_attempt(deal_hash: str, delay_seconds: int = 300, reason: str = "") -> None:
+    """Record one failed retry and push the next attempt out."""
+    now = time.time()
+    con = _connect()
+    try:
+        con.execute(
+            "UPDATE deferred_deals SET attempts=attempts+1, not_before=?, reason=?, "
+            "updated_at=datetime('now') WHERE deal_hash=?",
+            (now + max(0, int(delay_seconds)), str(reason or ""), str(deal_hash)),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def delete_deferred_deal(deal_hash: str) -> None:
+    con = _connect()
+    try:
+        con.execute("DELETE FROM deferred_deals WHERE deal_hash=?", (str(deal_hash),))
+        con.commit()
+    finally:
+        con.close()
+
+
+def count_deferred_deals() -> int:
+    con = _connect()
+    try:
+        row = con.execute("SELECT COUNT(*) AS n FROM deferred_deals").fetchone()
+        return int(row["n"]) if row else 0
+    finally:
+        con.close()
+
+
 def get_worker_offset(source_key: str) -> int:
     """Return the last fully handled Telegram message id for a joined dialog."""
     con = _connect()
@@ -1306,6 +1427,7 @@ def set_worker_offset(source_key: str, last_message_id: int) -> None:
 def record_source_activity(
     source_key: str,
     *,
+    source_name: str = "",
     message_id: int = 0,
     posted: int = 0,
     failed: int = 0,
@@ -1325,10 +1447,12 @@ def record_source_activity(
     con = _connect()
     try:
         con.execute(
-            "INSERT INTO source_activity (source_key, last_seen_at, last_message_at, "
+            "INSERT INTO source_activity (source_key, source_name, last_seen_at, last_message_at, "
             "last_message_id, deals_seen, posts_dispatched, failures, last_error, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(source_key) DO UPDATE SET "
+            "source_name=CASE WHEN excluded.source_name <> '' THEN excluded.source_name "
+            "ELSE source_activity.source_name END, "
             "last_seen_at=excluded.last_seen_at, "
             "last_message_at=CASE WHEN excluded.last_message_id > source_activity.last_message_id "
             "THEN excluded.last_message_at ELSE source_activity.last_message_at END, "
@@ -1339,8 +1463,8 @@ def record_source_activity(
             "last_error=CASE WHEN excluded.last_error <> '' THEN excluded.last_error "
             "ELSE source_activity.last_error END, "
             "updated_at=excluded.updated_at",
-            (key, stamp, stamp if message_id else 0.0, message_id, 1,
-             int(posted or 0), int(failed or 0), str(error or "")[:300], _now()),
+            (key, str(source_name or "").strip()[:200], stamp, stamp if message_id else 0.0,
+             message_id, 1, int(posted or 0), int(failed or 0), str(error or "")[:300], _now()),
         )
         con.commit()
     finally:
@@ -1352,7 +1476,7 @@ def list_source_activity() -> list[dict]:
     con = _connect()
     try:
         rows = con.execute(
-            "SELECT source_key, last_seen_at, last_message_at, last_message_id, "
+            "SELECT source_key, source_name, last_seen_at, last_message_at, last_message_id, "
             "deals_seen, posts_dispatched, failures, last_error, updated_at "
             "FROM source_activity ORDER BY last_seen_at ASC"
         ).fetchall()
@@ -1473,21 +1597,44 @@ def _amazon_short_code(target_url: str, salt: int) -> str:
 
 
 def get_or_create_amazon_short_link(target_url: str, associate_tag: str) -> str:
-    """Persist a stable first-party code for a tagged Amazon.in product URL.
+    """Persist a stable first-party code for one canonical tagged Amazon item.
 
-    The public redirect endpoint separately validates the stored destination
-    and requires this same tag as a query parameter, avoiding an open redirect
-    and keeping the Associate ID visible on the short URL.
+    This is deliberately more restrictive than "any Amazon URL": only the
+    canonical ``/dp/<10-char-ASIN>`` path, a single Associates tag and harmless
+    numeric variant selectors are stored.  The public redirect route validates
+    the same invariant before every redirect, so this table never becomes a
+    generic open-redirect list.
     """
     tag = str(associate_tag or "").strip()
-    parsed = urlparse(str(target_url or ""))
-    query_tags = parse_qs(parsed.query).get("tag", [])
+    try:
+        parsed = urlparse(str(target_url or ""))
+        port = parsed.port
+    except ValueError:
+        parsed = urlparse("")
+        port = -1
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query_tags = [value for key, value in query if key.casefold() == "tag"]
+    selectors: set[str] = set()
+    safe_query = True
+    for key, value in query:
+        lower = key.casefold()
+        if lower == "tag":
+            continue
+        if lower not in {"th", "psc"} or not value.isdigit() or lower in selectors:
+            safe_query = False
+            break
+        selectors.add(lower)
     if (
         parsed.scheme != "https"
         or (parsed.hostname or "").lower() not in {"amazon.in", "www.amazon.in"}
-        or not parsed.path.startswith("/dp/")
+        or parsed.username
+        or parsed.password
+        or port is not None
+        or parsed.fragment
+        or not re.fullmatch(r"/dp/[A-Za-z0-9]{10}", parsed.path, re.I)
         or not tag
         or query_tags != [tag]
+        or not safe_query
     ):
         raise ValueError("Only canonical, tagged Amazon.in product URLs can be shortened")
 

@@ -1,10 +1,10 @@
 """Deal puller that reads only dialogs already present in the Telegram account.
 
 No invite is resolved or joined here: in particular this module never sends a
-CheckChatInviteRequest. Public source selectors are matched to the account's
-joined dialogs; private invite links are treated as hints and resolved by title
-when a source name is stored, otherwise the joined-group dialog allowlist is
-used. Configured output channels are always excluded from ingestion.
+CheckChatInviteRequest. Public source selectors are matched to joined dialogs.
+A private invite's name is only a title hint; if it does not match an already-
+joined dialog, the puller falls back to eligible joined groups/channels and
+logs a warning. Configured output channels are always excluded from ingestion.
 """
 from __future__ import annotations
 
@@ -23,6 +23,11 @@ PRIORITY_SOURCE_SPECS = [
     "https://t.me/+8KzU3P58MJ9jN2M1",
     "https://t.me/+6LA1ljXGlbNmMjA1",
 ]
+
+# A polling worker may run every few seconds. Emit one warning for each
+# distinct private-invite configuration rather than filling its logs on every
+# pass. The key stays in memory and never includes invite hashes in log output.
+_WARNED_PRIVATE_FALLBACKS: set[tuple[tuple[str, str], ...]] = set()
 
 
 async def _ensure_connected(client) -> None:
@@ -158,30 +163,50 @@ def _is_group_or_channel(dialog) -> bool:
     return bool(getattr(entity, "title", None))
 
 
-def _dialog_matches_source(dialog, entries: list[dict[str, str]]) -> bool:
+def _dialog_matches_source_entry(dialog, entry: dict[str, str]) -> bool:
+    """Whether one configured selector identifies this already-joined dialog.
+
+    A private invite hash cannot be mapped to a Telegram entity without an
+    invite-check RPC (which this worker deliberately never makes). Its optional
+    source name is a *title hint*, not an invite identity. Require an exact
+    normalized title for private hints so a generic label such as "Priority
+    Source" cannot accidentally select a similarly named unrelated group.
+    """
     username = _dialog_username(dialog)
     title = _normal_name(_dialog_name(dialog))
-    for entry in entries:
-        source_name = entry.get("name", "")
-        source_spec = entry.get("spec", "")
-        spec_username, spec_id, _private = _source_parts(source_spec)
-        if spec_username and username and spec_username == username:
-            return True
-        if spec_id and spec_id in _dialog_identifiers(dialog):
-            return True
-        if source_name:
-            normalized = _normal_name(source_name)
-            if normalized and title and (
-                normalized == title
-                or (min(len(normalized), len(title)) >= 5 and (normalized in title or title in normalized))
+    source_name = str(entry.get("name") or "").strip()
+    source_spec = str(entry.get("spec") or "").strip()
+    spec_username, spec_id, is_private = _source_parts(source_spec)
+
+    if spec_username and username and spec_username == username:
+        return True
+    if spec_id and spec_id in _dialog_identifiers(dialog):
+        return True
+
+    if source_name:
+        normalized = _normal_name(source_name)
+        if normalized and title:
+            if normalized == title:
+                return True
+            # Preserve the existing forgiving title hint for public/legacy
+            # selectors. Private invite names are often operator labels and
+            # must not be treated as identifiers unless they match exactly.
+            if not is_private and min(len(normalized), len(title)) >= 5 and (
+                normalized in title or title in normalized
             ):
                 return True
-        # A plain source selector can be a username or a visible dialog title.
-        if not source_spec.startswith(("http://", "https://", "t.me/", "telegram.me/", "@")):
-            normalized = _normal_name(source_spec)
-            if normalized and title and normalized == title:
-                return True
+
+    # A plain selector can be a username or a visible dialog title.
+    if not source_spec.startswith(("http://", "https://", "t.me/", "telegram.me/", "@")):
+        normalized = _normal_name(source_spec)
+        if normalized and title and normalized == title:
+            return True
     return False
+
+
+def _dialog_matches_source(dialog, entries: list[dict[str, str]]) -> bool:
+    """Whether at least one source selector identifies a joined dialog."""
+    return any(_dialog_matches_source_entry(dialog, entry) for entry in entries)
 
 
 def _excluded_output_keys() -> tuple[set[str], set[str]]:
@@ -214,7 +239,14 @@ def _excluded_output_keys() -> tuple[set[str], set[str]]:
     return usernames, identifiers
 
 
-def _joined_source_dialogs(dialogs: list, entries: list[dict[str, str]]) -> list:
+def _source_selection(dialogs: list, entries: list[dict[str, str]]) -> dict:
+    """Select eligible dialogs and explain whether private-invite fallback ran.
+
+    Private invites are intentionally not resolved or joined. When a private
+    invite label fails to match an already-joined dialog's exact title, use the
+    account's joined-dialog allowlist rather than silently selecting zero
+    sources. Output and non-source-owned dialogs are filtered before fallback.
+    """
     username_excludes, id_excludes = _excluded_output_keys()
     candidates = []
     for dialog in dialogs:
@@ -227,24 +259,75 @@ def _joined_source_dialogs(dialogs: list, entries: list[dict[str, str]]) -> list
             continue
         entity = getattr(dialog, "entity", None)
         # Do not feed the account's own output channels back into itself unless
-        # the user has explicitly configured that dialog as a source.
+        # the user explicitly configured that dialog as a source.
         if bool(getattr(entity, "creator", False)) and not _dialog_matches_source(dialog, entries):
             continue
         candidates.append(dialog)
 
-    if not entries:
-        return candidates
-
-    matched = [dialog for dialog in candidates if _dialog_matches_source(dialog, entries)]
-    unresolved_private_invites = any(
-        _source_parts(entry.get("spec", ""))[2] and not entry.get("name")
+    entry_matches = [
+        (entry, [dialog for dialog in candidates if _dialog_matches_source_entry(dialog, entry)])
         for entry in entries
-    )
-    if unresolved_private_invites:
-        # Invite hashes cannot be mapped to an entity without checking the
-        # invite. Read already-joined groups/channels instead, avoiding that RPC.
-        return candidates
-    return matched
+    ]
+    matched_dialog_ids = {
+        id(dialog) for _entry, matches in entry_matches for dialog in matches
+    }
+    matched = [dialog for dialog in candidates if id(dialog) in matched_dialog_ids]
+    matched_selectors = sum(bool(matches) for _entry, matches in entry_matches)
+    unmatched_private = [
+        entry for entry, matches in entry_matches
+        if _source_parts(entry.get("spec", ""))[2] and not matches
+    ]
+
+    if not entries:
+        return {
+            "selected": candidates,
+            "eligible": candidates,
+            "matched_selectors": 0,
+            "unmatched_private_invites": [],
+            "selection_mode": "all_joined_dialogs",
+            "fallback_reason": "no_configured_selectors",
+        }
+
+    if unmatched_private:
+        signature = tuple(sorted(
+            (
+                str(entry.get("spec") or "").strip().casefold(),
+                str(entry.get("name") or "").strip().casefold(),
+            )
+            for entry in unmatched_private
+        ))
+        if signature not in _WARNED_PRIVATE_FALLBACKS:
+            if len(_WARNED_PRIVATE_FALLBACKS) >= 128:
+                _WARNED_PRIVATE_FALLBACKS.clear()
+            _WARNED_PRIVATE_FALLBACKS.add(signature)
+            logger.warning(
+                "No joined dialog matched %s private invite source label(s); "
+                "using the already-joined dialog allowlist (%s eligible group/channel(s)). "
+                "Invites were not checked or joined; configured output dialogs remain excluded.",
+                len(unmatched_private), len(candidates),
+            )
+        return {
+            "selected": candidates,
+            "eligible": candidates,
+            "matched_selectors": matched_selectors,
+            "unmatched_private_invites": unmatched_private,
+            "selection_mode": "joined_dialog_fallback",
+            "fallback_reason": "private_invite_label_unmatched",
+        }
+
+    return {
+        "selected": matched,
+        "eligible": candidates,
+        "matched_selectors": matched_selectors,
+        "unmatched_private_invites": [],
+        "selection_mode": "configured_selectors",
+        "fallback_reason": "",
+    }
+
+
+def _joined_source_dialogs(dialogs: list, entries: list[dict[str, str]]) -> list:
+    """Compatibility wrapper returning only the selected joined dialogs."""
+    return _source_selection(dialogs, entries)["selected"]
 
 
 async def _read_dialog_list(client) -> list:
@@ -266,12 +349,31 @@ async def _iter_source_dialogs(client, use_dummy: bool = False) -> list[tuple[ob
             for dialog in selected]
 
 
-async def inspect_source_selection() -> dict:
+def _dialog_kind(dialog) -> str:
+    entity = getattr(dialog, "entity", None)
+    if bool(getattr(dialog, "is_channel", False)) or bool(getattr(entity, "broadcast", False)):
+        return "channel"
+    return "group"
+
+
+def _dialog_summary(dialog) -> dict[str, str]:
+    """Small, secret-free summary of one joined dialog for the flow board."""
+    return {
+        "name": _dialog_name(dialog) or _dialog_username(dialog) or _dialog_id(dialog),
+        "id": _dialog_id(dialog),
+        "username": _dialog_username(dialog),
+        "kind": _dialog_kind(dialog),
+    }
+
+
+async def inspect_source_selection(include_dialog_names: bool = False) -> dict:
     """Safely verify Telegram auth and source matching without touching invites.
 
     This only enumerates dialogs already joined to the account and applies the
     exact selector/output-exclusion rules used by the deal worker. It never
     checks an invite, joins a dialog, reads message history, or sends a message.
+    ``include_dialog_names`` adds capped, secret-free summaries of the dialogs
+    the worker will actually read, so the dashboard can prove the selection.
     """
     client = telegram_ops._client()
     was_connected = client.is_connected()
@@ -283,20 +385,28 @@ async def inspect_source_selection() -> dict:
 
         dialogs = await _read_dialog_list(client)
         entries = _source_entries(use_dummy=False)
-        selected = _joined_source_dialogs(dialogs, entries)
-        unresolved_private = sum(
-            1 for entry in entries
-            if _source_parts(entry.get("spec", ""))[2] and not entry.get("name")
-        )
-        return {
+        selection = _source_selection(dialogs, entries)
+        selected = selection["selected"]
+        unresolved_private = len(selection["unmatched_private_invites"])
+        report = {
             "ok": bool(entries) and bool(selected),
             "authorized": True,
             "configured_sources": len(entries),
+            "matched_source_selectors": selection["matched_selectors"],
             "joined_group_channels": sum(1 for dialog in dialogs if _is_group_or_channel(dialog)),
+            "eligible_joined_dialogs": len(selection["eligible"]),
             "selected_sources": len(selected),
             "unresolved_private_invites": unresolved_private,
-            "selection_mode": "joined_dialog_fallback" if unresolved_private else "configured_selectors",
+            "selection_mode": selection["selection_mode"],
+            "fallback_reason": selection["fallback_reason"],
         }
+        if include_dialog_names:
+            limit = 50
+            report["selected_dialogs"] = [
+                _dialog_summary(dialog) for dialog in selected[:limit]
+            ]
+            report["selected_dialogs_truncated"] = max(0, len(selected) - limit)
+        return report
     finally:
         if not was_connected and client.is_connected():
             await client.disconnect()

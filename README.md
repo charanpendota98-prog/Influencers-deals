@@ -133,14 +133,69 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
   product ASIN links are cleaned to `www.amazon.in/dp/<ASIN>`; Amazon.com ASINs
   stay on Amazon.com, and non-product routes keep their original marketplace,
   path, and required query parameters. The effective `tag` replaces the source
-  tag; safe numeric product selectors (`th`, `psc`) are preserved. An
-  optional first-party short route (`/amazon/<code>?tag=<effective-tag>`) is
-  available without an external API key when `AMAZON_SHORT_LINK_BASE_URL` points
-  to an operator-owned HTTPS hostname routed to the dashboard. It keeps the tag
-  visible, validates it before redirecting, and falls back to the canonical URL
-  when no hostname is configured. Approval-role posts stay on native Amazon URLs.
-  Amazon-issued `amzn.to` codes must come from Amazon Associates/SiteStripe; the
-  app does not invent them.
+  tag; safe numeric product selectors (`th`, `psc`) are preserved.
+
+  **Compact Amazon links, without losing the creator ID:** set one
+  operator-owned HTTPS origin in `AFFILIATE_SHORT_LINK_BASE_URL` (for example
+  `https://go.your-domain.in`) and route it to this dashboard. Broadcast and
+  WhatsApp posts then use
+  `https://go.your-domain.in/a/<opaque-code>?tag=<creator-tag>`. The route only
+  redirects when **the configured origin + stored code + exact tag** match; its
+  only destination is the canonical Amazon item with that same tag. A forged
+  `/a/...` URL, a stale code, an attacker host, an altered tag, or an unsafe
+  stored target is rejected and never counted as an earning link. The previous
+  `/amazon/<code>` path remains live for already-posted links. The dashboard's
+  Save confirmation and **Test a Deal** preview mint and display the actual
+  clickable compact link plus its canonical redirect target. With no public
+  HTTPS origin configured, the safe canonical URL stays visible instead.
+
+  Approval-role posts deliberately remain native Amazon URLs. Amazon-issued
+  `amzn.to` codes must come from Amazon Associates/SiteStripe; the app does not
+  invent them.
+### One branded short-link domain (production setup)
+
+A short URL must have a real public HTTPS hostname; the app cannot safely make
+one out of `localhost`, a VM IP, a request `Host` header, or somebody else's
+shortener. Point a domain/subdomain you control (for example `go.example.in`) to
+the same reverse proxy as the dashboard, then put only the origin in the private
+VM `.env`:
+
+```dotenv
+AFFILIATE_SHORT_LINK_BASE_URL=https://go.example.in
+# Optional only when Amazon/HYPD need separate domains:
+# AMAZON_SHORT_LINK_BASE_URL=https://amz.example.in
+# MEESHO_SHORT_LINK_BASE_URL=https://go.example.in
+DASHBOARD_TRUST_PROXY=true  # only behind the one trusted TLS proxy
+```
+
+A minimal nginx virtual host can proxy the short domain to the existing dashboard
+service (keep the dashboard's admin routes firewalled/authenticated; only the
+validated `/a/`, legacy `/amazon/`, `/m/`, `/l/` redirects and `/healthz` are
+public):
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name go.example.in;
+    # certificate directives managed by your TLS/Certbot setup
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+```
+
+Restart `influencer-dashboard` and `influencer-deal-worker`, then use **Test a
+Deal** or save a channel. It shows a real `/a/<code>?tag=<creator-tag>` link;
+open it once and verify its `302` location is the printed canonical Amazon URL
+with the same tag. Do not enable generic Bitly merely to hide attribution:
+EarnKaro outputs (`ekaro.in`/`fktr.in`/…) are already network-short and retain
+our publisher proof; HYPD uses `/m/<code>`; approved LehLah uses `/l/<code>`.
+Raw, foreign, unresolved, or unverified links are not branded—they are converted,
+held for retry, or logged instead of being presented as ours.
+
 - HYPD is reserved for Meesho; raw Meesho URLs are never sent through EarnKaro.
   Existing HYPD affiliate URLs are first rewritten to the effective HYPD store
   ID (default `93944`). Raw Meesho URLs remain unchanged until HYPD's official
@@ -179,7 +234,14 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
   it never sends `CheckChatInviteRequest` or joins invite URLs. Use
   `TELEGRAM_OUTPUT_CHANNELS` and registered Telegram destination channels to
   keep output/ops dialogs out of source ingestion. Public source selectors match
-  by username; private invite hashes are never resolved.
+  by username/ID. A private invite hash is never resolved; its optional label
+  only matches an exact normalized joined-dialog title. If a private label does
+  not match, the worker logs a warning and falls back to eligible already-joined
+  dialogs (output dialogs and unconfigured account-owned channels stay excluded).
+  The live check in Setup Center shows this fallback; run
+  `python -m influencer_hub.cli doctor --telegram-sources` on the VM for the same
+  read-only selection audit. To keep ingestion narrow, add public usernames or
+  use the exact title of the joined private dialog as its source label.
 - `deploy/start_services.sh` starts supervised `deal-worker`, WhatsApp hub,
   dashboard, and VM watcher processes. Each service writes to `logs/` and is
   restarted by its launcher if it exits; `worker.py` additionally retries
@@ -319,7 +381,7 @@ never shows an earnings figure.
 
 | State | What it means |
 | --- | --- |
-| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link with our publisher · LehLah · our own `/amazon/` and `/m/` short links |
+| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link with our publisher · LehLah · a verified stored branded `/a/`, `/m/`, or `/l/` short link on our configured HTTPS origin |
 | 🔴 Leak | Amazon tagged for someone else (or untagged) · HYPD on another store · EarnKaro for another publisher · raw merchant with no EarnKaro conversion · raw Meesho |
 | ⚪ Neutral | Informational links, and generic short links whose attribution sits behind the redirect |
 
@@ -336,6 +398,77 @@ other setup change):
   deal when none of its links would carry our attribution
   (`skipped:no_commission_link`). It trades volume for earnings, so it starts
   off and the Radar recommends it only once it has seen free posts.
+* **Post unconverted links anyway** *(off by default)* — mirrored by
+  `ALLOW_UNCONVERTED_POSTS=1`. See the retry queue below: when a merchant link
+  did not convert, the deal is parked and retried, so this switch is only for an
+  operator who prefers volume over commission during a converter outage.
+
+#### Conversion guarantees, link shape by link shape
+
+Every link kind a source deal can carry has exactly one defined outcome:
+
+| Source link | What is posted |
+| --- | --- |
+| Amazon `/dp/<ASIN>`, `/gp/product/<ASIN>`, `?asin=<ASIN>`, search, storefront | One canonical `https://www.amazon.in/dp/<ASIN>` (or the same search/store page) carrying exactly **our** tag; every other `tag=` is removed |
+| Amazon short (`amzn.to`, `amzn.in`, `amzn.eu`, `amzn.asia`, `a.co`), long link for the same product in the same post | Both collapse into that one canonical OUR link |
+| Amazon short alone | Resolved over the network into `https://www.amazon.in/dp/<ASIN>?tag=<OURS>`; if the network cannot resolve it, the short is kept with our tag appended and the run logs `UNRESOLVED AMAZON SHORT` |
+| Flipkart / Shopsy / Myntra / Ajio / Nykaa / Croma / TataCliq… | The EarnKaro short link (`ekaro.in`, `fktr.in`, `myntr.it`, …) carrying our publisher id, verified by following the redirect |
+| Same merchants while EarnKaro is down | The deal is **parked** (see below) instead of posting a raw zero-commission URL |
+| Raw Meesho | Sent to EarnKaro when the fallback is on; otherwise posted as-is, because HYPD cannot mint an affiliate link from a product URL (with a `ZERO-COMMISSION post` log line) |
+| HYPD `hypd.store/<store>/afflink/<token>` | Retagged to our store id |
+| LehLah Meesho (`mcn=LEHLAH`, `af_siteid=lehlah`, `pid=lehlah`) | Kept exactly as it is — it already pays us |
+| Wrapper (`bit.ly`, `tinyurl.com`, `cutt.ly`, `dl.flipkart.com/…`, `fkrt.it/…`) | Resolved first: an Amazon destination becomes the canonical OUR link, a merchant destination is converted by EarnKaro; if the destination cannot be resolved the deal is parked and the run logs `UNRESOLVED WRAPPED LINK` |
+| Link written without `http://` (`flipkart.com/…`, `amazon.in/dp/…`, `amzn.to/…`) | Promoted to a real URL before anything else, then handled like every other link above (retagged/converted) |
+| Anything else (news, YouTube, blog) | Untouched |
+
+#### Add a channel → it posts with your tag
+
+Save a Telegram/WhatsApp destination and the hub uses the tag you gave, with no
+extra steps:
+
+| Where | What is saved | What is posted |
+| --- | --- | --- |
+| Easy Setup screen (`name` + your tag + channel) | creator tag + both channels (`status=ready`), every network you left switched on | the confirmation shows the exact link: `Amazon deals will post as https://www.amazon.in/dp/…?tag=<YOUR TAG> (verified ✅)` |
+| Creator page → Connect Channel (`@username` only) | channel inherits the creator's networks instead of switching them off | deals start flowing on the next worker poll — no restart |
+| A per-channel tag in `Alt Tag` | that channel's tag wins over the creator's | links on that channel are signed with the channel tag |
+
+A tag the Associates format cannot accept (`[A-Za-z0-9_-]{3,30}`, e.g. `ravi-21`)
+is **refused at save time** with the reason instead of being silently replaced by
+the fallback; an unusual-but-usable tag is accepted with a warning, and an empty
+tag is reported. The pipeline logs `AMAZON TAG UNUSABLE` once per channel if it
+ever has to fall back.
+
+#### Check a post before it goes out
+
+```bash
+python3 -m influencer_hub.cli audit-links --text "🔥 deal … bit.ly/abc"
+python3 -m influencer_hub.cli audit-links --file /tmp/post.txt --json
+python3 -m influencer_hub.cli audit-links --offline --text "…"   # no network calls
+```
+
+Read-only: prints every link, its kind, where a wrapper really points, the text
+that would be published and the verdict — exit code `0` when at least one of OUR
+links is present, `1` when the worker would hold the deal instead of posting it.
+
+#### The retry queue — no free posts, no lost deals
+
+When the only link in a deal is a merchant URL EarnKaro should have converted
+but did not (key missing/expired, API outage, transient error), posting now
+would earn nothing and posting later would be too late. The same applies to a
+wrapper link (`bit.ly`, `fkrt.it`, …) whose destination could not be resolved —
+until it is, nobody can say whether the link pays us. Instead the deal is
+parked in `deferred_deals` and the worker retries it every
+`DEFERRED_RETRY_DELAY_SECONDS` (5 min) up to `DEFERRED_MAX_ATTEMPTS` (6) times —
+the source cursor has already moved on, so this queue is the only way the deal
+can still go out. As soon as EarnKaro converts, the deal is posted with OUR
+link. If the outage outlasts the retry budget the deal is posted anyway and the
+log says why, so a converter outage delays a deal instead of dropping it.
+
+`/api/flow` reports the queue as `deferred: {waiting, retry_seconds,
+allow_unconverted_posts}` and adds a note to the flow board, and the Money page
+carries the `Post unconverted links anyway` switch. Two link shapes stay
+zero-commission by design and are logged rather than delayed: a raw Meesho URL
+(nothing can mint it) and a store EarnKaro does not cover.
 
 Per-creator and per-channel **⭐ Minimum Deal Quality** (S/A/B/C, resolved
 channel → creator → global) keeps a channel's attention for the deals worth a

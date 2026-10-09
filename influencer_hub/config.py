@@ -83,8 +83,13 @@ AMAZON_CREATORS_API_ENDPOINT = _env(
 )
 AMAZON_CREATORS_API_APP_NAME = _env("AMAZON_CREATORS_API_APP_NAME", "SMART_BUY")
 AMAZON_CREATORS_API_TIMEOUT = _int("AMAZON_CREATORS_API_TIMEOUT", 15)
-# Optional first-party short-link base (an HTTPS domain routed to the Flask app).
-# Blank keeps Amazon's canonical /dp/<ASIN>?tag=... links.
+# One optional, operator-owned HTTPS origin routed to this Flask app.  It powers
+# compact, verified first-party redirects for Amazon (/a/...), HYPD (/m/...) and
+# approved LehLah links (/l/...).  The network-specific variables below remain
+# available when separate branded domains are wanted.
+AFFILIATE_SHORT_LINK_BASE_URL = _env("AFFILIATE_SHORT_LINK_BASE_URL", "").rstrip("/")
+# Optional Amazon-only override. Blank inherits AFFILIATE_SHORT_LINK_BASE_URL;
+# if both are blank, Amazon stays canonical /dp/<ASIN>?tag=... .
 AMAZON_SHORT_LINK_BASE_URL = _env("AMAZON_SHORT_LINK_BASE_URL", "").rstrip("/")
 
 # ----- Telegram (the account that reads joined source dialogs and posts) -----
@@ -130,6 +135,11 @@ MEESHO_EARNKARO_FALLBACK = _bool("MEESHO_EARNKARO_FALLBACK", True)
 # Hold back deals whose links would all post without our attribution. Volume vs
 # earnings trade-off, so the operator decides; the Money Radar recommends it.
 ONLY_EARNING_DEALS = _bool("ONLY_EARNING_DEALS", False)
+# A deal whose only links are raw merchant/raw Meesho URLs (EarnKaro down, bad
+# key, or an unsupported merchant) pays exactly zero. Default: hold it back for
+# this cycle instead of spending a post — the worker re-reads the source post,
+# so it goes out as soon as EarnKaro converts it. Set to 1 to post anyway.
+ALLOW_UNCONVERTED_POSTS = _bool("ALLOW_UNCONVERTED_POSTS", False)
 
 # ----- EarnKaro (optional configured network for eligible non-Amazon links) -----
 EARNKARO_API_KEY = _env("EARNKARO_API_KEY")
