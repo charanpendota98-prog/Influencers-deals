@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
-    config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
+    amazon_shortlinks, config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
     puller, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
@@ -812,33 +812,26 @@ def lock_setup_changes():
     return redirect(_local_referrer(with_reauth=False) or url_for("index"))
 
 
-@app.route("/amazon/<code>")
+@app.route("/a/<code>")
+@app.route("/amazon/<code>")  # legacy links stay live after compact /a/ rollout
 def amazon_short_link(code: str):
-    """Resolve a transparent first-party short link to a tagged Amazon.in item."""
-    if not re.fullmatch(r"[A-Za-z0-9_-]{8}", code):
+    """Resolve one stored compact Amazon link to its exact tagged product target."""
+    if not amazon_shortlinks.is_valid_short_code(code):
         abort(404)
     record = db.get_amazon_short_link(code)
     if not record:
         abort(404)
 
     requested_tags = request.args.getlist("tag")
-    if len(requested_tags) != 1 or requested_tags[0].strip() != record["associate_tag"]:
+    tag = str(record.get("associate_tag") or "")
+    if len(requested_tags) != 1 or requested_tags[0].strip() != tag:
         abort(404)
 
-    target = str(record["target_url"])
-    parsed = urlparse(target)
-    target_tags = [
-        value for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if key.lower() == "tag" and value
-    ]
-    if (
-        parsed.scheme != "https"
-        or (parsed.hostname or "").lower() not in {"amazon.in", "www.amazon.in"}
-        or not re.fullmatch(r"/dp/[A-Za-z0-9]{10}", parsed.path, re.I)
-        or target_tags != [record["associate_tag"]]
-    ):
-        # Only redirect to generated Amazon.in product links; never accept an
-        # arbitrary destination from the short-link URL or query string.
+    target = str(record.get("target_url") or "")
+    if not amazon_shortlinks.is_valid_amazon_target(target, tag):
+        # Only redirect to a generated canonical Amazon product URL with this
+        # exact creator tag; never treat the DB or query string as an open
+        # redirect instruction.
         abort(404)
     return redirect(target, code=302)
 
@@ -1102,6 +1095,7 @@ def setup():
         current_ek_key=current_ek_key,
         current_ek_pubid=current_ek_pubid,
         current_hypd_store=current_hypd_store,
+        short_links=amazon_shortlinks.short_link_status(),
         default_amazon_tag=config.AMAZON_ASSOCIATE_TAG,
         sources_added=request.args.get("sources_added", type=int),
         source_saved=request.args.get("source_saved", type=int),
@@ -2068,6 +2062,10 @@ def _routing_preview(
     tag = str(amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG
     store = str(hypd_store_id or "").strip() or _effective_hypd_store_id()
     ek_ready = _earnkaro_ready()
+    short_link_status = amazon_shortlinks.short_link_status()
+    compact_amazon_active = bool(
+        amazon_on and channel_role != "approval" and short_link_status["active"]
+    )
     try:
         from influencer_hub import accounts
 
@@ -2084,10 +2082,22 @@ def _routing_preview(
         if kind == "amazon":
             if amazon_on:
                 row["result"] = link_router.apply_amazon_tag(sample, tag)
-                row["note"] = (
-                    f"Posted with this creator's OWN tag ({tag}) — Amazon commission is theirs. "
-                    "Never shortened away from Amazon."
-                )
+                if channel_role == "approval":
+                    row["note"] = (
+                        f"Posted with this creator's OWN tag ({tag}) as a native Amazon URL. "
+                        "Approval channels deliberately stay native."
+                    )
+                elif compact_amazon_active:
+                    row["note"] = (
+                        f"Posted with this creator's OWN tag ({tag}); broadcast/WhatsApp then "
+                        f"uses a verified compact {short_link_status['base_url']}/a/<code>?tag={tag} "
+                        "that redirects only to this canonical target."
+                    )
+                else:
+                    row["note"] = (
+                        f"Posted with this creator's OWN tag ({tag}) as the canonical Amazon URL. "
+                        "Set one public HTTPS branded short-link origin to make it compact."
+                    )
             else:
                 row["state"] = "off"
                 row["note"] = "Amazon is OFF — this link is removed from the post."
@@ -2153,6 +2163,11 @@ def _routing_preview(
         "tag": tag,
         "tag_usable": tag_usable,
         "tag_proof": proof,
+        "short_links": {
+            **short_link_status,
+            "active_for_this_channel": compact_amazon_active,
+            "native_for_approval": bool(amazon_on and channel_role == "approval"),
+        },
         "earnkaro_on": ek_on,
         "hypd_on": hypd_on,
         "earnkaro_ready": ek_ready,
@@ -2225,7 +2240,7 @@ def _channel_ready_message(inf_id: int, influencer: dict, ident: str, role: str,
         or str(influencer.get("amazon_tag") or "").strip()
         or config.AMAZON_ASSOCIATE_TAG
     )
-    proof = commission_guard.amazon_tag_proof(tag)
+    proof = commission_guard.amazon_tag_proof(tag, compact=(role != "approval"))
     parts = [
         f"✅ {ident} connected to {influencer['name']} as a "
         f"{'approval' if role == 'approval' else 'broadcast'} channel."
@@ -2235,6 +2250,13 @@ def _channel_ready_message(inf_id: int, influencer: dict, ident: str, role: str,
         + proof["posted_link"]
         + (" (verified ✅)" if proof["ok"] else " (⚠ not verified)")
     )
+    if proof.get("shortened"):
+        parts.append(
+            "Click proof: this compact URL redirects only to "
+            + proof["redirect_target"]
+        )
+    elif proof.get("short_link_status", {}).get("active") and proof.get("short_link_error"):
+        parts.append("⚠ " + proof["short_link_error"] + " Using the canonical tagged URL instead.")
     if proof["fallback_used"]:
         parts.append(
             "⚠ No usable tag is set for this creator/channel, so the configured "
@@ -2498,7 +2520,9 @@ def easy_setup():
             session["_easy_setup_result"] = applied
             from influencer_hub import commission_guard
 
-            proof = commission_guard.amazon_tag_proof(values["amazon_tag"])
+            proof = commission_guard.amazon_tag_proof(
+                values["amazon_tag"], compact=bool(main_ident)
+            )
             flash(
                 f"✅ {applied['name']} is set up and posting. "
                 f"Amazon → {values['amazon_tag']}"
@@ -2506,11 +2530,15 @@ def easy_setup():
                 + (f", Meesho → HYPD store {values['hypd_store_id']}" if values["allow_hypd"] else ""),
                 "success",
             )
-            flash(
+            proof_message = (
                 "Amazon deals will post as " + proof["posted_link"]
-                + (" (verified ✅)" if proof["ok"] else " (⚠ not verified — check the tag)"),
-                "success" if proof["ok"] else "warning",
+                + (" (verified ✅)" if proof["ok"] else " (⚠ not verified — check the tag)")
             )
+            if proof.get("shortened"):
+                proof_message += " → opens only " + proof["redirect_target"]
+            elif proof.get("short_link_status", {}).get("active") and proof.get("short_link_error"):
+                proof_message += " ⚠ " + proof["short_link_error"] + " Using canonical tagged URL instead."
+            flash(proof_message, "success" if proof["ok"] else "warning")
             if tag_note:
                 flash("⚠ " + tag_note, "warning")
             return redirect(url_for("easy_setup", done=applied["inf_id"]))
@@ -3156,7 +3184,10 @@ def api_test_render_deal():
             "3. Flipkart Shoes: https://www.flipkart.com/shoes/p/itm123456"
         )
 
-    from influencer_hub import earnkaro, link_router
+    from influencer_hub import advanced_shortener, earnkaro, link_router
+
+    requested_amz_tag = amz_tag or config.AMAZON_ASSOCIATE_TAG
+    effective_amz_tag = link_router.effective_amazon_tag(requested_amz_tag)
 
     if only_amazon:
         allow_amazon, allow_earnkaro, allow_hypd = True, False, False
@@ -3180,7 +3211,7 @@ def api_test_render_deal():
     if link_router.has_opaque_link(sample_text):
         try:
             sample_text, unresolved_wrappers = _run(asyncio.wait_for(
-                link_router.resolve_opaque_links_in_text_async(sample_text, amz_tag), timeout=12
+                link_router.resolve_opaque_links_in_text_async(sample_text, effective_amz_tag), timeout=12
             ))
         except Exception:
             unresolved_wrappers = link_router.unresolved_opaque_links(sample_text)
@@ -3217,18 +3248,35 @@ def api_test_render_deal():
 
     rendered = link_router.render_for_influencer(
         filtered_text,
-        amazon_tag=amz_tag or config.AMAZON_ASSOCIATE_TAG,
+        amazon_tag=effective_amz_tag,
         earnkaro_links=earnkaro_links,
         role=role,
         hypd_store_id=hypd_store,
     )
+    # The preview must use the same final compacting pass as the worker. This
+    # allocates only a local stored redirect record (no deal is dispatched), so
+    # the returned /a/<code> link is genuinely clickable evidence.
+    if role != "approval":
+        try:
+            rendered = _run(advanced_shortener.shorten_our_links_advanced(
+                rendered, effective_amz_tag, hypd_store
+            ))
+            if config.LEHLAH_SHORTLINKS_ENABLED:
+                rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
+            rendered = link_router.deduplicate_urls_in_text(rendered)
+        except Exception as exc:
+            warnings.append(
+                f"Branded shortening preview could not complete ({type(exc).__name__}); "
+                "the canonical attributed links are shown instead."
+            )
+
     from influencer_hub import commission_guard
 
     expected_pubid = (
         db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or ""
     ).strip()
     our_links = commission_guard.our_affiliate_urls(
-        rendered, amz_tag or config.AMAZON_ASSOCIATE_TAG, hypd_store, expected_pubid,
+        rendered, effective_amz_tag, hypd_store, expected_pubid,
         source_text=sample_text,
     )
     if our_links:
@@ -3237,6 +3285,7 @@ def api_test_render_deal():
         verdict = "held_for_retry"
     else:
         verdict = "no_our_link"
+    preview_short_link_status = amazon_shortlinks.short_link_status()
     return jsonify({
         "ok": True,
         "input": sample_text,
@@ -3251,6 +3300,13 @@ def api_test_render_deal():
             "earnkaro": bool(allow_earnkaro),
             "hypd": bool(allow_hypd),
             "only_amazon": bool(only_amazon),
+        },
+        "amazon_tag": effective_amz_tag,
+        "short_links": {
+            **preview_short_link_status,
+            "active_for_this_preview": bool(
+                role != "approval" and allow_amazon and preview_short_link_status["active"]
+            ),
         },
     })
 

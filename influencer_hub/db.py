@@ -1597,21 +1597,44 @@ def _amazon_short_code(target_url: str, salt: int) -> str:
 
 
 def get_or_create_amazon_short_link(target_url: str, associate_tag: str) -> str:
-    """Persist a stable first-party code for a tagged Amazon.in product URL.
+    """Persist a stable first-party code for one canonical tagged Amazon item.
 
-    The public redirect endpoint separately validates the stored destination
-    and requires this same tag as a query parameter, avoiding an open redirect
-    and keeping the Associate ID visible on the short URL.
+    This is deliberately more restrictive than "any Amazon URL": only the
+    canonical ``/dp/<10-char-ASIN>`` path, a single Associates tag and harmless
+    numeric variant selectors are stored.  The public redirect route validates
+    the same invariant before every redirect, so this table never becomes a
+    generic open-redirect list.
     """
     tag = str(associate_tag or "").strip()
-    parsed = urlparse(str(target_url or ""))
-    query_tags = parse_qs(parsed.query).get("tag", [])
+    try:
+        parsed = urlparse(str(target_url or ""))
+        port = parsed.port
+    except ValueError:
+        parsed = urlparse("")
+        port = -1
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query_tags = [value for key, value in query if key.casefold() == "tag"]
+    selectors: set[str] = set()
+    safe_query = True
+    for key, value in query:
+        lower = key.casefold()
+        if lower == "tag":
+            continue
+        if lower not in {"th", "psc"} or not value.isdigit() or lower in selectors:
+            safe_query = False
+            break
+        selectors.add(lower)
     if (
         parsed.scheme != "https"
         or (parsed.hostname or "").lower() not in {"amazon.in", "www.amazon.in"}
-        or not parsed.path.startswith("/dp/")
+        or parsed.username
+        or parsed.password
+        or port is not None
+        or parsed.fragment
+        or not re.fullmatch(r"/dp/[A-Za-z0-9]{10}", parsed.path, re.I)
         or not tag
         or query_tags != [tag]
+        or not safe_query
     ):
         raise ValueError("Only canonical, tagged Amazon.in product URLs can be shortened")
 

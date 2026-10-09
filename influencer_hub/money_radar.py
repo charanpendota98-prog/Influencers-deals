@@ -12,9 +12,13 @@ what any link inspection can promise.
 """
 from __future__ import annotations
 
+import re
 from urllib.parse import parse_qsl, urlparse
 
-from . import advanced_shortener, link_router
+from . import (
+    advanced_shortener, amazon_shortlinks, hypd_shortlinks, lehlah_shortlinks,
+    link_router,
+)
 
 STATE_EARNING = "earning"
 STATE_LEAK = "leak"
@@ -72,6 +76,32 @@ def _is_generic_short(url: str) -> bool:
     )
 
 
+def _verified_branded_short_kind(url: str, tag: str, store: str) -> tuple[str, str] | None:
+    """Return an earning state only for one stored, trusted-origin compact URL."""
+    if tag and amazon_shortlinks.is_our_amazon_short_url(url, tag):
+        return "amazon", f"Verified branded Amazon short link (tag {tag})"
+    if store and hypd_shortlinks.is_our_hypd_short_url(url, store):
+        return "hypd", f"Verified branded HYPD short link (store {store})"
+    if lehlah_shortlinks.is_our_lehlah_short_url(url):
+        return "lehlah", "Verified branded LehLah short link"
+    return None
+
+
+def _branded_short_shape(url: str) -> str:
+    """Identify a forged/stale compact route instead of calling it earning."""
+    try:
+        path = urlparse(str(url or "")).path
+    except (TypeError, ValueError):
+        return ""
+    if re.fullmatch(r"/(?:a|amazon)/[A-Za-z0-9_-]{8}", path, re.I):
+        return "amazon"
+    if re.fullmatch(r"/m/[A-Za-z0-9_-]{8}", path):
+        return "hypd"
+    if re.fullmatch(r"/l/[A-Za-z0-9_-]{8}", path):
+        return "lehlah"
+    return ""
+
+
 def classify_link(
     url: str,
     amazon_tag: str = "",
@@ -83,21 +113,21 @@ def classify_link(
     store = str(hypd_store or "").strip()
     pubid = str(earnkaro_pubid or "").strip()
 
-    # First-party short links are only ever minted for OUR links, so they are
-    # checked before the host-based classifier sees an unknown domain.
-    if "/amazon/" in url and "tag=" in url:
-        entry = {"url": url, "kind": "amazon", "state": STATE_NEUTRAL, "reason": ""}
-        if tag and f"tag={tag}" in url:
-            entry["state"] = STATE_EARNING
-            entry["reason"] = f"Our Amazon short link (tag {tag})"
-        else:
-            entry["state"] = STATE_LEAK
-            entry["reason"] = f"Amazon short link tagged for someone else (expected {tag})"
-        return entry
-
-    if "/m/" in url and _host_of(url) not in {"hypd.store", "www.hypd.store"}:
-        entry = {"url": url, "kind": "hypd", "state": STATE_EARNING, "reason": "Our HYPD short link"}
-        return entry
+    # A first-party-looking path is not proof. It must match the configured
+    # origin and one stored redirect record whose target carries this account's
+    # attribution. Otherwise it is a forged/stale link and counted as a leak.
+    branded = _verified_branded_short_kind(url, tag, store)
+    if branded:
+        kind, reason = branded
+        return {"url": url, "kind": kind, "state": STATE_EARNING, "reason": reason}
+    claimed_kind = _branded_short_shape(url)
+    if claimed_kind:
+        return {
+            "url": url,
+            "kind": claimed_kind,
+            "state": STATE_LEAK,
+            "reason": f"Unverified branded-looking {claimed_kind} short link — not counted as ours",
+        }
 
     # EarnKaro short links do not live on a merchant host, so they are checked
     # before the host-based classifier files them under "other".

@@ -19,7 +19,6 @@ from typing import Iterable
 
 from . import (
     accounts,
-    amazon_shortlinks,
     bitly_client,
     config,
     db,
@@ -586,7 +585,7 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
             )
             # ADVANCED SHORTENER: ONLY OUR affiliate links are shortened
             # - HYPD links with OUR store ID (93944) -> first-party /m/<code> or Bitly fallback
-            # - Amazon links with OUR tag (e.g. mytag-21) -> first-party /amazon/<code>?tag= or Bitly fallback
+            # - Amazon links with OUR tag (e.g. mytag-21) -> verified first-party /a/<code>?tag= or Bitly fallback
             # Generic merchant links (Flipkart etc.) are already handled via EarnKaro's ekaro.in, no extra Bitly needed
             # This advanced system ensures ONLY MANA LINK KI MATHARME short avtundi, vere vallavi kaadu
             if role != "approval":

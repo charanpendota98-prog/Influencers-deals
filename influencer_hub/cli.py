@@ -417,6 +417,23 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
         db_ok = False
     checks.append(("Database OK", db_ok))
 
+    short_link_note = ""
+    if getattr(args, "short_links", False):
+        from . import amazon_shortlinks
+
+        status = amazon_shortlinks.short_link_status()
+        short_ok = bool(status["active"])
+        checks.append((
+            "Branded affiliate short-link HTTPS origin "
+            + (status["base_url"] if short_ok else "configured"),
+            short_ok,
+        ))
+        short_link_note = (
+            "Local configuration is valid. This check does not make an external request; "
+            "save/Test a Deal, then open the returned /a/<code> URL once to verify your DNS/TLS proxy."
+            if short_ok else status["reason"]
+        )
+
     source_note = ""
     if getattr(args, "telegram_sources", False):
         from . import puller
@@ -456,6 +473,8 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
         print(f"  [{'OK' if ok else 'XX'}] {name}")
     if source_note:
         print(f"  [WARN] {source_note}")
+    if short_link_note:
+        print(f"  [INFO] {short_link_note}")
     all_ok = all(o for _, o in checks)
     verdict = (
         "selected checks passed (this is not an end-to-end delivery test)"
@@ -550,6 +569,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run a read-only Telegram source-selection check; never checks invites or reads history",
     )
     d.add_argument("--timeout", type=int, default=30, help="live Telegram source-check timeout in seconds")
+    d.add_argument(
+        "--short-links",
+        action="store_true",
+        help="also validate the local branded HTTPS short-link origin (does not make an external request)",
+    )
     d.set_defaults(func=_cmd_doctor)
 
     sub.add_parser("status", help="overview of everything").set_defaults(func=_cmd_status)

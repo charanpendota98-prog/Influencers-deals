@@ -125,6 +125,9 @@ def test_account_applier_embeds_the_real_module_byte_for_byte():
 def test_test_copies_are_byte_identical_to_the_real_tests():
     copies = sorted(TESTS_COPY_DIR.glob("test_*.py"))
     assert copies, "patches/tests/ is empty"
+    assert (TESTS_COPY_DIR / "test_branded_short_links.py").is_file(), (
+        "the compact branded-link proof must ship with --with-tests"
+    )
     for copy in copies:
         real = REPO_ROOT / "tests" / copy.name
         assert real.is_file(), f"{copy.name} has no counterpart in tests/"

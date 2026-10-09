@@ -20,9 +20,12 @@ _SHORT_CODE_RE = re.compile(r"[A-Za-z0-9_-]{8}\Z")
 
 def configured_base_url(value: str | None = None) -> str:
     """Return a safe HTTPS origin, or an empty string to disable shortening."""
-    base = str(
-        value if value is not None else config.MEESHO_SHORT_LINK_BASE_URL
-    ).strip().rstrip("/")
+    configured = (
+        value
+        if value is not None
+        else (config.MEESHO_SHORT_LINK_BASE_URL or config.AFFILIATE_SHORT_LINK_BASE_URL)
+    )
+    base = str(configured or "").strip().rstrip("/")
     if not base:
         return ""
     parsed = urlparse(base)
@@ -85,6 +88,63 @@ def shorten_hypd_links(text: str, base_url: str | None = None) -> str:
         code = db.get_or_create_hypd_short_link(url)
         rendered = rendered.replace(url, f"{base}/m/{code}")
     return rendered
+
+
+def _same_origin(left, right) -> bool:
+    try:
+        left_port = left.port
+        right_port = right.port
+    except ValueError:
+        return False
+    return (
+        left.scheme.lower() == right.scheme.lower() == "https"
+        and (left.hostname or "").lower() == (right.hostname or "").lower()
+        and left_port == right_port
+    )
+
+
+def is_our_hypd_short_url(
+    url: str,
+    store_id: str,
+    base_url: str | None = None,
+) -> bool:
+    """Return true only for a stored, trusted-origin HYPD compact link.
+
+    A random ``/m/abcdefgh`` URL is not proof of commission.  It must be on
+    this deployment's configured branded origin and map to the requested HYPD
+    store's clean affiliate target in our DB.
+    """
+    base = configured_base_url(base_url)
+    store = str(store_id or "").strip()
+    if not base or not store:
+        return False
+    try:
+        parsed = urlparse(str(url or ""))
+        trusted = urlparse(base)
+        if (
+            not _same_origin(parsed, trusted)
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            return False
+    except (TypeError, ValueError):
+        return False
+    match = re.fullmatch(r"/m/([A-Za-z0-9_-]{8})", parsed.path)
+    if not match:
+        return False
+    try:
+        record = db.get_hypd_short_link(match.group(1))
+    except Exception:
+        return False
+    target = str((record or {}).get("target_url") or "")
+    return bool(
+        record
+        and str(record.get("store_id") or "") == store
+        and is_valid_hypd_affiliate_url(target)
+        and re.fullmatch(rf"/{re.escape(store)}/afflink/[A-Za-z0-9_-]+", urlparse(target).path)
+    )
 
 
 def is_valid_short_code(code: str) -> bool:

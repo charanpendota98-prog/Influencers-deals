@@ -45,8 +45,17 @@
 </table>
 {% if preview.tag_proof %}
   <p class="routing-note{% if not preview.tag_usable %} is-warn{% endif %}">
-    Amazon deals will post this exact link: <code class="routing-result">{{ preview.tag_proof }}</code>
-    {% if preview.tag_usable %}✅ with the tag you gave{% else %}⚠ this tag will be replaced by the configured fallback — check it{% endif %}
+    {% if preview.short_links.active_for_this_channel %}
+      Canonical Amazon target: <code class="routing-result">{{ preview.tag_proof }}</code> ✅ with the tag you gave.<br />
+      <strong>Compact branded links are ON:</strong> broadcast/WhatsApp posts use
+      <code class="routing-result">{{ preview.short_links.base_url }}/a/&lt;code&gt;?tag={{ preview.tag }}</code>.
+      Save the channel or use Test a Deal to mint the exact clickable code; it redirects only to the target above.
+    {% elif preview.short_links.native_for_approval %}
+      Approval posts stay native by design: <code class="routing-result">{{ preview.tag_proof }}</code> ✅ with the tag you gave.
+    {% else %}
+      Amazon deals will post this canonical link: <code class="routing-result">{{ preview.tag_proof }}</code>
+      {% if preview.tag_usable %}✅ with the tag you gave. {{ preview.short_links.reason }}{% else %}⚠ this tag will be replaced by the configured fallback — check it{% endif %}
+    {% endif %}
   </p>
 {% endif %}
 {% if preview.earnkaro_on and not preview.earnkaro_ready %}

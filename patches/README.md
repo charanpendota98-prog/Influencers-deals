@@ -29,7 +29,7 @@ git apply patches/private-source-fallback.patch
 git apply patches/link-conversion-fixes.patch
 python3 patches/apply-private-source-fallback.py --with-tests
 python3 patches/apply-link-conversion-fixes.py --with-tests
-python3 -m pytest -q                         # 374 passed on this revision
+python3 -m pytest -q                         # 380 passed on this revision
 ```
 
 On a VM already at the merged `c6fa901` release, only the two appliers are
@@ -45,7 +45,7 @@ writes nothing on mismatch; the second one tells you if the first is missing.
 | `deal-flow.patch` | 474 | `influencer_hub/` + `dashboard/` — per-source deal flow, `/api/flow`, the Easy Setup card |
 | `docs.patch` | 217 | `HANDOFF.md` — the historical handoff at the previous release |
 | `private-source-fallback.patch` | follow-up | named private-invite fallback, diagnostics and current handoff updates |
-| `link-conversion-fixes.patch` | follow-up 2 | Amazon short coverage (`amzn.eu`/`amzn.asia`/`a.co`), conversion retry queue, approval dedup, guard/flow-board updates, README + HANDOFF |
+| `link-conversion-fixes.patch` | follow-up 2 | Amazon wrapper coverage + verified compact branded `/a/` links, conversion retry queue, approval dedup, strict guard/Money-Radar proof, flow-board/docs |
 
 The first five patch files are the historical replay path (`0bf913f` to the
 merged pre-fallback release). The source-fallback patch is based on that merged
@@ -63,12 +63,29 @@ python3 patches/apply-private-source-fallback.py --with-tests
 python3 patches/apply-link-conversion-fixes.py --check
 python3 patches/apply-link-conversion-fixes.py --dry-run
 python3 patches/apply-link-conversion-fixes.py --with-tests
-python3 -m influencer_hub.cli doctor --telegram-sources
-python3 -m pytest -q                          # 374 passed
+python3 -m influencer_hub.cli doctor --telegram-sources --short-links
+python3 -m pytest -q                          # 380 passed
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
 curl -s localhost:5000/api/flow | head -c 400
 ```
+
+### Compact branded links after applying the bundle
+
+The code is ready by default, but a public short URL requires a domain you own.
+Point one HTTPS hostname at the dashboard's reverse proxy and add this only to
+the VM's private `.env` (never commit it):
+
+```dotenv
+AFFILIATE_SHORT_LINK_BASE_URL=https://go.your-domain.in
+```
+
+Restart the dashboard and worker, run
+`python3 -m influencer_hub.cli doctor --short-links`, then save a channel or
+use **Test a Deal**. The resulting `/a/<code>?tag=<creator-tag>` URL must return
+one `302` to the shown canonical Amazon target with that exact creator tag.
+Amazon approval channels intentionally stay native. EarnKaro outputs are already
+network-short and are not double-wrapped.
 
 The four original appliers below remain useful for VMs missing those earlier
 changes; do not rerun them on a release where their checks say already applied.

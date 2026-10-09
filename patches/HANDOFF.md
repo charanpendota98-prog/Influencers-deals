@@ -1,13 +1,13 @@
 # HANDOFF — Influencers-deals
 
-**Updated:** 2026-10-07 (UTC)
+**Updated:** 2026-10-10 (Asia/Kolkata)
 
 **Session branch:** `arena/9056711b-influencers-deals`
 
 **Checkout base:** `c6fa901` — PR #7 merged to `main`
 
-**Branch commits:** `fb70433` (source fallback, PR #8) and `f46f165` (link
-conversion audit — see section 1b).
+**Branch commits:** `fb70433` through `9c6fa4c` are already pushed on PR #8;
+the current short-link hardening follows on this same branch (see section 1e).
 
 Read this before deploying. This handoff describes the current checkout; older
 notes referring to `0bf913f`, an unmerged branch, or the earlier VM rollout are
@@ -191,6 +191,68 @@ bad tag is refused and **no channel is created**; the Easy Setup screen shows
 `tag=<typed tag>` in the confirmation; an untagged creator logs the fallback
 warning exactly once.
 
+### 1e. Compact branded links — click opens the exact creator-tagged target (`current`)
+
+The earlier tree already had optional first-party short routes, but an audit of
+what counted as an "OUR" link found a correctness gap: the guard and Money Radar
+trusted names such as `go.*`, `/amazon/…`, or `/m/…` without proving that the
+link belonged to this deployment. A lookalike URL on another host could be
+reported as earning. That is not acceptable for commission reporting.
+
+This round makes compact links both shorter **and** verifiable:
+
+13. **One simple domain setting:** put one operator-owned public HTTPS origin in
+    `AFFILIATE_SHORT_LINK_BASE_URL`, for example `https://go.your-domain.in`.
+    It is inherited by Amazon, HYPD and approved LehLah links; the older
+    `AMAZON_SHORT_LINK_BASE_URL` / `MEESHO_SHORT_LINK_BASE_URL` remain optional
+    per-network overrides. No VM IP, localhost, path, credentials or query
+    string is accepted as the origin.
+14. **Amazon broadcast / WhatsApp links are now compact:**
+    `https://go.your-domain.in/a/<8-char-code>?tag=<creator-tag>`. The code is
+    durable; it redirects with `302` only to its stored canonical
+    `https://www.amazon.in/dp/<ASIN>?…&tag=<the-same-creator-tag>` target.
+    The older `/amazon/<code>` route remains live, so existing posts do not
+    break. Approval-channel links deliberately remain native Amazon URLs.
+15. **No name-based trust:** a compact URL earns / passes the guard only when
+    all facts agree: **configured HTTPS origin + exact route/code + durable DB
+    record + safe target + exact tag/store**. A forged host, changed tag,
+    extra attribution query, stale/deleted code or unsafe target is a hard guard
+    failure, is sanitized before posting, and Money Radar counts it as a leak —
+    never as OUR commission.
+16. **Every saved/tested link is proof:** channel save and Easy Setup now show
+    the actual compact Amazon URL (when configured) and `→ opens only <canonical
+    target>`. `/api/test-render-deal` runs the same final compacting pass as the
+    worker, allocates a local route only (no post) and returns that real clickable
+    URL in `our_links`. The Setup Center shows **ACTIVE** vs **CANONICAL MODE**
+    with the exact safe `.env` setting; `doctor --short-links` validates the
+    local origin configuration without making an external request.
+17. **All eligible existing OUR links stay short safely:** Amazon `/a/`, HYPD
+    `/m/`, approved LehLah `/l/`; EarnKaro's `ekaro.in`/`fktr.in` output is
+    already network-short and is not double-wrapped (so its publisher proof is
+    not obscured). Raw/foreign/unresolved URLs are converted, held/retried or
+    logged—not branded as ours.
+
+Proof: six adversarial tests cover one common origin through the real pipeline,
+Amazon code/tag redirect and legacy compatibility, incorrect-tag/open-redirect
+attempts, forged/stale foreign routes, unsafe bases/targets, save/test preview,
+and HYPD/LehLah target validation. Full suite: **380 passed**. This proves the
+app's redirect and attribution logic locally; public DNS/TLS reachability still
+requires the operator to point an owned hostname at the VM proxy and click one
+returned link after deployment—do not claim external reachability before that
+real check.
+
+**VM enablement (private `.env`, never commit it):**
+
+```dotenv
+AFFILIATE_SHORT_LINK_BASE_URL=https://go.your-domain.in
+# DASHBOARD_TRUST_PROXY=true only when one trusted TLS proxy forwards this host
+```
+
+Route that HTTPS host to the dashboard service, restart dashboard + worker, then
+run `python3 -m influencer_hub.cli doctor --short-links`; save a channel or run
+**Test a Deal**, open the returned `/a/<code>?tag=<creator-tag>` link once and
+verify its redirect location has the identical creator tag.
+
 Operator tool (read-only, nothing is posted): 
 
 ```bash
@@ -222,10 +284,10 @@ From the repo root:
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m pytest -q
-python3 -m influencer_hub.cli doctor --telegram-sources
+python3 -m influencer_hub.cli doctor --telegram-sources --short-links
 ```
 
-The test suite on this revision is expected to report **374 passed**. The
+The test suite on this revision is expected to report **380 passed**. The
 source doctor is read-only: it enumerates joined dialogs, checks the same
 selection rules as the worker, does not read message history, and does not
 check or join invites. It requires valid Telegram credentials/session on the
@@ -253,9 +315,9 @@ python3 patches/apply-private-source-fallback.py --with-tests
 python3 patches/apply-link-conversion-fixes.py --check
 python3 patches/apply-link-conversion-fixes.py --dry-run
 python3 patches/apply-link-conversion-fixes.py --with-tests
-python3 -m influencer_hub.cli doctor --telegram-sources
+python3 -m influencer_hub.cli doctor --telegram-sources --short-links
 python3 -m influencer_hub.cli audit-links --offline --text "Deal https://www.amazon.in/dp/B08XYZ1234?tag=old-21"   # expect exit 0 + [OUR] amazon
-python3 -m pytest -q            # expect 374 passed
+python3 -m pytest -q            # expect 380 passed
 sudo systemctl restart influencer-deal-worker influencer-dashboard
 systemctl is-active influencer-deal-worker influencer-dashboard
 journalctl -u influencer-deal-worker -n 100 --no-pager

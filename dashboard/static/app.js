@@ -356,9 +356,17 @@
         <td>${row.result ? `<code class="routing-result">${escapeHtml(row.result)}</code>` : ''}
           <span class="routing-note">${escapeHtml(row.note)}</span></td>
       </tr>`).join('');
-    const proof = preview.tag_proof
-      ? `<p class="routing-note${preview.tag_usable ? '' : ' is-warn'}">Amazon deals will post this exact link: <code class="routing-result">${escapeHtml(preview.tag_proof)}</code> ${preview.tag_usable ? '✅ with the tag you gave' : '⚠ this tag will be replaced by the configured fallback — check it'}</p>`
-      : '';
+    const shortLinks = preview.short_links || {};
+    let proof = '';
+    if (preview.tag_proof) {
+      if (shortLinks.active_for_this_channel) {
+        proof = `<p class="routing-note${preview.tag_usable ? '' : ' is-warn'}">Canonical Amazon target: <code class="routing-result">${escapeHtml(preview.tag_proof)}</code> ${preview.tag_usable ? '✅ with the tag you gave' : '⚠ check this tag'}<br><strong>Compact branded links are ON:</strong> broadcast/WhatsApp posts use <code class="routing-result">${escapeHtml(shortLinks.base_url)}/a/&lt;code&gt;?tag=${escapeHtml(preview.tag)}</code>. Save the channel or use Test a Deal to mint the exact clickable code; it redirects only to the target above.</p>`;
+      } else if (shortLinks.native_for_approval) {
+        proof = `<p class="routing-note">Approval posts stay native by design: <code class="routing-result">${escapeHtml(preview.tag_proof)}</code> ✅ with the tag you gave.</p>`;
+      } else {
+        proof = `<p class="routing-note${preview.tag_usable ? '' : ' is-warn'}">Amazon deals will post this canonical link: <code class="routing-result">${escapeHtml(preview.tag_proof)}</code> ${preview.tag_usable ? `✅ with the tag you gave. ${escapeHtml(shortLinks.reason || '')}` : '⚠ this tag will be replaced by the configured fallback — check it'}</p>`;
+      }
+    }
     return `
       <p class="routing-summary"><strong>${escapeHtml(preview.summary)}</strong></p>
       ${proof}

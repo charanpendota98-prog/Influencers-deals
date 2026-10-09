@@ -20,7 +20,11 @@ It makes every link shape a source deal can carry end up as OUR affiliate link:
   (``ALLOW_UNCONVERTED_POSTS=1`` restores the old immediate behaviour);
 * the approval renderer no longer prints the same Amazon link twice;
 * the commission guard and Money Radar see opaque shorts and can answer "does
-  this post contain at least one link that pays us?".
+  this post contain at least one link that pays us?";
+* an operator-owned HTTPS `AFFILIATE_SHORT_LINK_BASE_URL` produces compact,
+  stored `/a/<code>?tag=<creator-tag>` Amazon links (plus `/m/` and `/l/`),
+  and every branded route is verified against its origin, code, DB target and
+  account attribution instead of being trusted by its hostname/path.
 
 Usage (repo root):
     python3 patches/apply-link-conversion-fixes.py --check
@@ -59,6 +63,8 @@ def patch_in_place() -> bool:
         "earnkaro": REPO_ROOT / "influencer_hub" / "earnkaro.py",
         "config": REPO_ROOT / "influencer_hub" / "config.py",
         "dashboard": REPO_ROOT / "dashboard" / "app.py",
+        "amazon_shortlinks": REPO_ROOT / "influencer_hub" / "amazon_shortlinks.py",
+        "money_radar": REPO_ROOT / "influencer_hub" / "money_radar.py",
     }
     if any(not path.is_file() for path in targets.values()):
         return False
@@ -77,6 +83,11 @@ def patch_in_place() -> bool:
         ("db", "def due_deferred_deals("),
         ("earnkaro", "def credentials_configured("),
         ("config", "ALLOW_UNCONVERTED_POSTS"),
+        ("config", "AFFILIATE_SHORT_LINK_BASE_URL"),
+        ("amazon_shortlinks", "def is_our_amazon_short_url("),
+        ("commission_guard", "Unverified branded-looking"),
+        ("money_radar", "def _verified_branded_short_kind("),
+        ("dashboard", '@app.route("/a/<code>")'),
         ("dashboard", '"deferred"'),
     ))
 
@@ -107,7 +118,7 @@ def bundle_is_current() -> bool:
         return False
     return "link-conversion-fixes.patch" in text and (
         TESTS_DIR / "test_perfect_link_conversion.py"
-    ).is_file()
+    ).is_file() and (TESTS_DIR / "test_branded_short_links.py").is_file()
 
 
 def sync_handoff_copy() -> str:
@@ -226,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Patch applied but its markers are incomplete; inspect git diff before restarting.", file=sys.stderr)
         return 2
 
-    print("Link-conversion fixes, retry queue, flow board and docs applied.")
+    print("Link-conversion fixes, retry queue, flow board, verified compact branded links and docs applied.")
     if args.with_tests:
         if not bundle_is_current():
             print(
@@ -247,7 +258,10 @@ def main(argv: list[str] | None = None) -> int:
         "Next: restart the worker/dashboard, then watch the flow board. A merchant "
         "deal whose conversion fails is parked and retried every 5 minutes instead "
         "of posting a link that pays nothing; set ALLOW_UNCONVERTED_POSTS=1 to post "
-        "raw links immediately instead."
+        "raw links immediately instead. To enable compact Amazon links, set "
+        "AFFILIATE_SHORT_LINK_BASE_URL to an owned HTTPS origin routed to the dashboard, "
+        "run `python3 -m influencer_hub.cli doctor --short-links`, then verify one "
+        "saved/Test-a-Deal /a/<code>?tag= link redirects to the same tagged Amazon target."
     )
     return 0
 

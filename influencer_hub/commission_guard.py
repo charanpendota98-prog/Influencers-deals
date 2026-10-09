@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qsl, urlparse
 
-from . import link_router
+from . import amazon_shortlinks, hypd_shortlinks, lehlah_shortlinks, link_router
 from .advanced_shortener import (
     is_our_amazon_attribution,
     is_our_amazon_link,
@@ -54,6 +54,49 @@ def _publisher_id_values(url: str, expected_pubid: str = "") -> list[str]:
         return link_router.publisher_ids_in_url(url, expected_pubid)
     except Exception:
         return []
+
+
+def _verified_first_party_short_link(
+    url: str,
+    effective_amz_tag: str,
+    effective_hypd_store: str,
+) -> tuple[str, str] | None:
+    """Return a verified hub short-link kind/reason, never a hostname guess.
+
+    All three branded paths are deliberately checked against their configured
+    HTTPS origin *and* a stored DB target.  This is the proof boundary that
+    keeps ``https://evil.example/a/<code>?tag=ours`` from being counted as an
+    earning link merely because it resembles one of our routes.
+    """
+    tag = str(effective_amz_tag or "").strip()
+    store = str(effective_hypd_store or "").strip()
+    if tag and amazon_shortlinks.is_our_amazon_short_url(url, tag):
+        return "amazon", f"Verified branded Amazon short link (tag={tag})"
+    if store and hypd_shortlinks.is_our_hypd_short_url(url, store):
+        return "hypd", f"Verified branded HYPD short link (store={store})"
+    if lehlah_shortlinks.is_our_lehlah_short_url(url):
+        return "lehlah", "Verified branded LehLah short link (stored attribution preserved)"
+    return None
+
+
+def _unverified_first_party_shape(url: str) -> str:
+    """Return the claimed route kind for a hub-shaped URL that is not verified.
+
+    This catches typo domains, stale/deleted codes and forged paths before they
+    can cross the commission guard.  Ordinary informational URLs remain
+    untouched; only an exact compact route shape is treated as suspicious.
+    """
+    try:
+        parsed = urlparse(str(url or ""))
+    except (TypeError, ValueError):
+        return ""
+    if re.fullmatch(r"/(?:a|amazon)/[A-Za-z0-9_-]{8}", parsed.path, re.I):
+        return "amazon"
+    if re.fullmatch(r"/m/[A-Za-z0-9_-]{8}", parsed.path):
+        return "hypd"
+    if re.fullmatch(r"/l/[A-Za-z0-9_-]{8}", parsed.path):
+        return "lehlah"
+    return ""
 
 
 def audit_rendered_text(
@@ -104,6 +147,29 @@ def audit_rendered_text(
         kind = link_router.classify_url(url)
         host = _host_of(url)
         entry: dict = {"url": url, "kind": kind, "host": host, "ok": True, "reason": ""}
+
+        # First-party routes are verified from the configured origin plus their
+        # stored target, never from a path/host naming convention alone.
+        branded = _verified_first_party_short_link(url, effective_tag, effective_store)
+        if branded:
+            entry["kind"], entry["reason"] = branded
+            details.append(entry)
+            continue
+        claimed_kind = _unverified_first_party_shape(url)
+        if claimed_kind:
+            entry["kind"] = claimed_kind
+            entry["ok"] = False
+            entry["hard"] = True
+            entry["reason"] = (
+                f"Unverified branded-looking {claimed_kind} short link (not OUR): {url}"
+            )
+            issues.append(entry["reason"])
+            if claimed_kind == "amazon":
+                amazon_ok = False
+            elif claimed_kind == "hypd":
+                hypd_ok = False
+            details.append(entry)
+            continue
 
         # Check if this URL is a Bitly short link that we created for OUR Amazon/HYPD
         # Bitly links like https://bit.ly/xxxx should have been OUR links before shortening
@@ -251,16 +317,6 @@ def audit_rendered_text(
             else:
                 entry["reason"] = f"EarnKaro short link host {host}"
 
-        elif host in {"meesho.go.example.test", "go.testbrand.in", "amz.testbrand.in"} or url.startswith("https://amz.") or url.startswith("https://go."):
-            # First-party short link ( /m/<code> or /amazon/<code>?tag= )
-            # These are OUR first-party wrappers — verify they contain tag/store via DB? For audit, check path
-            if "/amazon/" in url and effective_tag and f"tag={effective_tag}" in url:
-                entry["reason"] = f"First-party Amazon short verified tag={effective_tag}"
-            elif "/m/" in url:
-                entry["reason"] = f"First-party HYPD short (store {effective_store})"
-            else:
-                entry["reason"] = f"First-party short link: {url}"
-
         elif kind == "shortener":
             # A wrapper we did not resolve: attribution is unknown. It is not a
             # HARD leak (no foreign tag/store is proven), so it never triggers
@@ -277,11 +333,14 @@ def audit_rendered_text(
 
         details.append(entry)
 
-    # Strict ok only cares about hard leaks: wrong Amazon tag/store (commission would go to someone else)
-    # Merchant/Meesho raw URLs are "soft" leaks: they would earn zero if posted, but fallback is intentional for deal retention
-    # We log them as issues but don't treat as hard failure, to avoid breaking existing deal flow (tests expect fallback)
-    # User can enable strict mode via dashboard if they want to drop zero-commission merchant/meesho deals
-    strict_ok = len([d for d in details if not d["ok"] and d["kind"] in {"amazon", "hypd"}]) == 0
+    # Strict ok cares about a wrong Amazon/HYPD attribution and any forged,
+    # stale or wrong-origin branded route. Merchant/Meesho raw URLs are still
+    # soft conversion gaps: they are handled by the retry/hold flow below.
+    strict_ok = not any(
+        not detail["ok"]
+        and (detail["kind"] in {"amazon", "hypd"} or detail.get("hard"))
+        for detail in details
+    )
 
     return {
         "ok": strict_ok,
@@ -336,6 +395,14 @@ def is_verified_our_link(
     host = _host_of(url)
     kind = link_router.classify_url(url)
 
+    # A compact link is ours only after origin + code + stored target + account
+    # attribution all agree. Do this before host classification because branded
+    # domains intentionally classify as ``other`` to the generic router.
+    if _verified_first_party_short_link(url, tag, store):
+        return True
+    if _unverified_first_party_shape(url):
+        return False
+
     if _is_earnkaro_short(url):
         return True
     if kind == "lehlah":
@@ -344,11 +411,6 @@ def is_verified_our_link(
         if is_our_amazon_link(url, tag) or is_our_amazon_attribution(url, tag):
             return True
     if kind == "hypd" and store and is_our_hypd_link(url, store):
-        return True
-    # First-party short links minted by this hub: /amazon/<code>?tag=OURS and /m/<code>
-    if "/amazon/" in url and tag and f"tag={tag}" in url:
-        return True
-    if "/m/" in url:
         return True
     if host in {"bit.ly", "www.bit.ly", "bitly.com", "www.bitly.com"} or host.endswith(".bit.ly"):
         long_url = ""
@@ -374,26 +436,50 @@ def is_verified_our_link(
 def amazon_tag_proof(
     requested_tag: str,
     sample_url: str = "https://www.amazon.in/dp/B0D9P2M1PB?tag=someone-else-21",
+    *,
+    compact: bool = True,
 ) -> dict:
-    """Offline proof of what a sample Amazon link becomes with this tag.
+    """Build the exact Amazon link a saved broadcast channel will publish.
 
-    Used by the dashboard right after a creator/channel is saved, so the operator
-    sees the exact link that will be posted (and whether it is verified as OURS)
-    instead of trusting that the tag was picked up.
+    This does no network I/O.  When a trusted branded HTTPS origin is configured
+    it allocates one durable local redirect record, then proves both the compact
+    URL and its canonical Amazon target before returning it to the dashboard.
+    That means the save confirmation is clickable evidence, not a mock string.
     """
     from . import link_router as _router
 
-    tag = _router.effective_amazon_tag(requested_tag)
-    rendered = _router.render_for_influencer(sample_url, tag)
-    links = our_affiliate_urls(rendered, tag, "", "")
+    requested = str(requested_tag or "").strip()
+    tag = _router.effective_amazon_tag(requested)
+    canonical = _router.render_for_influencer(sample_url, tag)
+    posted = canonical
+    status = amazon_shortlinks.short_link_status()
+    short_link_error = ""
+    if compact and status["active"]:
+        try:
+            compact = amazon_shortlinks.shorten_amazon_links(canonical)
+            if compact != canonical and amazon_shortlinks.is_our_amazon_short_url(compact, tag):
+                posted = compact
+            elif compact != canonical:
+                short_link_error = "The generated branded code could not be verified."
+        except Exception as exc:  # fail safe: canonical Amazon attribution survives
+            short_link_error = f"Could not create the branded short link ({type(exc).__name__})."
+
+    links = our_affiliate_urls(posted, tag, "", "")
+    shortened = posted != canonical
     return {
-        "requested_tag": str(requested_tag or "").strip(),
+        "requested_tag": requested,
         "tag": tag,
-        "fallback_used": tag != str(requested_tag or "").strip(),
+        "fallback_used": tag != requested,
         "tag_usable": _router.amazon_tag_is_usable(requested_tag),
-        "posted_link": links[0] if links else rendered,
+        "posted_link": links[0] if links else posted,
+        "canonical_link": canonical,
+        "redirect_target": canonical if shortened else "",
+        "shortened": shortened,
+        "compact_requested": bool(compact),
+        "short_link_status": status,
+        "short_link_error": short_link_error,
         "ok": bool(links),
-        "rendered": rendered,
+        "rendered": posted,
     }
 
 
@@ -480,13 +566,15 @@ def sanitize_rendered_text(
     if audit["ok"]:
         return rendered, audit
 
-    # Remove only HARD leaked URLs (wrong Amazon tag/store) — merchant/meesho raw are kept with warning to preserve deal
+    # Remove hard attribution failures only (wrong Amazon/HYPD account and
+    # forged/stale branded paths). Raw merchant/Meesho links remain visible with
+    # their conversion warning so the retry flow can repair them.
     sanitized = rendered
     for detail in audit["details"]:
-        if not detail["ok"] and detail["kind"] in {"amazon", "hypd"}:
-            leaked_url = detail["url"]
-            if "not OUR" in detail["reason"] or "without effective" in detail["reason"]:
-                sanitized = sanitized.replace(leaked_url, "")
+        if not detail["ok"] and (
+            detail["kind"] in {"amazon", "hypd"} or detail.get("hard")
+        ):
+            sanitized = sanitized.replace(detail["url"], "")
     # Clean up double spaces / empty lines left behind
     sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
     sanitized = re.sub(r"[ ]{2,}", " ", sanitized).strip()

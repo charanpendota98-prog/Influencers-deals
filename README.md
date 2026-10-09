@@ -133,14 +133,69 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
   product ASIN links are cleaned to `www.amazon.in/dp/<ASIN>`; Amazon.com ASINs
   stay on Amazon.com, and non-product routes keep their original marketplace,
   path, and required query parameters. The effective `tag` replaces the source
-  tag; safe numeric product selectors (`th`, `psc`) are preserved. An
-  optional first-party short route (`/amazon/<code>?tag=<effective-tag>`) is
-  available without an external API key when `AMAZON_SHORT_LINK_BASE_URL` points
-  to an operator-owned HTTPS hostname routed to the dashboard. It keeps the tag
-  visible, validates it before redirecting, and falls back to the canonical URL
-  when no hostname is configured. Approval-role posts stay on native Amazon URLs.
-  Amazon-issued `amzn.to` codes must come from Amazon Associates/SiteStripe; the
-  app does not invent them.
+  tag; safe numeric product selectors (`th`, `psc`) are preserved.
+
+  **Compact Amazon links, without losing the creator ID:** set one
+  operator-owned HTTPS origin in `AFFILIATE_SHORT_LINK_BASE_URL` (for example
+  `https://go.your-domain.in`) and route it to this dashboard. Broadcast and
+  WhatsApp posts then use
+  `https://go.your-domain.in/a/<opaque-code>?tag=<creator-tag>`. The route only
+  redirects when **the configured origin + stored code + exact tag** match; its
+  only destination is the canonical Amazon item with that same tag. A forged
+  `/a/...` URL, a stale code, an attacker host, an altered tag, or an unsafe
+  stored target is rejected and never counted as an earning link. The previous
+  `/amazon/<code>` path remains live for already-posted links. The dashboard's
+  Save confirmation and **Test a Deal** preview mint and display the actual
+  clickable compact link plus its canonical redirect target. With no public
+  HTTPS origin configured, the safe canonical URL stays visible instead.
+
+  Approval-role posts deliberately remain native Amazon URLs. Amazon-issued
+  `amzn.to` codes must come from Amazon Associates/SiteStripe; the app does not
+  invent them.
+### One branded short-link domain (production setup)
+
+A short URL must have a real public HTTPS hostname; the app cannot safely make
+one out of `localhost`, a VM IP, a request `Host` header, or somebody else's
+shortener. Point a domain/subdomain you control (for example `go.example.in`) to
+the same reverse proxy as the dashboard, then put only the origin in the private
+VM `.env`:
+
+```dotenv
+AFFILIATE_SHORT_LINK_BASE_URL=https://go.example.in
+# Optional only when Amazon/HYPD need separate domains:
+# AMAZON_SHORT_LINK_BASE_URL=https://amz.example.in
+# MEESHO_SHORT_LINK_BASE_URL=https://go.example.in
+DASHBOARD_TRUST_PROXY=true  # only behind the one trusted TLS proxy
+```
+
+A minimal nginx virtual host can proxy the short domain to the existing dashboard
+service (keep the dashboard's admin routes firewalled/authenticated; only the
+validated `/a/`, legacy `/amazon/`, `/m/`, `/l/` redirects and `/healthz` are
+public):
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name go.example.in;
+    # certificate directives managed by your TLS/Certbot setup
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+```
+
+Restart `influencer-dashboard` and `influencer-deal-worker`, then use **Test a
+Deal** or save a channel. It shows a real `/a/<code>?tag=<creator-tag>` link;
+open it once and verify its `302` location is the printed canonical Amazon URL
+with the same tag. Do not enable generic Bitly merely to hide attribution:
+EarnKaro outputs (`ekaro.in`/`fktr.in`/…) are already network-short and retain
+our publisher proof; HYPD uses `/m/<code>`; approved LehLah uses `/l/<code>`.
+Raw, foreign, unresolved, or unverified links are not branded—they are converted,
+held for retry, or logged instead of being presented as ours.
+
 - HYPD is reserved for Meesho; raw Meesho URLs are never sent through EarnKaro.
   Existing HYPD affiliate URLs are first rewritten to the effective HYPD store
   ID (default `93944`). Raw Meesho URLs remain unchanged until HYPD's official
@@ -326,7 +381,7 @@ never shows an earnings figure.
 
 | State | What it means |
 | --- | --- |
-| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link with our publisher · LehLah · our own `/amazon/` and `/m/` short links |
+| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link with our publisher · LehLah · a verified stored branded `/a/`, `/m/`, or `/l/` short link on our configured HTTPS origin |
 | 🔴 Leak | Amazon tagged for someone else (or untagged) · HYPD on another store · EarnKaro for another publisher · raw merchant with no EarnKaro conversion · raw Meesho |
 | ⚪ Neutral | Informational links, and generic short links whose attribution sits behind the redirect |
 
