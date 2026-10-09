@@ -1,18 +1,50 @@
+diff --git a/.env.example b/.env.example
+index 1ca510b..b732f44 100644
+--- a/.env.example
++++ b/.env.example
+@@ -41,12 +41,17 @@ AMAZON_CREATORS_API_MARKETPLACE=www.amazon.in
+ AMAZON_CREATORS_API_ENDPOINT=https://creatorsapi.amazon/catalog/v1
+ AMAZON_CREATORS_API_APP_NAME=SMART_BUY
+ AMAZON_CREATORS_API_TIMEOUT=15
+-# Optional: your own short HTTPS hostname routed to the Flask dashboard.
+-# Example: https://amz.your-domain.in (blank leaves canonical Amazon links).
++# One optional public HTTPS hostname you own, routed to this Flask dashboard.
++# Example: https://go.your-domain.in — enables verified compact links:
++# Amazon /a/<code>?tag=<creator-tag>, HYPD /m/<code>, approved LehLah /l/<code>.
++# Never use localhost, a VM IP or a path here; DNS + TLS must point this host at
++# the dashboard/reverse-proxy. Blank keeps the canonical affiliate URLs.
++AFFILIATE_SHORT_LINK_BASE_URL=
++# Optional Amazon-only override (otherwise inherits AFFILIATE_SHORT_LINK_BASE_URL).
+ AMAZON_SHORT_LINK_BASE_URL=
+ HYPD_STORE_ID=93944
+-# Optional first-party HTTPS origin for existing HYPD affiliate links and,
+-# after approval, LehLah Meesho links. Requires your DNS/TLS and Flask routing.
++# Optional HYPD/LehLah-only override (otherwise inherits AFFILIATE_SHORT_LINK_BASE_URL).
++# Requires your DNS/TLS and Flask routing.
+ MEESHO_SHORT_LINK_BASE_URL=
+ # Keep false until LehLah has approved your account for affiliate attribution.
+ LEHLAH_SHORTLINKS_ENABLED=false
 diff --git a/HANDOFF.md b/HANDOFF.md
-index 43668bd..eca42d9 100644
+index 43668bd..94ba696 100644
 --- a/HANDOFF.md
 +++ b/HANDOFF.md
-@@ -6,6 +6,9 @@
+@@ -1,11 +1,14 @@
+ # HANDOFF — Influencers-deals
+ 
+-**Updated:** 2026-10-07 (UTC)
++**Updated:** 2026-10-10 (Asia/Kolkata)
+ 
+ **Session branch:** `arena/9056711b-influencers-deals`
  
  **Checkout base:** `c6fa901` — PR #7 merged to `main`
  
-+**Branch commits:** `fb70433` (source fallback, PR #8) and `f46f165` (link
-+conversion audit — see section 1b).
++**Branch commits:** `fb70433` through `9c6fa4c` are already pushed on PR #8;
++the current short-link hardening follows on this same branch (see section 1e).
 +
  Read this before deploying. This handoff describes the current checkout; older
  notes referring to `0bf913f`, an unmerged branch, or the earlier VM rollout are
  historical and are not the current source of truth.
-@@ -64,6 +67,153 @@ before calling production delivery verified.
+@@ -64,6 +67,215 @@ before calling production delivery verified.
  
  ---
  
@@ -140,6 +172,68 @@ index 43668bd..eca42d9 100644
 +`tag=<typed tag>` in the confirmation; an untagged creator logs the fallback
 +warning exactly once.
 +
++### 1e. Compact branded links — click opens the exact creator-tagged target (`current`)
++
++The earlier tree already had optional first-party short routes, but an audit of
++what counted as an "OUR" link found a correctness gap: the guard and Money Radar
++trusted names such as `go.*`, `/amazon/…`, or `/m/…` without proving that the
++link belonged to this deployment. A lookalike URL on another host could be
++reported as earning. That is not acceptable for commission reporting.
++
++This round makes compact links both shorter **and** verifiable:
++
++13. **One simple domain setting:** put one operator-owned public HTTPS origin in
++    `AFFILIATE_SHORT_LINK_BASE_URL`, for example `https://go.your-domain.in`.
++    It is inherited by Amazon, HYPD and approved LehLah links; the older
++    `AMAZON_SHORT_LINK_BASE_URL` / `MEESHO_SHORT_LINK_BASE_URL` remain optional
++    per-network overrides. No VM IP, localhost, path, credentials or query
++    string is accepted as the origin.
++14. **Amazon broadcast / WhatsApp links are now compact:**
++    `https://go.your-domain.in/a/<8-char-code>?tag=<creator-tag>`. The code is
++    durable; it redirects with `302` only to its stored canonical
++    `https://www.amazon.in/dp/<ASIN>?…&tag=<the-same-creator-tag>` target.
++    The older `/amazon/<code>` route remains live, so existing posts do not
++    break. Approval-channel links deliberately remain native Amazon URLs.
++15. **No name-based trust:** a compact URL earns / passes the guard only when
++    all facts agree: **configured HTTPS origin + exact route/code + durable DB
++    record + safe target + exact tag/store**. A forged host, changed tag,
++    extra attribution query, stale/deleted code or unsafe target is a hard guard
++    failure, is sanitized before posting, and Money Radar counts it as a leak —
++    never as OUR commission.
++16. **Every saved/tested link is proof:** channel save and Easy Setup now show
++    the actual compact Amazon URL (when configured) and `→ opens only <canonical
++    target>`. `/api/test-render-deal` runs the same final compacting pass as the
++    worker, allocates a local route only (no post) and returns that real clickable
++    URL in `our_links`. The Setup Center shows **ACTIVE** vs **CANONICAL MODE**
++    with the exact safe `.env` setting; `doctor --short-links` validates the
++    local origin configuration without making an external request.
++17. **All eligible existing OUR links stay short safely:** Amazon `/a/`, HYPD
++    `/m/`, approved LehLah `/l/`; EarnKaro's `ekaro.in`/`fktr.in` output is
++    already network-short and is not double-wrapped (so its publisher proof is
++    not obscured). Raw/foreign/unresolved URLs are converted, held/retried or
++    logged—not branded as ours.
++
++Proof: six adversarial tests cover one common origin through the real pipeline,
++Amazon code/tag redirect and legacy compatibility, incorrect-tag/open-redirect
++attempts, forged/stale foreign routes, unsafe bases/targets, save/test preview,
++and HYPD/LehLah target validation. Full suite: **380 passed**. This proves the
++app's redirect and attribution logic locally; public DNS/TLS reachability still
++requires the operator to point an owned hostname at the VM proxy and click one
++returned link after deployment—do not claim external reachability before that
++real check.
++
++**VM enablement (private `.env`, never commit it):**
++
++```dotenv
++AFFILIATE_SHORT_LINK_BASE_URL=https://go.your-domain.in
++# DASHBOARD_TRUST_PROXY=true only when one trusted TLS proxy forwards this host
++```
++
++Route that HTTPS host to the dashboard service, restart dashboard + worker, then
++run `python3 -m influencer_hub.cli doctor --short-links`; save a channel or run
++**Test a Deal**, open the returned `/a/<code>?tag=<creator-tag>` link once and
++verify its redirect location has the identical creator tag.
++
 +Operator tool (read-only, nothing is posted): 
 +
 +```bash
@@ -166,16 +260,20 @@ index 43668bd..eca42d9 100644
  ## 2. Test and audit commands
  
  From the repo root:
-@@ -75,7 +225,7 @@ python3 -m venv .venv
- python3 -m influencer_hub.cli doctor --telegram-sources
+@@ -72,10 +284,10 @@ From the repo root:
+ python3 -m venv .venv
+ .venv/bin/pip install -r requirements.txt
+ .venv/bin/python -m pytest -q
+-python3 -m influencer_hub.cli doctor --telegram-sources
++python3 -m influencer_hub.cli doctor --telegram-sources --short-links
  ```
  
 -The test suite on this revision is expected to report **320 passed**. The
-+The test suite on this revision is expected to report **374 passed**. The
++The test suite on this revision is expected to report **380 passed**. The
  source doctor is read-only: it enumerates joined dialogs, checks the same
  selection rules as the worker, does not read message history, and does not
  check or join invites. It requires valid Telegram credentials/session on the
-@@ -95,15 +245,29 @@ procedure. Never copy secrets into Git or chat. From the deployed checkout:
+@@ -95,15 +307,29 @@ procedure. Never copy secrets into Git or chat. From the deployed checkout:
  
  ```bash
  cd ~/Influencers-deals
@@ -183,13 +281,14 @@ index 43668bd..eca42d9 100644
  python3 patches/apply-private-source-fallback.py --check
  python3 patches/apply-private-source-fallback.py --dry-run
  python3 patches/apply-private-source-fallback.py --with-tests
+-python3 -m influencer_hub.cli doctor --telegram-sources
 +# 2) link conversion fixes, retry queue, flow board (diffed against state 1)
 +python3 patches/apply-link-conversion-fixes.py --check
 +python3 patches/apply-link-conversion-fixes.py --dry-run
 +python3 patches/apply-link-conversion-fixes.py --with-tests
- python3 -m influencer_hub.cli doctor --telegram-sources
++python3 -m influencer_hub.cli doctor --telegram-sources --short-links
 +python3 -m influencer_hub.cli audit-links --offline --text "Deal https://www.amazon.in/dp/B08XYZ1234?tag=old-21"   # expect exit 0 + [OUR] amazon
-+python3 -m pytest -q            # expect 374 passed
++python3 -m pytest -q            # expect 380 passed
  sudo systemctl restart influencer-deal-worker influencer-dashboard
  systemctl is-active influencer-deal-worker influencer-dashboard
  journalctl -u influencer-deal-worker -n 100 --no-pager
@@ -205,7 +304,7 @@ index 43668bd..eca42d9 100644
  The applier validates its bundled exact patch before writing. It aborts without
  writing if the VM checkout differs; inspect the diff rather than forcing it.
  If the code is already applied, `--check` exits successfully and a normal
-@@ -135,7 +299,12 @@ appear:
+@@ -135,7 +361,12 @@ appear:
  1. Read the source fallback / selector result in Setup Center or the CLI doctor.
  2. Check worker state, source activity, destination readiness, and failures on
     `/api/flow`.
@@ -219,7 +318,7 @@ index 43668bd..eca42d9 100644
  4. Confirm the EarnKaro token/publisher ID in Vault and run
     `python -m influencer_hub.cli verify-earnkaro` when eligible merchant links
     must earn. Amazon attribution uses each creator's configured tag; HYPD and
-@@ -153,10 +322,13 @@ named private invites.
+@@ -153,10 +384,13 @@ named private invites.
  
  ## 5. Replayable work and safety
  
@@ -238,10 +337,97 @@ index 43668bd..eca42d9 100644
    checks copies, patch presence, and applier state.
  - The original commission/account/password/deal-flow work and its four
 diff --git a/README.md b/README.md
-index 1c0662f..cbd19b3 100644
+index 1c0662f..1127d67 100644
 --- a/README.md
 +++ b/README.md
-@@ -343,6 +343,77 @@ other setup change):
+@@ -133,14 +133,69 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
+   product ASIN links are cleaned to `www.amazon.in/dp/<ASIN>`; Amazon.com ASINs
+   stay on Amazon.com, and non-product routes keep their original marketplace,
+   path, and required query parameters. The effective `tag` replaces the source
+-  tag; safe numeric product selectors (`th`, `psc`) are preserved. An
+-  optional first-party short route (`/amazon/<code>?tag=<effective-tag>`) is
+-  available without an external API key when `AMAZON_SHORT_LINK_BASE_URL` points
+-  to an operator-owned HTTPS hostname routed to the dashboard. It keeps the tag
+-  visible, validates it before redirecting, and falls back to the canonical URL
+-  when no hostname is configured. Approval-role posts stay on native Amazon URLs.
+-  Amazon-issued `amzn.to` codes must come from Amazon Associates/SiteStripe; the
+-  app does not invent them.
++  tag; safe numeric product selectors (`th`, `psc`) are preserved.
++
++  **Compact Amazon links, without losing the creator ID:** set one
++  operator-owned HTTPS origin in `AFFILIATE_SHORT_LINK_BASE_URL` (for example
++  `https://go.your-domain.in`) and route it to this dashboard. Broadcast and
++  WhatsApp posts then use
++  `https://go.your-domain.in/a/<opaque-code>?tag=<creator-tag>`. The route only
++  redirects when **the configured origin + stored code + exact tag** match; its
++  only destination is the canonical Amazon item with that same tag. A forged
++  `/a/...` URL, a stale code, an attacker host, an altered tag, or an unsafe
++  stored target is rejected and never counted as an earning link. The previous
++  `/amazon/<code>` path remains live for already-posted links. The dashboard's
++  Save confirmation and **Test a Deal** preview mint and display the actual
++  clickable compact link plus its canonical redirect target. With no public
++  HTTPS origin configured, the safe canonical URL stays visible instead.
++
++  Approval-role posts deliberately remain native Amazon URLs. Amazon-issued
++  `amzn.to` codes must come from Amazon Associates/SiteStripe; the app does not
++  invent them.
++### One branded short-link domain (production setup)
++
++A short URL must have a real public HTTPS hostname; the app cannot safely make
++one out of `localhost`, a VM IP, a request `Host` header, or somebody else's
++shortener. Point a domain/subdomain you control (for example `go.example.in`) to
++the same reverse proxy as the dashboard, then put only the origin in the private
++VM `.env`:
++
++```dotenv
++AFFILIATE_SHORT_LINK_BASE_URL=https://go.example.in
++# Optional only when Amazon/HYPD need separate domains:
++# AMAZON_SHORT_LINK_BASE_URL=https://amz.example.in
++# MEESHO_SHORT_LINK_BASE_URL=https://go.example.in
++DASHBOARD_TRUST_PROXY=true  # only behind the one trusted TLS proxy
++```
++
++A minimal nginx virtual host can proxy the short domain to the existing dashboard
++service (keep the dashboard's admin routes firewalled/authenticated; only the
++validated `/a/`, legacy `/amazon/`, `/m/`, `/l/` redirects and `/healthz` are
++public):
++
++```nginx
++server {
++    listen 443 ssl http2;
++    server_name go.example.in;
++    # certificate directives managed by your TLS/Certbot setup
++    location / {
++        proxy_pass http://127.0.0.1:5000;
++        proxy_set_header Host $host;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto https;
++    }
++}
++```
++
++Restart `influencer-dashboard` and `influencer-deal-worker`, then use **Test a
++Deal** or save a channel. It shows a real `/a/<code>?tag=<creator-tag>` link;
++open it once and verify its `302` location is the printed canonical Amazon URL
++with the same tag. Do not enable generic Bitly merely to hide attribution:
++EarnKaro outputs (`ekaro.in`/`fktr.in`/…) are already network-short and retain
++our publisher proof; HYPD uses `/m/<code>`; approved LehLah uses `/l/<code>`.
++Raw, foreign, unresolved, or unverified links are not branded—they are converted,
++held for retry, or logged instead of being presented as ours.
++
+ - HYPD is reserved for Meesho; raw Meesho URLs are never sent through EarnKaro.
+   Existing HYPD affiliate URLs are first rewritten to the effective HYPD store
+   ID (default `93944`). Raw Meesho URLs remain unchanged until HYPD's official
+@@ -326,7 +381,7 @@ never shows an earnings figure.
+ 
+ | State | What it means |
+ | --- | --- |
+-| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link with our publisher · LehLah · our own `/amazon/` and `/m/` short links |
++| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link with our publisher · LehLah · a verified stored branded `/a/`, `/m/`, or `/l/` short link on our configured HTTPS origin |
+ | 🔴 Leak | Amazon tagged for someone else (or untagged) · HYPD on another store · EarnKaro for another publisher · raw merchant with no EarnKaro conversion · raw Meesho |
+ | ⚪ Neutral | Informational links, and generic short links whose attribution sits behind the redirect |
+ 
+@@ -343,6 +398,77 @@ other setup change):
    deal when none of its links would carry our attribution
    (`skipped:no_commission_link`). It trades volume for earnings, so it starts
    off and the Radar recommends it only once it has seen free posts.
@@ -320,9 +506,18 @@ index 1c0662f..cbd19b3 100644
  Per-creator and per-channel **⭐ Minimum Deal Quality** (S/A/B/C, resolved
  channel → creator → global) keeps a channel's attention for the deals worth a
 diff --git a/dashboard/app.py b/dashboard/app.py
-index 3d00119..82c583f 100644
+index 3d00119..6005c6f 100644
 --- a/dashboard/app.py
 +++ b/dashboard/app.py
+@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
+ sys.path.insert(0, str(ROOT))
+ 
+ from influencer_hub import (
+-    config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
++    amazon_shortlinks, config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
+     puller, telegram_ops, whatsapp_client,
+ )  # noqa: E402
+ 
 @@ -192,6 +192,19 @@ def _run(coro):
      return asyncio.run_coroutine_threadsafe(coro, loop).result()
  
@@ -343,7 +538,60 @@ index 3d00119..82c583f 100644
  def _form_flag(name: str, default: bool | None = None) -> bool | None:
      """Parse select values and checkbox/hidden-input pairs consistently.
  
-@@ -1114,6 +1127,13 @@ MONEY_SWITCHES: dict[str, tuple[str, str]] = {
+@@ -799,33 +812,26 @@ def lock_setup_changes():
+     return redirect(_local_referrer(with_reauth=False) or url_for("index"))
+ 
+ 
+-@app.route("/amazon/<code>")
++@app.route("/a/<code>")
++@app.route("/amazon/<code>")  # legacy links stay live after compact /a/ rollout
+ def amazon_short_link(code: str):
+-    """Resolve a transparent first-party short link to a tagged Amazon.in item."""
+-    if not re.fullmatch(r"[A-Za-z0-9_-]{8}", code):
++    """Resolve one stored compact Amazon link to its exact tagged product target."""
++    if not amazon_shortlinks.is_valid_short_code(code):
+         abort(404)
+     record = db.get_amazon_short_link(code)
+     if not record:
+         abort(404)
+ 
+     requested_tags = request.args.getlist("tag")
+-    if len(requested_tags) != 1 or requested_tags[0].strip() != record["associate_tag"]:
++    tag = str(record.get("associate_tag") or "")
++    if len(requested_tags) != 1 or requested_tags[0].strip() != tag:
+         abort(404)
+ 
+-    target = str(record["target_url"])
+-    parsed = urlparse(target)
+-    target_tags = [
+-        value for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+-        if key.lower() == "tag" and value
+-    ]
+-    if (
+-        parsed.scheme != "https"
+-        or (parsed.hostname or "").lower() not in {"amazon.in", "www.amazon.in"}
+-        or not re.fullmatch(r"/dp/[A-Za-z0-9]{10}", parsed.path, re.I)
+-        or target_tags != [record["associate_tag"]]
+-    ):
+-        # Only redirect to generated Amazon.in product links; never accept an
+-        # arbitrary destination from the short-link URL or query string.
++    target = str(record.get("target_url") or "")
++    if not amazon_shortlinks.is_valid_amazon_target(target, tag):
++        # Only redirect to a generated canonical Amazon product URL with this
++        # exact creator tag; never treat the DB or query string as an open
++        # redirect instruction.
+         abort(404)
+     return redirect(target, code=302)
+ 
+@@ -1089,6 +1095,7 @@ def setup():
+         current_ek_key=current_ek_key,
+         current_ek_pubid=current_ek_pubid,
+         current_hypd_store=current_hypd_store,
++        short_links=amazon_shortlinks.short_link_status(),
+         default_amazon_tag=config.AMAZON_ASSOCIATE_TAG,
+         sources_added=request.args.get("sources_added", type=int),
+         source_saved=request.args.get("source_saved", type=int),
+@@ -1114,6 +1121,13 @@ MONEY_SWITCHES: dict[str, tuple[str, str]] = {
          "Hold back a deal when none of its links would carry our attribution. "
          "Fewer posts, but no post goes out that pays nothing.",
      ),
@@ -357,7 +605,7 @@ index 3d00119..82c583f 100644
  }
  
  
-@@ -1150,6 +1170,7 @@ def money_dashboard():
+@@ -1150,6 +1164,7 @@ def money_dashboard():
      defaults = {
          "meesho_earnkaro_fallback": bool(config.MEESHO_EARNKARO_FALLBACK),
          "only_earning_deals": bool(config.ONLY_EARNING_DEALS),
@@ -365,7 +613,7 @@ index 3d00119..82c583f 100644
      }
      switches = [
          {
-@@ -1686,6 +1707,11 @@ def update_channel_route(channel_id):
+@@ -1686,6 +1701,11 @@ def update_channel_route(channel_id):
          ident = clean_identifier(ident)
  
      # A pending "undo removal" is stale once this channel is edited by hand.
@@ -377,7 +625,7 @@ index 3d00119..82c583f 100644
      session.pop(UNDO_CHANNEL_KEY, None)
      db.update_channel_details(
          channel_id,
-@@ -1715,6 +1741,8 @@ def update_channel_route(channel_id):
+@@ -1715,6 +1735,8 @@ def update_channel_route(channel_id):
          return redirect(url_for(
              "influencer_detail", inf_id=owner_id, wa_link_status="pending"
          ))
@@ -386,7 +634,7 @@ index 3d00119..82c583f 100644
      return redirect(url_for("influencer_detail", inf_id=owner_id))
  
  
-@@ -1752,6 +1780,9 @@ ROUTING_SAMPLES = (
+@@ -1752,6 +1774,9 @@ ROUTING_SAMPLES = (
  )
  
  
@@ -396,7 +644,7 @@ index 3d00119..82c583f 100644
  _LIVE_SELECTION_CACHE: dict = {"checked_at": 0.0, "report": None}
  LIVE_SELECTION_TTL_SECONDS = 45
  
-@@ -1935,6 +1966,25 @@ def _flow_snapshot(
+@@ -1935,6 +1960,25 @@ def _flow_snapshot(
      except Exception:
          hourly_loot = False
      only_earning = bool(getattr(config, "ONLY_EARNING_DEALS", False))
@@ -422,7 +670,7 @@ index 3d00119..82c583f 100644
      if live_channels and not posted_window and worker_alive:
          note_list.append(
              f"No post in the last {window_hours}h across {len(live_channels)} ready "
-@@ -1977,6 +2027,16 @@ def _flow_snapshot(
+@@ -1977,6 +2021,16 @@ def _flow_snapshot(
              "hourly_loot_enabled": hourly_loot,
              "only_earning_deals": only_earning,
          },
@@ -439,7 +687,45 @@ index 3d00119..82c583f 100644
          "notes": note_list,
          "stall_seconds": stall_seconds,
      }
-@@ -2077,12 +2137,22 @@ def _routing_preview(
+@@ -2008,6 +2062,10 @@ def _routing_preview(
+     tag = str(amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG
+     store = str(hypd_store_id or "").strip() or _effective_hypd_store_id()
+     ek_ready = _earnkaro_ready()
++    short_link_status = amazon_shortlinks.short_link_status()
++    compact_amazon_active = bool(
++        amazon_on and channel_role != "approval" and short_link_status["active"]
++    )
+     try:
+         from influencer_hub import accounts
+ 
+@@ -2024,10 +2082,22 @@ def _routing_preview(
+         if kind == "amazon":
+             if amazon_on:
+                 row["result"] = link_router.apply_amazon_tag(sample, tag)
+-                row["note"] = (
+-                    f"Posted with this creator's OWN tag ({tag}) — Amazon commission is theirs. "
+-                    "Never shortened away from Amazon."
+-                )
++                if channel_role == "approval":
++                    row["note"] = (
++                        f"Posted with this creator's OWN tag ({tag}) as a native Amazon URL. "
++                        "Approval channels deliberately stay native."
++                    )
++                elif compact_amazon_active:
++                    row["note"] = (
++                        f"Posted with this creator's OWN tag ({tag}); broadcast/WhatsApp then "
++                        f"uses a verified compact {short_link_status['base_url']}/a/<code>?tag={tag} "
++                        "that redirects only to this canonical target."
++                    )
++                else:
++                    row["note"] = (
++                        f"Posted with this creator's OWN tag ({tag}) as the canonical Amazon URL. "
++                        "Set one public HTTPS branded short-link origin to make it compact."
++                    )
+             else:
+                 row["state"] = "off"
+                 row["note"] = "Amazon is OFF — this link is removed from the post."
+@@ -2077,12 +2147,27 @@ def _routing_preview(
              f"Meesho → our HYPD store {store}" if hypd_on else "Meesho off",
          )
      )
@@ -459,10 +745,15 @@ index 3d00119..82c583f 100644
 +        "tag": tag,
 +        "tag_usable": tag_usable,
 +        "tag_proof": proof,
++        "short_links": {
++            **short_link_status,
++            "active_for_this_channel": compact_amazon_active,
++            "native_for_approval": bool(amazon_on and channel_role == "approval"),
++        },
          "earnkaro_on": ek_on,
          "hypd_on": hypd_on,
          "earnkaro_ready": ek_ready,
-@@ -2120,6 +2190,63 @@ def _valid_telegram_identifier(value: str) -> tuple[bool, str]:
+@@ -2120,6 +2205,70 @@ def _valid_telegram_identifier(value: str) -> tuple[bool, str]:
      )
  
  
@@ -501,7 +792,7 @@ index 3d00119..82c583f 100644
 +        or str(influencer.get("amazon_tag") or "").strip()
 +        or config.AMAZON_ASSOCIATE_TAG
 +    )
-+    proof = commission_guard.amazon_tag_proof(tag)
++    proof = commission_guard.amazon_tag_proof(tag, compact=(role != "approval"))
 +    parts = [
 +        f"✅ {ident} connected to {influencer['name']} as a "
 +        f"{'approval' if role == 'approval' else 'broadcast'} channel."
@@ -511,6 +802,13 @@ index 3d00119..82c583f 100644
 +        + proof["posted_link"]
 +        + (" (verified ✅)" if proof["ok"] else " (⚠ not verified)")
 +    )
++    if proof.get("shortened"):
++        parts.append(
++            "Click proof: this compact URL redirects only to "
++            + proof["redirect_target"]
++        )
++    elif proof.get("short_link_status", {}).get("active") and proof.get("short_link_error"):
++        parts.append("⚠ " + proof["short_link_error"] + " Using the canonical tagged URL instead.")
 +    if proof["fallback_used"]:
 +        parts.append(
 +            "⚠ No usable tag is set for this creator/channel, so the configured "
@@ -526,7 +824,7 @@ index 3d00119..82c583f 100644
  def _channel_feedback(inf_id: int, category: str, message: str):
      """Flash the result of a channel action and return to the creator's page."""
      flash(message, category)
-@@ -2161,28 +2288,40 @@ def add_manual_channel(inf_id):
+@@ -2161,28 +2310,40 @@ def add_manual_channel(inf_id):
          return _channel_feedback(
              inf_id, "error", "That destination link is too long. Check the value and try again.",
          )
@@ -578,7 +876,7 @@ index 3d00119..82c583f 100644
      if platform == "telegram":
          ident = clean_identifier(raw_ident)
          valid, error = _valid_telegram_identifier(ident)
-@@ -2221,9 +2360,9 @@ def add_manual_channel(inf_id):
+@@ -2221,9 +2382,9 @@ def add_manual_channel(inf_id):
              **channel_settings,
          )
          return _channel_feedback(
@@ -591,7 +889,7 @@ index 3d00119..82c583f 100644
          )
      elif platform in {"whatsapp_group", "whatsapp_channel"}:
          destination, error = _resolve_whatsapp_destination(inf_id, raw_ident)
-@@ -2285,9 +2424,13 @@ def _easy_setup_form_values() -> dict:
+@@ -2285,9 +2446,13 @@ def _easy_setup_form_values() -> dict:
          "approval": request.form.get("approval_channel", "").strip(),
          "main": request.form.get("main_channel", "").strip(),
          "whatsapp": request.form.get("whatsapp_channel", "").strip(),
@@ -608,7 +906,7 @@ index 3d00119..82c583f 100644
          "only_amazon": bool(_form_flag("only_amazon", default=False)),
          "hypd_store_id": (
              request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
-@@ -2319,6 +2462,18 @@ def easy_setup():
+@@ -2319,6 +2484,18 @@ def easy_setup():
  
      if request.method == "POST":
          values = _easy_setup_form_values()
@@ -627,31 +925,49 @@ index 3d00119..82c583f 100644
          if not values["name"]:
              errors.append("Enter the creator's name.")
          if not values["main"] and not values["approval"]:
-@@ -2341,6 +2496,9 @@ def easy_setup():
+@@ -2341,6 +2518,11 @@ def easy_setup():
          if not errors:
              applied = _apply_easy_setup(values, approval_ident, main_ident)
              session["_easy_setup_result"] = applied
 +            from influencer_hub import commission_guard
 +
-+            proof = commission_guard.amazon_tag_proof(values["amazon_tag"])
++            proof = commission_guard.amazon_tag_proof(
++                values["amazon_tag"], compact=bool(main_ident)
++            )
              flash(
                  f"✅ {applied['name']} is set up and posting. "
                  f"Amazon → {values['amazon_tag']}"
-@@ -2348,6 +2506,13 @@ def easy_setup():
+@@ -2348,6 +2530,17 @@ def easy_setup():
                  + (f", Meesho → HYPD store {values['hypd_store_id']}" if values["allow_hypd"] else ""),
                  "success",
              )
-+            flash(
++            proof_message = (
 +                "Amazon deals will post as " + proof["posted_link"]
-+                + (" (verified ✅)" if proof["ok"] else " (⚠ not verified — check the tag)"),
-+                "success" if proof["ok"] else "warning",
++                + (" (verified ✅)" if proof["ok"] else " (⚠ not verified — check the tag)")
 +            )
++            if proof.get("shortened"):
++                proof_message += " → opens only " + proof["redirect_target"]
++            elif proof.get("short_link_status", {}).get("active") and proof.get("short_link_error"):
++                proof_message += " ⚠ " + proof["short_link_error"] + " Using canonical tagged URL instead."
++            flash(proof_message, "success" if proof["ok"] else "warning")
 +            if tag_note:
 +                flash("⚠ " + tag_note, "warning")
              return redirect(url_for("easy_setup", done=applied["inf_id"]))
  
      preview = _routing_preview(**_routing_arguments(values))
-@@ -3008,6 +3173,26 @@ def api_test_render_deal():
+@@ -2991,7 +3184,10 @@ def api_test_render_deal():
+             "3. Flipkart Shoes: https://www.flipkart.com/shoes/p/itm123456"
+         )
+ 
+-    from influencer_hub import earnkaro, link_router
++    from influencer_hub import advanced_shortener, earnkaro, link_router
++
++    requested_amz_tag = amz_tag or config.AMAZON_ASSOCIATE_TAG
++    effective_amz_tag = link_router.effective_amazon_tag(requested_amz_tag)
+ 
+     if only_amazon:
+         allow_amazon, allow_earnkaro, allow_hypd = True, False, False
+@@ -3008,6 +3204,26 @@ def api_test_render_deal():
      if not only_amazon and role != "approval":
          allowed_kinds.add("lehlah")
  
@@ -662,7 +978,7 @@ index 3d00119..82c583f 100644
 +    if link_router.has_opaque_link(sample_text):
 +        try:
 +            sample_text, unresolved_wrappers = _run(asyncio.wait_for(
-+                link_router.resolve_opaque_links_in_text_async(sample_text, amz_tag), timeout=12
++                link_router.resolve_opaque_links_in_text_async(sample_text, effective_amz_tag), timeout=12
 +            ))
 +        except Exception:
 +            unresolved_wrappers = link_router.unresolved_opaque_links(sample_text)
@@ -678,17 +994,40 @@ index 3d00119..82c583f 100644
      filtered_text = link_router.filter_disallowed_affiliate_links(sample_text, allowed_kinds)
      detected_links = link_router.collect_links(sample_text)
      merchant_urls = {
-@@ -3037,12 +3222,30 @@ def api_test_render_deal():
+@@ -3032,23 +3248,66 @@ def api_test_render_deal():
+ 
+     rendered = link_router.render_for_influencer(
+         filtered_text,
+-        amazon_tag=amz_tag or config.AMAZON_ASSOCIATE_TAG,
++        amazon_tag=effective_amz_tag,
+         earnkaro_links=earnkaro_links,
          role=role,
          hypd_store_id=hypd_store,
      )
++    # The preview must use the same final compacting pass as the worker. This
++    # allocates only a local stored redirect record (no deal is dispatched), so
++    # the returned /a/<code> link is genuinely clickable evidence.
++    if role != "approval":
++        try:
++            rendered = _run(advanced_shortener.shorten_our_links_advanced(
++                rendered, effective_amz_tag, hypd_store
++            ))
++            if config.LEHLAH_SHORTLINKS_ENABLED:
++                rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
++            rendered = link_router.deduplicate_urls_in_text(rendered)
++        except Exception as exc:
++            warnings.append(
++                f"Branded shortening preview could not complete ({type(exc).__name__}); "
++                "the canonical attributed links are shown instead."
++            )
++
 +    from influencer_hub import commission_guard
 +
 +    expected_pubid = (
 +        db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or ""
 +    ).strip()
 +    our_links = commission_guard.our_affiliate_urls(
-+        rendered, amz_tag or config.AMAZON_ASSOCIATE_TAG, hypd_store, expected_pubid,
++        rendered, effective_amz_tag, hypd_store, expected_pubid,
 +        source_text=sample_text,
 +    )
 +    if our_links:
@@ -697,6 +1036,7 @@ index 3d00119..82c583f 100644
 +        verdict = "held_for_retry"
 +    else:
 +        verdict = "no_our_link"
++    preview_short_link_status = amazon_shortlinks.short_link_status()
      return jsonify({
          "ok": True,
          "input": sample_text,
@@ -710,17 +1050,38 @@ index 3d00119..82c583f 100644
          "network_settings": {
              "amazon": bool(allow_amazon),
              "earnkaro": bool(allow_earnkaro),
+             "hypd": bool(allow_hypd),
+             "only_amazon": bool(only_amazon),
+         },
++        "amazon_tag": effective_amz_tag,
++        "short_links": {
++            **preview_short_link_status,
++            "active_for_this_preview": bool(
++                role != "approval" and allow_amazon and preview_short_link_status["active"]
++            ),
++        },
+     })
+ 
+ 
 diff --git a/dashboard/static/app.js b/dashboard/static/app.js
-index 47584ab..c161930 100644
+index 47584ab..cb8bb1a 100644
 --- a/dashboard/static/app.js
 +++ b/dashboard/static/app.js
-@@ -356,8 +356,12 @@
+@@ -356,8 +356,20 @@
          <td>${row.result ? `<code class="routing-result">${escapeHtml(row.result)}</code>` : ''}
            <span class="routing-note">${escapeHtml(row.note)}</span></td>
        </tr>`).join('');
-+    const proof = preview.tag_proof
-+      ? `<p class="routing-note${preview.tag_usable ? '' : ' is-warn'}">Amazon deals will post this exact link: <code class="routing-result">${escapeHtml(preview.tag_proof)}</code> ${preview.tag_usable ? '✅ with the tag you gave' : '⚠ this tag will be replaced by the configured fallback — check it'}</p>`
-+      : '';
++    const shortLinks = preview.short_links || {};
++    let proof = '';
++    if (preview.tag_proof) {
++      if (shortLinks.active_for_this_channel) {
++        proof = `<p class="routing-note${preview.tag_usable ? '' : ' is-warn'}">Canonical Amazon target: <code class="routing-result">${escapeHtml(preview.tag_proof)}</code> ${preview.tag_usable ? '✅ with the tag you gave' : '⚠ check this tag'}<br><strong>Compact branded links are ON:</strong> broadcast/WhatsApp posts use <code class="routing-result">${escapeHtml(shortLinks.base_url)}/a/&lt;code&gt;?tag=${escapeHtml(preview.tag)}</code>. Save the channel or use Test a Deal to mint the exact clickable code; it redirects only to the target above.</p>`;
++      } else if (shortLinks.native_for_approval) {
++        proof = `<p class="routing-note">Approval posts stay native by design: <code class="routing-result">${escapeHtml(preview.tag_proof)}</code> ✅ with the tag you gave.</p>`;
++      } else {
++        proof = `<p class="routing-note${preview.tag_usable ? '' : ' is-warn'}">Amazon deals will post this canonical link: <code class="routing-result">${escapeHtml(preview.tag_proof)}</code> ${preview.tag_usable ? `✅ with the tag you gave. ${escapeHtml(shortLinks.reason || '')}` : '⚠ this tag will be replaced by the configured fallback — check it'}</p>`;
++      }
++    }
      return `
        <p class="routing-summary"><strong>${escapeHtml(preview.summary)}</strong></p>
 +      ${proof}
@@ -741,17 +1102,26 @@ index 22a95f6..cef6b70 100644
  /* ---------- Routing preview table ---------- */
  .routing-summary {
 diff --git a/dashboard/templates/_routing_preview.html b/dashboard/templates/_routing_preview.html
-index 45b4785..7acf1bc 100644
+index 45b4785..f70d102 100644
 --- a/dashboard/templates/_routing_preview.html
 +++ b/dashboard/templates/_routing_preview.html
-@@ -43,6 +43,12 @@
+@@ -43,6 +43,21 @@
      {% endfor %}
    </tbody>
  </table>
 +{% if preview.tag_proof %}
 +  <p class="routing-note{% if not preview.tag_usable %} is-warn{% endif %}">
-+    Amazon deals will post this exact link: <code class="routing-result">{{ preview.tag_proof }}</code>
-+    {% if preview.tag_usable %}✅ with the tag you gave{% else %}⚠ this tag will be replaced by the configured fallback — check it{% endif %}
++    {% if preview.short_links.active_for_this_channel %}
++      Canonical Amazon target: <code class="routing-result">{{ preview.tag_proof }}</code> ✅ with the tag you gave.<br />
++      <strong>Compact branded links are ON:</strong> broadcast/WhatsApp posts use
++      <code class="routing-result">{{ preview.short_links.base_url }}/a/&lt;code&gt;?tag={{ preview.tag }}</code>.
++      Save the channel or use Test a Deal to mint the exact clickable code; it redirects only to the target above.
++    {% elif preview.short_links.native_for_approval %}
++      Approval posts stay native by design: <code class="routing-result">{{ preview.tag_proof }}</code> ✅ with the tag you gave.
++    {% else %}
++      Amazon deals will post this canonical link: <code class="routing-result">{{ preview.tag_proof }}</code>
++      {% if preview.tag_usable %}✅ with the tag you gave. {{ preview.short_links.reason }}{% else %}⚠ this tag will be replaced by the configured fallback — check it{% endif %}
++    {% endif %}
 +  </p>
 +{% endif %}
  {% if preview.earnkaro_on and not preview.earnkaro_ready %}
@@ -809,8 +1179,302 @@ index f75fe9b..56b1c53 100644
          <input type="checkbox" name="allow_hypd" value="1" {{ 'checked' if inf.allow_hypd != 0 else '' }} title="Enable the Meesho/HYPD route; raw Meesho is unchanged without HYPD's official generator" /> 🛍️ HYPD ON (Meesho)
        </label>
        <input name="hypd_store_id" value="{{ inf.hypd_store_id or current_hypd_store }}" placeholder="HYPD Store ID" style="font-size: 11px; width: 85px; font-family:monospace;" title="HYPD Store ID for this channel" />
+diff --git a/dashboard/templates/setup.html b/dashboard/templates/setup.html
+index 05f79f0..f790aad 100644
+--- a/dashboard/templates/setup.html
++++ b/dashboard/templates/setup.html
+@@ -31,6 +31,26 @@
+   <a class="setup-shortcut" href="#deal-simulator"><span>🧪 Safe preview</span><strong>Test routing without posting</strong><span>Preview Amazon, EarnKaro, and Meesho/HYPD decisions.</span></a>
+ </section>
+ 
++<section id="branded-short-links" class="card" style="margin-top:16px;">
++  <div class="setup-section-title" style="margin-top:0;">
++    <div>
++      <p class="eyebrow">COMPACT · VERIFIED · CREATOR-SAFE</p>
++      <h2>🔗 Branded affiliate short links</h2>
++      {% if short_links.active %}
++        <p class="hint"><strong style="color:#86efac;">ACTIVE</strong> · {{ short_links.base_url }} is the only trusted origin. Amazon broadcast links become <code>{{ short_links.base_url }}/a/&lt;code&gt;?tag=&lt;creator-tag&gt;</code>; HYPD uses <code>/m/&lt;code&gt;</code>; approved LehLah uses <code>/l/&lt;code&gt;</code>. Every code is stored and checked before it can redirect.</p>
++      {% else %}
++        <p class="hint"><strong style="color:#fcd34d;">CANONICAL MODE</strong> · Amazon tags are correct, but URLs stay long until a public HTTPS branded domain is configured. This is intentional: the hub never creates a fake short link from a VM IP, localhost, or another service's domain.</p>
++      {% endif %}
++    </div>
++    <a class="btn btn-secondary" href="#deal-simulator">Test a Deal →</a>
++  </div>
++  {% if not short_links.active %}
++    <p class="routing-note is-warn">On the VM, point a domain you own to the dashboard/reverse proxy, then add <code>AFFILIATE_SHORT_LINK_BASE_URL=https://go.your-domain.in</code> to the private <code>.env</code> and restart the dashboard + worker. Do not put a path, localhost, or a VM IP in this setting.</p>
++  {% else %}
++    <p class="routing-note">Click a code only after saving or using Test a Deal: it must resolve to the exact canonical Amazon target carrying the same creator tag. A wrong host, changed tag, forged code, or stale code returns 404 rather than redirecting.</p>
++  {% endif %}
++</section>
++
+ <section class="card launch-readiness" aria-labelledby="readiness-title">
+   <div class="setup-section-title" style="margin-top:0;">
+     <div>
+diff --git a/influencer_hub/advanced_shortener.py b/influencer_hub/advanced_shortener.py
+index f0a4f8a..1838a8c 100644
+--- a/influencer_hub/advanced_shortener.py
++++ b/influencer_hub/advanced_shortener.py
+@@ -2,7 +2,7 @@
+ 
+ This module implements the user's request:
+ - ONLY HYPD links with OUR store ID (93944) are shortened, via first-party /m/ or Bitly fallback
+-- ONLY Amazon links with OUR Associate tag are shortened, via first-party /amazon/ or Bitly fallback
++- ONLY Amazon links with OUR Associate tag are shortened, via verified first-party /a/ or Bitly fallback
+ - Generic merchant links (Flipkart etc.) are NOT shortened here; they use EarnKaro's own ekaro.in shortener
+ - This is an ADVANCED system: short codes are stored in DB, redirects are verified, tags are preserved
+ 
+@@ -99,7 +99,7 @@ async def shorten_our_links_advanced(
+     Advanced shortener that ONLY shortens OUR affiliate links.
+ 
+     Priority:
+-    1. For Amazon OUR links: try first-party /amazon/<code>?tag=... if AMAZON_SHORT_LINK_BASE_URL configured,
++    1. For Amazon OUR links: try first-party /a/<code>?tag=... if one trusted short-link base is configured,
+        else fallback to Bitly if bitly_token available and link is long or user wants all OUR links shortened
+     2. For HYPD OUR links: try first-party /m/<code> if MEESHO_SHORT_LINK_BASE_URL configured,
+        else fallback to Bitly if bitly_token available
+diff --git a/influencer_hub/amazon_shortlinks.py b/influencer_hub/amazon_shortlinks.py
+index 097a236..dbc88a3 100644
+--- a/influencer_hub/amazon_shortlinks.py
++++ b/influencer_hub/amazon_shortlinks.py
+@@ -1,10 +1,16 @@
+ """Transparent, first-party Amazon short links (optional).
+ 
+-Amazon-issued amzn.to links can only be generated by Amazon's Associates tools.
+-This module instead supports an operator-owned HTTPS hostname routed to the
+-Flask redirect endpoint. Short links explicitly use an ``/amazon/`` path and
+-retain the creator's Associates ``tag`` query parameter. With no public base
+-URL configured, the canonical Amazon URL is left unchanged.
++Amazon-issued ``amzn.to`` links can only be generated by Amazon's Associates
++tools.  This module instead creates a compact link on an operator-owned HTTPS
++origin routed to this app::
++
++    https://go.example.in/a/AbCdEf12?tag=creator-21
++
++The tag remains visible and the redirect only succeeds when all three facts
++match: the configured origin, a stored opaque code, and the creator's exact
++Associates tag.  It then redirects to the canonical Amazon product URL where
++Amazon receives that tag.  With no public base URL configured, canonical Amazon
++URLs are intentionally left unchanged.
+ """
+ from __future__ import annotations
+ 
+@@ -16,10 +22,31 @@ from . import config, db, link_router
+ 
+ logger = logging.getLogger(__name__)
+ _ASIN_PATH_RE = re.compile(r"/dp/([A-Za-z0-9]{10})\Z", re.I)
++_SHORT_CODE_RE = re.compile(r"[A-Za-z0-9_-]{8}\Z")
++_SHORT_PATH_RE = re.compile(r"/(?:a|amazon)/([A-Za-z0-9_-]{8})\Z", re.I)
++
++
++def _port(parsed) -> int | None:
++    """Return a parsed port, treating malformed ports as invalid."""
++    try:
++        return parsed.port
++    except ValueError:
++        return -1
+ 
+ 
+-def _configured_base_url(value: str | None = None) -> str:
+-    base = str(value if value is not None else config.AMAZON_SHORT_LINK_BASE_URL).strip().rstrip("/")
++def configured_base_url(value: str | None = None) -> str:
++    """Return the trusted public origin for Amazon links, or ``""``.
++
++    ``AFFILIATE_SHORT_LINK_BASE_URL`` is the easy one-domain setup.  The older,
++    Amazon-specific setting remains an explicit override for operators who use
++    separate domains.
++    """
++    configured = (
++        value
++        if value is not None
++        else (config.AMAZON_SHORT_LINK_BASE_URL or config.AFFILIATE_SHORT_LINK_BASE_URL)
++    )
++    base = str(configured or "").strip().rstrip("/")
+     if not base:
+         return ""
+     parsed = urlparse(base)
+@@ -28,43 +55,169 @@ def _configured_base_url(value: str | None = None) -> str:
+         or not parsed.hostname
+         or parsed.username
+         or parsed.password
++        or _port(parsed) is not None
+         or parsed.path not in {"", "/"}
+         or parsed.query
+         or parsed.fragment
+     ):
+         logger.warning(
+-            "AMAZON_SHORT_LINK_BASE_URL must be an origin-only HTTPS URL; using canonical Amazon URLs"
++            "AMAZON_SHORT_LINK_BASE_URL/AFFILIATE_SHORT_LINK_BASE_URL must be an "
++            "origin-only HTTPS URL; using canonical Amazon URLs"
+         )
+         return ""
+     return base
+ 
+ 
++# Kept private-name compatible for any older local integration that imported it.
++_configured_base_url = configured_base_url
++
++
++def _same_origin(left, right) -> bool:
++    return (
++        left.scheme.lower() == right.scheme.lower() == "https"
++        and (left.hostname or "").lower() == (right.hostname or "").lower()
++        and _port(left) == _port(right)
++    )
++
++
++def is_valid_short_code(code: str) -> bool:
++    return bool(_SHORT_CODE_RE.fullmatch(str(code or "")))
++
++
++def is_valid_amazon_target(target_url: str, associate_tag: str) -> bool:
++    """Accept only the exact canonical Amazon target this app can safely serve.
++
++    Product selector ``th``/``psc`` values are retained because they choose a
++    real variant; all referral, redirect, credentials and fragment material is
++    deliberately rejected.  This predicate is shared by the redirect endpoint
++    and the commission proof, so a record cannot be called "ours" unless it is
++    actually safe to open.
++    """
++    tag = str(associate_tag or "").strip()
++    if not tag or not link_router.amazon_tag_is_usable(tag):
++        return False
++    try:
++        parsed = urlparse(str(target_url or ""))
++        port = _port(parsed)
++    except (TypeError, ValueError):
++        return False
++    if (
++        parsed.scheme != "https"
++        or (parsed.hostname or "").lower() not in {"amazon.in", "www.amazon.in"}
++        or parsed.username
++        or parsed.password
++        or port is not None
++        or parsed.fragment
++        or not _ASIN_PATH_RE.fullmatch(parsed.path)
++    ):
++        return False
++    query = parse_qsl(parsed.query, keep_blank_values=True)
++    tags = [value for key, value in query if key.casefold() == "tag"]
++    if tags != [tag]:
++        return False
++    selectors: set[str] = set()
++    for key, value in query:
++        lower = key.casefold()
++        if lower == "tag":
++            continue
++        if lower not in {"th", "psc"} or not value.isdigit() or lower in selectors:
++            return False
++        selectors.add(lower)
++    return True
++
++
++def _short_code_from_path(path: str) -> str:
++    match = _SHORT_PATH_RE.fullmatch(str(path or ""))
++    return match.group(1) if match else ""
++
++
++def is_our_amazon_short_url(
++    url: str,
++    associate_tag: str,
++    base_url: str | None = None,
++) -> bool:
++    """Return true only for a *stored*, trusted-origin short Amazon URL.
++
++    Merely looking like ``/a/<code>?tag=...`` is never enough: an attacker may
++    use the same path on another host.  The URL must use this deployment's
++    configured HTTPS origin, contain exactly the requested tag and point to a
++    DB record whose target is still a canonical tagged Amazon product URL.
++    """
++    tag = str(associate_tag or "").strip()
++    base = configured_base_url(base_url)
++    if not base or not tag:
++        return False
++    try:
++        parsed = urlparse(str(url or ""))
++        trusted = urlparse(base)
++        if (
++            not _same_origin(parsed, trusted)
++            or parsed.username
++            or parsed.password
++            or parsed.fragment
++        ):
++            return False
++    except (TypeError, ValueError):
++        return False
++
++    code = _short_code_from_path(parsed.path)
++    query = parse_qsl(parsed.query, keep_blank_values=True)
++    if not code or query != [("tag", tag)]:
++        return False
++    try:
++        record = db.get_amazon_short_link(code)
++    except Exception:
++        # A dashboard/read-only preview can run before a fresh DB is initialised;
++        # fail closed rather than ever treating an unverified URL as ours.
++        return False
++    return bool(
++        record
++        and str(record.get("associate_tag") or "") == tag
++        and is_valid_amazon_target(str(record.get("target_url") or ""), tag)
++    )
++
++
++def short_link_status() -> dict:
++    """Secret-free status for dashboard/CLI copy; never derives a host from a request."""
++    base = configured_base_url()
++    return {
++        "active": bool(base),
++        "base_url": base,
++        "path_template": "/a/<8-character-code>?tag=<creator-tag>",
++        "reason": (
++            "Branded Amazon short links are active. Each code is stored and opens only "
++            "its creator-tagged Amazon product URL."
++            if base else
++            "Set AFFILIATE_SHORT_LINK_BASE_URL to one public HTTPS origin routed to this "
++            "dashboard to enable compact Amazon links."
++        ),
++    }
++
++
+ def shorten_amazon_links(text: str, base_url: str | None = None) -> str:
+-    """Replace canonical, tagged Amazon.in ASIN URLs with first-party short URLs.
++    """Replace canonical tagged Amazon.in product URLs with compact first-party URLs.
+ 
+-    Short form: ``<configured-base>/amazon/<opaque-code>?tag=<associate-id>``.
+-    The public route verifies both the code and tag before redirecting to the
+-    stored ``https://www.amazon.in/dp/<ASIN>?tag=...`` target.
++    New links use ``/a/<opaque-code>?tag=<associate-id>``.  The longer legacy
++    ``/amazon/<code>`` route remains accepted forever so already-posted links
++    continue to work after an upgrade.
+     """
+-    base = _configured_base_url(base_url)
++    base = configured_base_url(base_url)
+     if not base or not text:
+         return text
+ 
+     rendered = text
+     for url in link_router.find_urls(text):
+         parsed = urlparse(url)
+-        host = (parsed.hostname or "").lower()
+-        asin_match = _ASIN_PATH_RE.fullmatch(parsed.path)
+         tags = [
+             value for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+-            if key.lower() == "tag" and value
++            if key.casefold() == "tag"
+         ]
+-        if host not in {"amazon.in", "www.amazon.in"} or not asin_match or len(tags) != 1:
++        if len(tags) != 1 or not is_valid_amazon_target(url, tags[0]):
+             # Do not wrap opaque amzn.to links, non-product pages, or URLs with
+             # ambiguous tracking IDs; these stay as their Amazon-issued links.
+             continue
+         tag = tags[0]
+         code = db.get_or_create_amazon_short_link(url, tag)
+-        short_url = f"{base}/amazon/{code}?{urlencode({'tag': tag})}"
++        short_url = f"{base}/a/{code}?{urlencode({'tag': tag})}"
+         rendered = rendered.replace(url, short_url)
+     return rendered
 diff --git a/influencer_hub/cli.py b/influencer_hub/cli.py
-index 1fb229b..ad067dc 100644
+index 1fb229b..2fa2dc5 100644
 --- a/influencer_hub/cli.py
 +++ b/influencer_hub/cli.py
 @@ -9,6 +9,8 @@ Examples
@@ -929,7 +1593,52 @@ index 1fb229b..ad067dc 100644
  def _cmd_vm_watch(args):  # pragma: no cover - side effect
      db.init()
      if args.loop:
-@@ -456,6 +558,19 @@ def build_parser() -> argparse.ArgumentParser:
+@@ -315,6 +417,23 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
+         db_ok = False
+     checks.append(("Database OK", db_ok))
+ 
++    short_link_note = ""
++    if getattr(args, "short_links", False):
++        from . import amazon_shortlinks
++
++        status = amazon_shortlinks.short_link_status()
++        short_ok = bool(status["active"])
++        checks.append((
++            "Branded affiliate short-link HTTPS origin "
++            + (status["base_url"] if short_ok else "configured"),
++            short_ok,
++        ))
++        short_link_note = (
++            "Local configuration is valid. This check does not make an external request; "
++            "save/Test a Deal, then open the returned /a/<code> URL once to verify your DNS/TLS proxy."
++            if short_ok else status["reason"]
++        )
++
+     source_note = ""
+     if getattr(args, "telegram_sources", False):
+         from . import puller
+@@ -354,6 +473,8 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
+         print(f"  [{'OK' if ok else 'XX'}] {name}")
+     if source_note:
+         print(f"  [WARN] {source_note}")
++    if short_link_note:
++        print(f"  [INFO] {short_link_note}")
+     all_ok = all(o for _, o in checks)
+     verdict = (
+         "selected checks passed (this is not an end-to-end delivery test)"
+@@ -448,6 +569,11 @@ def build_parser() -> argparse.ArgumentParser:
+         help="also run a read-only Telegram source-selection check; never checks invites or reads history",
+     )
+     d.add_argument("--timeout", type=int, default=30, help="live Telegram source-check timeout in seconds")
++    d.add_argument(
++        "--short-links",
++        action="store_true",
++        help="also validate the local branded HTTPS short-link origin (does not make an external request)",
++    )
+     d.set_defaults(func=_cmd_doctor)
+ 
+     sub.add_parser("status", help="overview of everything").set_defaults(func=_cmd_status)
+@@ -456,6 +582,19 @@ def build_parser() -> argparse.ArgumentParser:
      r.add_argument("id", type=int)
      r.set_defaults(func=_cmd_render_demo)
  
@@ -950,10 +1659,69 @@ index 1fb229b..ad067dc 100644
      v.add_argument("--loop", action="store_true")
      v.set_defaults(func=_cmd_vm_watch)
 diff --git a/influencer_hub/commission_guard.py b/influencer_hub/commission_guard.py
-index 8997ad9..b7ffe62 100644
+index 8997ad9..2817173 100644
 --- a/influencer_hub/commission_guard.py
 +++ b/influencer_hub/commission_guard.py
-@@ -63,6 +63,7 @@ def audit_rendered_text(
+@@ -18,7 +18,7 @@ from __future__ import annotations
+ import re
+ from urllib.parse import parse_qsl, urlparse
+ 
+-from . import link_router
++from . import amazon_shortlinks, hypd_shortlinks, lehlah_shortlinks, link_router
+ from .advanced_shortener import (
+     is_our_amazon_attribution,
+     is_our_amazon_link,
+@@ -56,6 +56,49 @@ def _publisher_id_values(url: str, expected_pubid: str = "") -> list[str]:
+         return []
+ 
+ 
++def _verified_first_party_short_link(
++    url: str,
++    effective_amz_tag: str,
++    effective_hypd_store: str,
++) -> tuple[str, str] | None:
++    """Return a verified hub short-link kind/reason, never a hostname guess.
++
++    All three branded paths are deliberately checked against their configured
++    HTTPS origin *and* a stored DB target.  This is the proof boundary that
++    keeps ``https://evil.example/a/<code>?tag=ours`` from being counted as an
++    earning link merely because it resembles one of our routes.
++    """
++    tag = str(effective_amz_tag or "").strip()
++    store = str(effective_hypd_store or "").strip()
++    if tag and amazon_shortlinks.is_our_amazon_short_url(url, tag):
++        return "amazon", f"Verified branded Amazon short link (tag={tag})"
++    if store and hypd_shortlinks.is_our_hypd_short_url(url, store):
++        return "hypd", f"Verified branded HYPD short link (store={store})"
++    if lehlah_shortlinks.is_our_lehlah_short_url(url):
++        return "lehlah", "Verified branded LehLah short link (stored attribution preserved)"
++    return None
++
++
++def _unverified_first_party_shape(url: str) -> str:
++    """Return the claimed route kind for a hub-shaped URL that is not verified.
++
++    This catches typo domains, stale/deleted codes and forged paths before they
++    can cross the commission guard.  Ordinary informational URLs remain
++    untouched; only an exact compact route shape is treated as suspicious.
++    """
++    try:
++        parsed = urlparse(str(url or ""))
++    except (TypeError, ValueError):
++        return ""
++    if re.fullmatch(r"/(?:a|amazon)/[A-Za-z0-9_-]{8}", parsed.path, re.I):
++        return "amazon"
++    if re.fullmatch(r"/m/[A-Za-z0-9_-]{8}", parsed.path):
++        return "hypd"
++    if re.fullmatch(r"/l/[A-Za-z0-9_-]{8}", parsed.path):
++        return "lehlah"
++    return ""
++
++
+ def audit_rendered_text(
+     rendered: str,
+     effective_amz_tag: str,
+@@ -63,6 +106,7 @@ def audit_rendered_text(
      expected_earnkaro_pubid: str | None = None,
      bitly_map: dict[str, str] | None = None,
      allowed_kinds: set[str] | None = None,
@@ -961,7 +1729,37 @@ index 8997ad9..b7ffe62 100644
  ) -> dict:
      """
      Audit final rendered text for commission leaks.
-@@ -130,6 +131,13 @@ def audit_rendered_text(
+@@ -104,6 +148,29 @@ def audit_rendered_text(
+         host = _host_of(url)
+         entry: dict = {"url": url, "kind": kind, "host": host, "ok": True, "reason": ""}
+ 
++        # First-party routes are verified from the configured origin plus their
++        # stored target, never from a path/host naming convention alone.
++        branded = _verified_first_party_short_link(url, effective_tag, effective_store)
++        if branded:
++            entry["kind"], entry["reason"] = branded
++            details.append(entry)
++            continue
++        claimed_kind = _unverified_first_party_shape(url)
++        if claimed_kind:
++            entry["kind"] = claimed_kind
++            entry["ok"] = False
++            entry["hard"] = True
++            entry["reason"] = (
++                f"Unverified branded-looking {claimed_kind} short link (not OUR): {url}"
++            )
++            issues.append(entry["reason"])
++            if claimed_kind == "amazon":
++                amazon_ok = False
++            elif claimed_kind == "hypd":
++                hypd_ok = False
++            details.append(entry)
++            continue
++
+         # Check if this URL is a Bitly short link that we created for OUR Amazon/HYPD
+         # Bitly links like https://bit.ly/xxxx should have been OUR links before shortening
+         if host in {"bit.ly", "www.bit.ly", "bitly.com", "www.bitly.com"} or host.endswith(".bit.ly"):
+@@ -130,6 +197,13 @@ def audit_rendered_text(
                  else:
                      # Bitly for generic merchant pre-ADVANCED mode — not used when advanced_only_our enabled
                      entry["reason"] = f"Bitly for generic merchant: {long_url}"
@@ -975,7 +1773,7 @@ index 8997ad9..b7ffe62 100644
              else:
                  # Bitly link not in our map — in advanced_only_our mode, any bit.ly is OUR (generic Bitly disabled)
                  # So we treat it as OUR if no map, to avoid false warnings for correctly shortened OUR links
-@@ -151,9 +159,12 @@ def audit_rendered_text(
+@@ -151,9 +225,12 @@ def audit_rendered_text(
                  # A search page, a storefront or a short link cannot be turned
                  # into /dp/ASIN without a network round-trip, but commission is
                  # carried by the tag — so the page is KEPT, never deleted.
@@ -991,7 +1789,7 @@ index 8997ad9..b7ffe62 100644
                  else:
                      entry["reason"] = (
                          f"OUR Amazon page kept as-is (tag={effective_tag}, "
-@@ -163,9 +174,12 @@ def audit_rendered_text(
+@@ -163,9 +240,12 @@ def audit_rendered_text(
              else:
                  parsed = urlparse(url)
                  tags = [v for k, v in parse_qsl(parsed.query) if k.lower() == "tag"]
@@ -1006,10 +1804,19 @@ index 8997ad9..b7ffe62 100644
                      amazon_ok = False
                      issues.append(entry["reason"])
                  else:
-@@ -247,6 +261,16 @@ def audit_rendered_text(
+@@ -237,15 +317,15 @@ def audit_rendered_text(
              else:
-                 entry["reason"] = f"First-party short link: {url}"
+                 entry["reason"] = f"EarnKaro short link host {host}"
  
+-        elif host in {"meesho.go.example.test", "go.testbrand.in", "amz.testbrand.in"} or url.startswith("https://amz.") or url.startswith("https://go."):
+-            # First-party short link ( /m/<code> or /amazon/<code>?tag= )
+-            # These are OUR first-party wrappers — verify they contain tag/store via DB? For audit, check path
+-            if "/amazon/" in url and effective_tag and f"tag={effective_tag}" in url:
+-                entry["reason"] = f"First-party Amazon short verified tag={effective_tag}"
+-            elif "/m/" in url:
+-                entry["reason"] = f"First-party HYPD short (store {effective_store})"
+-            else:
+-                entry["reason"] = f"First-party short link: {url}"
 +        elif kind == "shortener":
 +            # A wrapper we did not resolve: attribution is unknown. It is not a
 +            # HARD leak (no foreign tag/store is proven), so it never triggers
@@ -1019,11 +1826,30 @@ index 8997ad9..b7ffe62 100644
 +            entry["reason"] = (
 +                f"Opaque wrapper link ({host}) — destination unknown, attribution unverified: {url}"
 +            )
-+
+ 
          else:
              # Other URLs (t.me, etc.) — not affiliate, ignore
-             entry["reason"] = f"Non-affiliate URL (other): {url}"
-@@ -270,6 +294,168 @@ def audit_rendered_text(
+@@ -253,11 +333,14 @@ def audit_rendered_text(
+ 
+         details.append(entry)
+ 
+-    # Strict ok only cares about hard leaks: wrong Amazon tag/store (commission would go to someone else)
+-    # Merchant/Meesho raw URLs are "soft" leaks: they would earn zero if posted, but fallback is intentional for deal retention
+-    # We log them as issues but don't treat as hard failure, to avoid breaking existing deal flow (tests expect fallback)
+-    # User can enable strict mode via dashboard if they want to drop zero-commission merchant/meesho deals
+-    strict_ok = len([d for d in details if not d["ok"] and d["kind"] in {"amazon", "hypd"}]) == 0
++    # Strict ok cares about a wrong Amazon/HYPD attribution and any forged,
++    # stale or wrong-origin branded route. Merchant/Meesho raw URLs are still
++    # soft conversion gaps: they are handled by the retry/hold flow below.
++    strict_ok = not any(
++        not detail["ok"]
++        and (detail["kind"] in {"amazon", "hypd"} or detail.get("hard"))
++        for detail in details
++    )
+ 
+     return {
+         "ok": strict_ok,
+@@ -270,6 +353,195 @@ def audit_rendered_text(
      }
  
  
@@ -1069,6 +1895,14 @@ index 8997ad9..b7ffe62 100644
 +    host = _host_of(url)
 +    kind = link_router.classify_url(url)
 +
++    # A compact link is ours only after origin + code + stored target + account
++    # attribution all agree. Do this before host classification because branded
++    # domains intentionally classify as ``other`` to the generic router.
++    if _verified_first_party_short_link(url, tag, store):
++        return True
++    if _unverified_first_party_shape(url):
++        return False
++
 +    if _is_earnkaro_short(url):
 +        return True
 +    if kind == "lehlah":
@@ -1077,11 +1911,6 @@ index 8997ad9..b7ffe62 100644
 +        if is_our_amazon_link(url, tag) or is_our_amazon_attribution(url, tag):
 +            return True
 +    if kind == "hypd" and store and is_our_hypd_link(url, store):
-+        return True
-+    # First-party short links minted by this hub: /amazon/<code>?tag=OURS and /m/<code>
-+    if "/amazon/" in url and tag and f"tag={tag}" in url:
-+        return True
-+    if "/m/" in url:
 +        return True
 +    if host in {"bit.ly", "www.bit.ly", "bitly.com", "www.bitly.com"} or host.endswith(".bit.ly"):
 +        long_url = ""
@@ -1107,26 +1936,50 @@ index 8997ad9..b7ffe62 100644
 +def amazon_tag_proof(
 +    requested_tag: str,
 +    sample_url: str = "https://www.amazon.in/dp/B0D9P2M1PB?tag=someone-else-21",
++    *,
++    compact: bool = True,
 +) -> dict:
-+    """Offline proof of what a sample Amazon link becomes with this tag.
++    """Build the exact Amazon link a saved broadcast channel will publish.
 +
-+    Used by the dashboard right after a creator/channel is saved, so the operator
-+    sees the exact link that will be posted (and whether it is verified as OURS)
-+    instead of trusting that the tag was picked up.
++    This does no network I/O.  When a trusted branded HTTPS origin is configured
++    it allocates one durable local redirect record, then proves both the compact
++    URL and its canonical Amazon target before returning it to the dashboard.
++    That means the save confirmation is clickable evidence, not a mock string.
 +    """
 +    from . import link_router as _router
 +
-+    tag = _router.effective_amazon_tag(requested_tag)
-+    rendered = _router.render_for_influencer(sample_url, tag)
-+    links = our_affiliate_urls(rendered, tag, "", "")
++    requested = str(requested_tag or "").strip()
++    tag = _router.effective_amazon_tag(requested)
++    canonical = _router.render_for_influencer(sample_url, tag)
++    posted = canonical
++    status = amazon_shortlinks.short_link_status()
++    short_link_error = ""
++    if compact and status["active"]:
++        try:
++            compact = amazon_shortlinks.shorten_amazon_links(canonical)
++            if compact != canonical and amazon_shortlinks.is_our_amazon_short_url(compact, tag):
++                posted = compact
++            elif compact != canonical:
++                short_link_error = "The generated branded code could not be verified."
++        except Exception as exc:  # fail safe: canonical Amazon attribution survives
++            short_link_error = f"Could not create the branded short link ({type(exc).__name__})."
++
++    links = our_affiliate_urls(posted, tag, "", "")
++    shortened = posted != canonical
 +    return {
-+        "requested_tag": str(requested_tag or "").strip(),
++        "requested_tag": requested,
 +        "tag": tag,
-+        "fallback_used": tag != str(requested_tag or "").strip(),
++        "fallback_used": tag != requested,
 +        "tag_usable": _router.amazon_tag_is_usable(requested_tag),
-+        "posted_link": links[0] if links else rendered,
++        "posted_link": links[0] if links else posted,
++        "canonical_link": canonical,
++        "redirect_target": canonical if shortened else "",
++        "shortened": shortened,
++        "compact_requested": bool(compact),
++        "short_link_status": status,
++        "short_link_error": short_link_error,
 +        "ok": bool(links),
-+        "rendered": rendered,
++        "rendered": posted,
 +    }
 +
 +
@@ -1192,11 +2045,48 @@ index 8997ad9..b7ffe62 100644
  def sanitize_rendered_text(
      rendered: str,
      effective_amz_tag: str,
+@@ -294,13 +566,15 @@ def sanitize_rendered_text(
+     if audit["ok"]:
+         return rendered, audit
+ 
+-    # Remove only HARD leaked URLs (wrong Amazon tag/store) — merchant/meesho raw are kept with warning to preserve deal
++    # Remove hard attribution failures only (wrong Amazon/HYPD account and
++    # forged/stale branded paths). Raw merchant/Meesho links remain visible with
++    # their conversion warning so the retry flow can repair them.
+     sanitized = rendered
+     for detail in audit["details"]:
+-        if not detail["ok"] and detail["kind"] in {"amazon", "hypd"}:
+-            leaked_url = detail["url"]
+-            if "not OUR" in detail["reason"] or "without effective" in detail["reason"]:
+-                sanitized = sanitized.replace(leaked_url, "")
++        if not detail["ok"] and (
++            detail["kind"] in {"amazon", "hypd"} or detail.get("hard")
++        ):
++            sanitized = sanitized.replace(detail["url"], "")
+     # Clean up double spaces / empty lines left behind
+     sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
+     sanitized = re.sub(r"[ ]{2,}", " ", sanitized).strip()
 diff --git a/influencer_hub/config.py b/influencer_hub/config.py
-index 51da2ba..c4fbd68 100644
+index 51da2ba..bdb51d5 100644
 --- a/influencer_hub/config.py
 +++ b/influencer_hub/config.py
-@@ -130,6 +130,11 @@ MEESHO_EARNKARO_FALLBACK = _bool("MEESHO_EARNKARO_FALLBACK", True)
+@@ -83,8 +83,13 @@ AMAZON_CREATORS_API_ENDPOINT = _env(
+ )
+ AMAZON_CREATORS_API_APP_NAME = _env("AMAZON_CREATORS_API_APP_NAME", "SMART_BUY")
+ AMAZON_CREATORS_API_TIMEOUT = _int("AMAZON_CREATORS_API_TIMEOUT", 15)
+-# Optional first-party short-link base (an HTTPS domain routed to the Flask app).
+-# Blank keeps Amazon's canonical /dp/<ASIN>?tag=... links.
++# One optional, operator-owned HTTPS origin routed to this Flask app.  It powers
++# compact, verified first-party redirects for Amazon (/a/...), HYPD (/m/...) and
++# approved LehLah links (/l/...).  The network-specific variables below remain
++# available when separate branded domains are wanted.
++AFFILIATE_SHORT_LINK_BASE_URL = _env("AFFILIATE_SHORT_LINK_BASE_URL", "").rstrip("/")
++# Optional Amazon-only override. Blank inherits AFFILIATE_SHORT_LINK_BASE_URL;
++# if both are blank, Amazon stays canonical /dp/<ASIN>?tag=... .
+ AMAZON_SHORT_LINK_BASE_URL = _env("AMAZON_SHORT_LINK_BASE_URL", "").rstrip("/")
+ 
+ # ----- Telegram (the account that reads joined source dialogs and posts) -----
+@@ -130,6 +135,11 @@ MEESHO_EARNKARO_FALLBACK = _bool("MEESHO_EARNKARO_FALLBACK", True)
  # Hold back deals whose links would all post without our attribution. Volume vs
  # earnings trade-off, so the operator decides; the Money Radar recommends it.
  ONLY_EARNING_DEALS = _bool("ONLY_EARNING_DEALS", False)
@@ -1209,7 +2099,7 @@ index 51da2ba..c4fbd68 100644
  # ----- EarnKaro (optional configured network for eligible non-Amazon links) -----
  EARNKARO_API_KEY = _env("EARNKARO_API_KEY")
 diff --git a/influencer_hub/db.py b/influencer_hub/db.py
-index 5076b9b..e30efab 100644
+index 5076b9b..fe44e4f 100644
 --- a/influencer_hub/db.py
 +++ b/influencer_hub/db.py
 @@ -122,6 +122,22 @@ CREATE TABLE IF NOT EXISTS worker_offsets (
@@ -1338,6 +2228,58 @@ index 5076b9b..e30efab 100644
  def get_worker_offset(source_key: str) -> int:
      """Return the last fully handled Telegram message id for a joined dialog."""
      con = _connect()
+@@ -1485,21 +1597,44 @@ def _amazon_short_code(target_url: str, salt: int) -> str:
+ 
+ 
+ def get_or_create_amazon_short_link(target_url: str, associate_tag: str) -> str:
+-    """Persist a stable first-party code for a tagged Amazon.in product URL.
++    """Persist a stable first-party code for one canonical tagged Amazon item.
+ 
+-    The public redirect endpoint separately validates the stored destination
+-    and requires this same tag as a query parameter, avoiding an open redirect
+-    and keeping the Associate ID visible on the short URL.
++    This is deliberately more restrictive than "any Amazon URL": only the
++    canonical ``/dp/<10-char-ASIN>`` path, a single Associates tag and harmless
++    numeric variant selectors are stored.  The public redirect route validates
++    the same invariant before every redirect, so this table never becomes a
++    generic open-redirect list.
+     """
+     tag = str(associate_tag or "").strip()
+-    parsed = urlparse(str(target_url or ""))
+-    query_tags = parse_qs(parsed.query).get("tag", [])
++    try:
++        parsed = urlparse(str(target_url or ""))
++        port = parsed.port
++    except ValueError:
++        parsed = urlparse("")
++        port = -1
++    query = parse_qsl(parsed.query, keep_blank_values=True)
++    query_tags = [value for key, value in query if key.casefold() == "tag"]
++    selectors: set[str] = set()
++    safe_query = True
++    for key, value in query:
++        lower = key.casefold()
++        if lower == "tag":
++            continue
++        if lower not in {"th", "psc"} or not value.isdigit() or lower in selectors:
++            safe_query = False
++            break
++        selectors.add(lower)
+     if (
+         parsed.scheme != "https"
+         or (parsed.hostname or "").lower() not in {"amazon.in", "www.amazon.in"}
+-        or not parsed.path.startswith("/dp/")
++        or parsed.username
++        or parsed.password
++        or port is not None
++        or parsed.fragment
++        or not re.fullmatch(r"/dp/[A-Za-z0-9]{10}", parsed.path, re.I)
+         or not tag
+         or query_tags != [tag]
++        or not safe_query
+     ):
+         raise ValueError("Only canonical, tagged Amazon.in product URLs can be shortened")
+ 
 diff --git a/influencer_hub/earnkaro.py b/influencer_hub/earnkaro.py
 index 693cfad..fabb5e1 100644
 --- a/influencer_hub/earnkaro.py
@@ -1363,6 +2305,156 @@ index 693cfad..fabb5e1 100644
  async def convert_one(session: aiohttp.ClientSession, url: str,
                        include_meesho: bool = False) -> str:
      # Amazon has its own Associates tag, so it never goes to EarnKaro. Raw
+diff --git a/influencer_hub/hypd_shortlinks.py b/influencer_hub/hypd_shortlinks.py
+index e7cc63e..9283d13 100644
+--- a/influencer_hub/hypd_shortlinks.py
++++ b/influencer_hub/hypd_shortlinks.py
+@@ -20,9 +20,12 @@ _SHORT_CODE_RE = re.compile(r"[A-Za-z0-9_-]{8}\Z")
+ 
+ def configured_base_url(value: str | None = None) -> str:
+     """Return a safe HTTPS origin, or an empty string to disable shortening."""
+-    base = str(
+-        value if value is not None else config.MEESHO_SHORT_LINK_BASE_URL
+-    ).strip().rstrip("/")
++    configured = (
++        value
++        if value is not None
++        else (config.MEESHO_SHORT_LINK_BASE_URL or config.AFFILIATE_SHORT_LINK_BASE_URL)
++    )
++    base = str(configured or "").strip().rstrip("/")
+     if not base:
+         return ""
+     parsed = urlparse(base)
+@@ -87,5 +90,62 @@ def shorten_hypd_links(text: str, base_url: str | None = None) -> str:
+     return rendered
+ 
+ 
++def _same_origin(left, right) -> bool:
++    try:
++        left_port = left.port
++        right_port = right.port
++    except ValueError:
++        return False
++    return (
++        left.scheme.lower() == right.scheme.lower() == "https"
++        and (left.hostname or "").lower() == (right.hostname or "").lower()
++        and left_port == right_port
++    )
++
++
++def is_our_hypd_short_url(
++    url: str,
++    store_id: str,
++    base_url: str | None = None,
++) -> bool:
++    """Return true only for a stored, trusted-origin HYPD compact link.
++
++    A random ``/m/abcdefgh`` URL is not proof of commission.  It must be on
++    this deployment's configured branded origin and map to the requested HYPD
++    store's clean affiliate target in our DB.
++    """
++    base = configured_base_url(base_url)
++    store = str(store_id or "").strip()
++    if not base or not store:
++        return False
++    try:
++        parsed = urlparse(str(url or ""))
++        trusted = urlparse(base)
++        if (
++            not _same_origin(parsed, trusted)
++            or parsed.username
++            or parsed.password
++            or parsed.query
++            or parsed.fragment
++        ):
++            return False
++    except (TypeError, ValueError):
++        return False
++    match = re.fullmatch(r"/m/([A-Za-z0-9_-]{8})", parsed.path)
++    if not match:
++        return False
++    try:
++        record = db.get_hypd_short_link(match.group(1))
++    except Exception:
++        return False
++    target = str((record or {}).get("target_url") or "")
++    return bool(
++        record
++        and str(record.get("store_id") or "") == store
++        and is_valid_hypd_affiliate_url(target)
++        and re.fullmatch(rf"/{re.escape(store)}/afflink/[A-Za-z0-9_-]+", urlparse(target).path)
++    )
++
++
+ def is_valid_short_code(code: str) -> bool:
+     return bool(_SHORT_CODE_RE.fullmatch(str(code or "")))
+diff --git a/influencer_hub/lehlah_shortlinks.py b/influencer_hub/lehlah_shortlinks.py
+index 1a7b8cc..80369ee 100644
+--- a/influencer_hub/lehlah_shortlinks.py
++++ b/influencer_hub/lehlah_shortlinks.py
+@@ -19,9 +19,12 @@ _SHORT_CODE_RE = re.compile(r"[A-Za-z0-9_-]{8}\Z")
+ 
+ def configured_base_url(value: str | None = None) -> str:
+     """Return a safe HTTPS origin, or blank when branded shortening is disabled."""
+-    base = str(
+-        value if value is not None else config.MEESHO_SHORT_LINK_BASE_URL
+-    ).strip().rstrip("/")
++    configured = (
++        value
++        if value is not None
++        else (config.MEESHO_SHORT_LINK_BASE_URL or config.AFFILIATE_SHORT_LINK_BASE_URL)
++    )
++    base = str(configured or "").strip().rstrip("/")
+     if not base:
+         return ""
+     parsed = urlparse(base)
+@@ -90,5 +93,46 @@ def shorten_lehlah_links(text: str, base_url: str | None = None) -> str:
+     return rendered
+ 
+ 
++def _same_origin(left, right) -> bool:
++    try:
++        left_port = left.port
++        right_port = right.port
++    except ValueError:
++        return False
++    return (
++        left.scheme.lower() == right.scheme.lower() == "https"
++        and (left.hostname or "").lower() == (right.hostname or "").lower()
++        and left_port == right_port
++    )
++
++
++def is_our_lehlah_short_url(url: str, base_url: str | None = None) -> bool:
++    """Return true only for a stored branded link preserving LehLah attribution."""
++    base = configured_base_url(base_url)
++    if not base:
++        return False
++    try:
++        parsed = urlparse(str(url or ""))
++        trusted = urlparse(base)
++        if (
++            not _same_origin(parsed, trusted)
++            or parsed.username
++            or parsed.password
++            or parsed.query
++            or parsed.fragment
++        ):
++            return False
++    except (TypeError, ValueError):
++        return False
++    match = re.fullmatch(r"/l/([A-Za-z0-9_-]{8})", parsed.path)
++    if not match:
++        return False
++    try:
++        record = db.get_lehlah_short_link(match.group(1))
++    except Exception:
++        return False
++    return bool(record and is_valid_lehlah_meesho_url(str(record.get("target_url") or "")))
++
++
+ def is_valid_short_code(code: str) -> bool:
+     return bool(_SHORT_CODE_RE.fullmatch(str(code or "")))
 diff --git a/influencer_hub/link_router.py b/influencer_hub/link_router.py
 index 92258f8..702eb62 100644
 --- a/influencer_hub/link_router.py
@@ -2159,11 +3251,100 @@ index 92258f8..702eb62 100644
  
      if "#ad" not in result.lower():
          result = result + "\n\n#ad (paid link)"
+diff --git a/influencer_hub/money_radar.py b/influencer_hub/money_radar.py
+index 4a60ac4..6a4ef4f 100644
+--- a/influencer_hub/money_radar.py
++++ b/influencer_hub/money_radar.py
+@@ -12,9 +12,13 @@ what any link inspection can promise.
+ """
+ from __future__ import annotations
+ 
++import re
+ from urllib.parse import parse_qsl, urlparse
+ 
+-from . import advanced_shortener, link_router
++from . import (
++    advanced_shortener, amazon_shortlinks, hypd_shortlinks, lehlah_shortlinks,
++    link_router,
++)
+ 
+ STATE_EARNING = "earning"
+ STATE_LEAK = "leak"
+@@ -72,6 +76,32 @@ def _is_generic_short(url: str) -> bool:
+     )
+ 
+ 
++def _verified_branded_short_kind(url: str, tag: str, store: str) -> tuple[str, str] | None:
++    """Return an earning state only for one stored, trusted-origin compact URL."""
++    if tag and amazon_shortlinks.is_our_amazon_short_url(url, tag):
++        return "amazon", f"Verified branded Amazon short link (tag {tag})"
++    if store and hypd_shortlinks.is_our_hypd_short_url(url, store):
++        return "hypd", f"Verified branded HYPD short link (store {store})"
++    if lehlah_shortlinks.is_our_lehlah_short_url(url):
++        return "lehlah", "Verified branded LehLah short link"
++    return None
++
++
++def _branded_short_shape(url: str) -> str:
++    """Identify a forged/stale compact route instead of calling it earning."""
++    try:
++        path = urlparse(str(url or "")).path
++    except (TypeError, ValueError):
++        return ""
++    if re.fullmatch(r"/(?:a|amazon)/[A-Za-z0-9_-]{8}", path, re.I):
++        return "amazon"
++    if re.fullmatch(r"/m/[A-Za-z0-9_-]{8}", path):
++        return "hypd"
++    if re.fullmatch(r"/l/[A-Za-z0-9_-]{8}", path):
++        return "lehlah"
++    return ""
++
++
+ def classify_link(
+     url: str,
+     amazon_tag: str = "",
+@@ -83,21 +113,21 @@ def classify_link(
+     store = str(hypd_store or "").strip()
+     pubid = str(earnkaro_pubid or "").strip()
+ 
+-    # First-party short links are only ever minted for OUR links, so they are
+-    # checked before the host-based classifier sees an unknown domain.
+-    if "/amazon/" in url and "tag=" in url:
+-        entry = {"url": url, "kind": "amazon", "state": STATE_NEUTRAL, "reason": ""}
+-        if tag and f"tag={tag}" in url:
+-            entry["state"] = STATE_EARNING
+-            entry["reason"] = f"Our Amazon short link (tag {tag})"
+-        else:
+-            entry["state"] = STATE_LEAK
+-            entry["reason"] = f"Amazon short link tagged for someone else (expected {tag})"
+-        return entry
+-
+-    if "/m/" in url and _host_of(url) not in {"hypd.store", "www.hypd.store"}:
+-        entry = {"url": url, "kind": "hypd", "state": STATE_EARNING, "reason": "Our HYPD short link"}
+-        return entry
++    # A first-party-looking path is not proof. It must match the configured
++    # origin and one stored redirect record whose target carries this account's
++    # attribution. Otherwise it is a forged/stale link and counted as a leak.
++    branded = _verified_branded_short_kind(url, tag, store)
++    if branded:
++        kind, reason = branded
++        return {"url": url, "kind": kind, "state": STATE_EARNING, "reason": reason}
++    claimed_kind = _branded_short_shape(url)
++    if claimed_kind:
++        return {
++            "url": url,
++            "kind": claimed_kind,
++            "state": STATE_LEAK,
++            "reason": f"Unverified branded-looking {claimed_kind} short link — not counted as ours",
++        }
+ 
+     # EarnKaro short links do not live on a merchant host, so they are checked
+     # before the host-based classifier files them under "other".
 diff --git a/influencer_hub/pipeline.py b/influencer_hub/pipeline.py
-index 15afe00..e33bc07 100644
+index 15afe00..aac6437 100644
 --- a/influencer_hub/pipeline.py
 +++ b/influencer_hub/pipeline.py
-@@ -13,6 +13,7 @@ twice to the same place while its dedup record is retained.
+@@ -13,12 +13,12 @@ twice to the same place while its dedup record is retained.
  from __future__ import annotations
  
  import asyncio
@@ -2171,7 +3352,13 @@ index 15afe00..e33bc07 100644
  import random
  from typing import Iterable
  
-@@ -74,6 +75,32 @@ def only_earning_deals_enabled() -> bool:
+ from . import (
+     accounts,
+-    amazon_shortlinks,
+     bitly_client,
+     config,
+     db,
+@@ -74,6 +74,32 @@ def only_earning_deals_enabled() -> bool:
      return str(value).strip().lower() in {"1", "true", "yes", "on"}
  
  
@@ -2204,7 +3391,7 @@ index 15afe00..e33bc07 100644
  async def _earnkaro_map_for(text: str) -> dict[str, str]:
      include_meesho = meesho_earnkaro_fallback_enabled()
      collected = link_router.collect_links(text)
-@@ -83,8 +110,18 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
+@@ -83,8 +109,18 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
      if not urls:
          return {}
      # Conversion is best-effort: the original clean merchant URL is retained
@@ -2225,7 +3412,7 @@ index 15afe00..e33bc07 100644
  
  
  async def apply_whatsapp_safety_pacing(session_key: str) -> None:
-@@ -233,9 +270,13 @@ def _is_source_allowed(source_name: str, allowed_spec: str) -> bool:
+@@ -233,9 +269,13 @@ def _is_source_allowed(source_name: str, allowed_spec: str) -> bool:
  
  
  async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | None = None,
@@ -2240,7 +3427,7 @@ index 15afe00..e33bc07 100644
      Returns {influencer_id: {channel_id: status}}.
      """
      sig = link_router.deal_signature(deal_text)
-@@ -273,6 +314,19 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -273,6 +313,19 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
              # Account model (influencer_hub/accounts.py): Amazon posts are
              # signed with THIS creator's own Associate tag.
              effective_amz_tag = accounts.creator_amazon_tag(inf, ch)
@@ -2260,7 +3447,7 @@ index 15afe00..e33bc07 100644
  
              # 1. Source Specification Filter (an empty/all/unrestricted value means no restriction)
              allowed_sources = ch.get("allowed_sources") or inf.get("allowed_sources") or ""
-@@ -298,7 +352,47 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -298,7 +351,47 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                  per_channel[ch["id"]] = "skipped"
                  continue
  
@@ -2309,7 +3496,7 @@ index 15afe00..e33bc07 100644
              kinds = {link_router.classify_url(url) for url in urls}
              has_amz = "amazon" in kinds
              present_affiliate_kinds = kinds.intersection(
-@@ -381,16 +475,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -381,16 +474,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                              continue
              except Exception:
                  pass
@@ -2330,7 +3517,7 @@ index 15afe00..e33bc07 100644
  
              # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
              if db.already_posted(inf["id"], ch["id"], sig):
-@@ -437,6 +525,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -437,6 +524,10 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                  meesho_fallback = meesho_earnkaro_fallback_enabled()
              except Exception:
                  meesho_fallback = bool(config.MEESHO_EARNKARO_FALLBACK)
@@ -2341,7 +3528,16 @@ index 15afe00..e33bc07 100644
              try:
                  only_earning = only_earning_deals_enabled()
              except Exception:
-@@ -512,63 +604,106 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -494,7 +585,7 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+             )
+             # ADVANCED SHORTENER: ONLY OUR affiliate links are shortened
+             # - HYPD links with OUR store ID (93944) -> first-party /m/<code> or Bitly fallback
+-            # - Amazon links with OUR tag (e.g. mytag-21) -> first-party /amazon/<code>?tag= or Bitly fallback
++            # - Amazon links with OUR tag (e.g. mytag-21) -> verified first-party /a/<code>?tag= or Bitly fallback
+             # Generic merchant links (Flipkart etc.) are already handled via EarnKaro's ekaro.in, no extra Bitly needed
+             # This advanced system ensures ONLY MANA LINK KI MATHARME short avtundi, vere vallavi kaadu
+             if role != "approval":
+@@ -512,63 +603,106 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                  # We audit FINAL rendered text before dispatch. Any non-OUR leak is logged and sanitized.
                  try:
                      from . import commission_guard
@@ -2487,7 +3683,7 @@ index 15afe00..e33bc07 100644
                      logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
  
              # 8b-2. MONEY FILTER: never spend a post on a deal that pays nothing.
-@@ -590,7 +725,6 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -590,7 +724,6 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                          per_channel[ch["id"]] = "skipped:no_commission_link"
                          continue
                  except Exception as _money_exc:  # pragma: no cover - defensive
@@ -2495,7 +3691,7 @@ index 15afe00..e33bc07 100644
                      logging.getLogger(__name__).exception("money filter failed: %s", _money_exc)
              # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
              # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
-@@ -645,8 +779,13 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
+@@ -645,8 +778,13 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
      return results
  
  
@@ -2511,7 +3707,7 @@ index 15afe00..e33bc07 100644
      # Periodically prune old post/stat rows to bound database growth.
      try:
          if random.random() < 0.05:  # ~5% of run cycles
-@@ -661,7 +800,9 @@ async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] |
+@@ -661,7 +799,9 @@ async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] |
          else:
              d_text = str(deal)
              d_src = ""
