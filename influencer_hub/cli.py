@@ -17,6 +17,7 @@ Examples
   python -m influencer_hub.cli digest --send
   python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --fleet   # every creator, own tag
   python -m influencer_hub.cli amazon-scan --report --check               # what we really sent
+  python -m influencer_hub.cli totp --new        # admin two-factor secret for the authenticator app
   python -m influencer_hub.cli snapshot          # one row of history per day
   python -m influencer_hub.cli backup --out /var/backups/hub --keep 14
   python -m influencer_hub.cli restore /var/backups/hub/hub-20261011-0900.sqlite3 --yes
@@ -560,6 +561,51 @@ def _cmd_digest(args):
     return 0 if not error else 1
 
 
+def _cmd_totp(args):
+    """Create or verify the admin two-factor secret (RFC 6238 TOTP)."""
+    import time as _time
+
+    from . import config, security
+
+    if args.uri_only:
+        print(security.totp_uri(config.ADMIN_TOTP_SECRET, account=args.account))
+        return 0
+    if args.check:
+        ok = security.verify_totp(args.check, secret=config.ADMIN_TOTP_SECRET
+                                  or args.secret or "")
+        if ok:
+            print("✅ the code matches — two-factor sign-in will accept it right now.")
+            return 0
+        print("⛔ the code does not match (check the device clock; codes last 30 seconds).")
+        return 1
+    if args.new:
+        secret = security.new_totp_secret()
+        print("New two-factor secret (keep it private):")
+        print(f"  ADMIN_TOTP_SECRET={secret}")
+        print("")
+        print("1. Add it to your authenticator app (manual entry, time-based, 6 digits):")
+        print("   account: admin · key: " + secret)
+        print("   or paste this URL in the app:")
+        print("   " + security.totp_uri(secret))
+        print("2. Put the line above in the server .env and restart the dashboard.")
+        print("3. Test before you rely on it (a fresh code):")
+        print("   PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp --check <code>")
+        return 0
+    if args.secret:
+        print(f"current code for that secret: {security.totp_code(args.secret)}")
+        print("(valid for this 30-second window)")
+        return 0
+    configured = bool(str(config.ADMIN_TOTP_SECRET or "").strip())
+    print(f"two-factor sign-in: {'ON' if configured else 'OFF'}")
+    if configured:
+        print(f"current code: {security.totp_code(config.ADMIN_TOTP_SECRET)} "
+              f"(for {_time.strftime('%H:%M:%S', _time.gmtime())} UTC)")
+        print("otpauth URL: " + security.totp_uri(config.ADMIN_TOTP_SECRET, account=args.account))
+    else:
+        print("Switch it on with: PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp --new")
+    return 0
+
+
 def _cmd_snapshot(args):
     """Freeze today's numbers into the history (a nightly cron line)."""
     import json as _json
@@ -874,6 +920,18 @@ def build_parser() -> argparse.ArgumentParser:
     dg.add_argument("--send", action="store_true", help="post the card to OPS_TELEGRAM_CHANNEL")
     dg.add_argument("--json", action="store_true", help="machine-readable output")
     dg.set_defaults(func=_cmd_digest)
+
+    tp = sub.add_parser(
+        "totp",
+        help="create/verify the admin two-factor secret (authenticator app, 6 digits)",
+    )
+    tp.add_argument("--new", action="store_true", help="print a fresh secret + otpauth URL")
+    tp.add_argument("--check", default="", help="verify a six-digit code against ADMIN_TOTP_SECRET")
+    tp.add_argument("--secret", default="", help="work with this secret instead of the configured one")
+    tp.add_argument("--uri", dest="uri_only", action="store_true",
+                    help="print the otpauth URL for the configured secret")
+    tp.add_argument("--account", default="admin", help="account label in the otpauth URL")
+    tp.set_defaults(func=_cmd_totp)
 
     sn = sub.add_parser("snapshot", help="store today's numbers in the history (trends)")
     sn.add_argument("--hours", type=int, default=24, help="window to summarise (default 24)")

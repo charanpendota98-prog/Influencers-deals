@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS influencers (
     use_dummy_sources INTEGER NOT NULL DEFAULT 0,
     telegram_enabled  INTEGER NOT NULL DEFAULT 1,
     whatsapp_enabled  INTEGER NOT NULL DEFAULT 1,
+    added_by          TEXT NOT NULL DEFAULT '',   -- team member name / 'admin'
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -218,6 +219,32 @@ CREATE TABLE IF NOT EXISTS poll_deliveries (
     UNIQUE(poll_id, channel_id)
 );
 
+-- Who did what: adds and edits (with the actor, their role and the IP). The
+-- team can add and the admin can change, so this is the record of both.
+CREATE TABLE IF NOT EXISTS team_audit (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at         TEXT NOT NULL,
+    actor      TEXT NOT NULL DEFAULT '',
+    role       TEXT NOT NULL DEFAULT '',
+    action     TEXT NOT NULL DEFAULT '',
+    target     TEXT NOT NULL DEFAULT '',
+    detail     TEXT NOT NULL DEFAULT '',
+    ip         TEXT NOT NULL DEFAULT ''
+);
+
+-- Failed sign-ins, counted in the database so a restart does not hand an
+-- attacker a fresh budget.
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope      TEXT NOT NULL DEFAULT '',
+    ip         TEXT NOT NULL DEFAULT '',
+    at         REAL NOT NULL,
+    ok         INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_login_attempts_scope ON login_attempts(scope, ip, at);
+CREATE INDEX IF NOT EXISTS idx_team_audit_at ON team_audit(at);
+
 -- One row per calendar day, written by `cli snapshot` (and by
 -- `cli digest --send`). This is the hub's memory: without it the dashboard can
 -- only ever show "right now", and nobody can tell whether delivery is getting
@@ -322,6 +349,7 @@ def migrate() -> None:
     try:
         inf_cols = {r["name"] for r in con.execute("PRAGMA table_info(influencers)")}
         for col, ddl in (
+            ("added_by", "TEXT NOT NULL DEFAULT ''"),
             ("telegram_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("whatsapp_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("insta_id", "TEXT NOT NULL DEFAULT ''"),
@@ -459,6 +487,7 @@ def _clean_mirror_flag(value: Any) -> str:
 
 
 def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
+                   added_by: str = "",
                    handle: str = "", notes: str = "",
                    use_dummy_sources: bool = False,
                    telegram_enabled: bool = True, whatsapp_enabled: bool = True,
@@ -489,8 +518,8 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
         )
         cur = con.execute(
             "INSERT INTO influencers "
-            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, min_deal_tier) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, min_deal_tier, added_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), handle.strip(), (amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG,
              notes.strip(), 1 if _as_bool(use_dummy_sources) else 0,
              1 if _as_bool(telegram_enabled, default=True) else 0,
@@ -500,7 +529,8 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
              1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0,
              1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0,
              1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
-             effective_hypd_store_id, _clean_deal_tier(min_deal_tier)),
+             effective_hypd_store_id, _clean_deal_tier(min_deal_tier),
+             str(added_by or "").strip()[:60]),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -644,14 +674,26 @@ def get_influencer(influencer_id: int) -> Optional[dict]:
         con.close()
 
 
-def list_influencers(active_only: bool = False) -> list[dict]:
+def list_influencers(active_only: bool = False, added_by: str = "") -> list[dict]:
+    """All creators, or only the ones a given team member added.
+
+    ``added_by`` is how the team page answers "what did I add?" without giving
+    the team access to anything they did not create.
+    """
     con = _connect()
     try:
-        sql = "SELECT * FROM influencers"
+        clauses: list[str] = []
+        params: list[Any] = []
         if active_only:
-            sql += " WHERE active=1"
+            clauses.append("active=1")
+        if str(added_by or "").strip():
+            clauses.append("added_by=?")
+            params.append(str(added_by).strip())
+        sql = "SELECT * FROM influencers"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY id"
-        return [dict(r) for r in con.execute(sql).fetchall()]
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
     finally:
         con.close()
 
@@ -1208,7 +1250,7 @@ def list_wa_sessions(influencer_id: Optional[int] = None) -> list[dict]:
 
 # ------------------------------- sources -------------------------------
 
-def add_bulk_influencers(records: list[dict]) -> int:
+def add_bulk_influencers(records: list[dict], added_by: str = "") -> int:
     """Batch insert profiles and any supplied channels in one transaction.
 
     Optional affiliate columns are ``allow_amazon``, ``allow_earnkaro``,
@@ -1264,11 +1306,12 @@ def add_bulk_influencers(records: list[dict]) -> int:
                 "INSERT INTO influencers "
                 "(name, handle, amazon_tag, use_dummy_sources, telegram_enabled, whatsapp_enabled, "
                 "insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, "
-                "posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, "
+                "added_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (name, handle, tag, 0, 1, 1, insta, phone, price_filt, sources, bitly_key,
                  categories, schedule, int(only_amz), int(allow_amz), int(allow_ek),
-                 int(allow_hypd), hypd_store),
+                 int(allow_hypd), hypd_store, str(added_by or "").strip()[:60]),
             )
             iid = int(cur.lastrowid)
 
@@ -2256,6 +2299,125 @@ def latest_vm() -> Optional[dict]:
 
 
 # --------------------------- global settings ---------------------------
+
+# --------------------------------------------------------------------------
+# Audit log and sign-in throttling (access control lives in security.py)
+# --------------------------------------------------------------------------
+def record_audit(*, actor: str, role: str, action: str, target: str = "",
+                 detail: str = "", ip: str = "") -> int:
+    """Append one line of the who-did-what log."""
+    ensure_schema()
+    con = _connect()
+    try:
+        cur = con.execute(
+            "INSERT INTO team_audit (at, actor, role, action, target, detail, ip) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (_now(), str(actor or "")[:60], str(role or "")[:20], str(action or "")[:60],
+             str(target or "")[:120], str(detail or "")[:400], str(ip or "")[:60]),
+        )
+        con.commit()
+        return int(cur.lastrowid)
+    finally:
+        con.close()
+
+
+def list_audit(limit: int = 100, actor: str = "", action: str = "") -> list[dict]:
+    """Newest first; ``actor``/``action`` narrow it (e.g. one team member)."""
+    con = _connect()
+    try:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if str(actor or "").strip():
+            clauses.append("actor=?")
+            params.append(str(actor).strip())
+        if str(action or "").strip():
+            clauses.append("action=?")
+            params.append(str(action).strip())
+        sql = "SELECT * FROM team_audit"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(2000, int(limit or 100))))
+        return [dict(row) for row in con.execute(sql, params).fetchall()]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+
+
+def count_audit_since(action: str, *, actor: str = "", hours: int = 1) -> int:
+    """How many times ``action`` happened recently (the team's hourly quota)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat(
+        timespec="seconds")
+    con = _connect()
+    try:
+        clauses = ["action=?", "at >= ?"]
+        params: list[Any] = [str(action), cutoff]
+        if str(actor or "").strip():
+            clauses.append("actor=?")
+            params.append(str(actor).strip())
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM team_audit WHERE " + " AND ".join(clauses), params
+        ).fetchone()
+        return int(row["n"] if row else 0)
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        con.close()
+
+
+def note_login_attempt(scope: str, ip: str, ok: bool) -> None:
+    con = _connect()
+    try:
+        con.execute("INSERT INTO login_attempts (scope, ip, at, ok) VALUES (?,?,?,?)",
+                    (str(scope or "")[:20], str(ip or "")[:60], time.time(), 1 if ok else 0))
+        con.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        con.close()
+
+
+def count_login_failures(scope: str, ip: str, *, window_seconds: int = 900) -> int:
+    cutoff = time.time() - max(30, int(window_seconds))
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM login_attempts "
+            "WHERE scope=? AND ip=? AND ok=0 AND at >= ?",
+            (str(scope or "")[:20], str(ip or "")[:60], cutoff),
+        ).fetchone()
+        return int(row["n"] if row else 0)
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        con.close()
+
+
+def clear_login_failures(scope: str, ip: str) -> None:
+    con = _connect()
+    try:
+        con.execute("DELETE FROM login_attempts WHERE scope=? AND ip=?",
+                    (str(scope or "")[:20], str(ip or "")[:60]))
+        con.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        con.close()
+
+
+def prune_login_attempts(days: int = 7) -> int:
+    cutoff = time.time() - max(1, int(days)) * 86400
+    con = _connect()
+    try:
+        cur = con.execute("DELETE FROM login_attempts WHERE at < ?", (cutoff,))
+        con.commit()
+        return int(cur.rowcount or 0)
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        con.close()
+
 
 def get_global_setting(key: str, default: str = "") -> str:
     con = _connect()

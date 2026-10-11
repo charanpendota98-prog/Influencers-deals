@@ -156,6 +156,31 @@ dashboard self-check ("Amazon links in real posts"), naming the creator, the
 tag found and the tag expected. The same numbers are at `GET /api/amazon-report`
 and on the 📈 Ops digest card.
 
+## 5d. Team access and the owner's two-factor
+
+```bash
+# 1. on the server: give the team its own password and switch on admin 2FA
+python -c "import secrets; print('DASHBOARD_TEAM_PASSWORD=' + secrets.token_urlsafe(18))"
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp --new     # copy ADMIN_TOTP_SECRET=
+# add BOTH lines to .env, then restart the dashboard
+sudo systemctl restart influencer-dashboard
+
+# 2. the admin door now asks for a code
+curl -s http://127.0.0.1:5000/login | grep -c 'name="totp"'      # 1 means it is on
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp          # prints the current code
+```
+
+3. Open `http://<vm>:5000/team` in a browser (or on a phone) and sign in with a
+   member name + the team password. Add one creator — it appears immediately with
+   its next step. Try to open `http://<vm>:5000/setup`: it must bounce back to the
+   team page, and `/setup → 👥 Team access & audit` (as admin) must show
+   `team_blocked_route` for that attempt.
+
+4. The audit card is the record: `creator_added` lines name the member, the
+   creator, their tag and the channels; `change:<route>` lines name every admin
+   edit. If a member cannot sign in, five wrong tries block their IP for 15
+   minutes by design — wait, or clear it with the audit card's next attempt.
+
 ## 6. If a check is not green
 
 The panel names the fix. The short versions:

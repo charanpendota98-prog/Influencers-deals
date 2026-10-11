@@ -112,6 +112,49 @@ The same checks, in VM order, live in **[VERIFICATION.md](VERIFICATION.md)** —
 the copy-paste runbook (blanked-credential test run, schema, stack, per-creator
 proof, worker start, and what each red check means).
 
+### 👥 Two sign-ins: the team adds, the owner edits
+
+The hub has two doors, and the second one is deliberately narrow.
+
+| | Admin (you) | Team member |
+|---|---|---|
+| Sign in at | `/login` — admin password **+ 6-digit code** | `/team/login` — their name + **team password** |
+| Can do | everything: edit profiles, channels, money switches, vault, deletes | **add** creators and read the ones they added |
+| Cannot | — | open `/`, `/setup`, `/money`, every admin API, edit, delete, change settings |
+
+```bash
+# .env on the server
+DASHBOARD_TEAM_PASSWORD=<a long password you give only to the team>
+ADMIN_TOTP_SECRET=<printed by the command below>      # optional but recommended
+TEAM_ADDS_PER_HOUR=120                                 # per member; the admin is unlimited
+```
+
+```bash
+# switch on two-factor for the admin sign-in (30 seconds, stdlib only)
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp --new    # prints secret + otpauth URL
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp --check 123456   # verify before you rely on it
+```
+
+What makes the boundary real rather than cosmetic:
+
+* **Refused, not hidden.** The team's session is checked *before any view runs*:
+  every endpoint outside the team page is refused — a bookmarked admin URL, a
+  hand-crafted form post and an API call all fail. Attempts are recorded as
+  `team_blocked_route`.
+* **Add is add.** A name that already exists is reported back ("already in the
+  hub — ask the owner"), never silently updated, so the team cannot edit through
+  the add form.
+* **Named, stamped, audited.** Team members type their own name at sign-in; every
+  creator they add is stamped with it (`added_by`) and every add/change is written
+  to the audit log with actor, role, action, target and IP. `/setup` has a
+  **👥 Team access & audit** card showing the team link, who added what, an
+  hourly-limit status and the last 40 log lines.
+* **Hard limits.** Five wrong passwords block that IP for 15 minutes — counted in
+  the database, so a restart is not a fresh budget. Each member may add
+  `TEAM_ADDS_PER_HOUR` creators per hour; the admin is never throttled.
+* **The team only ever sees its own work.** `/team` and `/api/team/creators` read
+  `list_influencers(added_by=…)`, so nothing the owner added is exposed there.
+
 ### 🅰️ Amazon deals from our sources: detected, re-signed, posted
 
 When a source post carries an Amazon link, the hub finds it, works out which

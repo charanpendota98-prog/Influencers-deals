@@ -13,6 +13,9 @@ trusting a hub with a creator's money:
   7-day view read)?
 * do the posts we really sent carry each creator's own Amazon tag (a link with
   someone else's tag pays the wrong person)?
+* is access set up the way the owner asked — the team adding with their own
+  password, and the admin (who can edit everything) signing in with a second
+  factor?
 * which creators are ready to post, which are blocked, and is anything still
   signed with the shared Amazon tag?
 
@@ -308,6 +311,42 @@ def _dashboard_check() -> dict:
                   "Admin password is set and the session cookie is production-grade.")
 
 
+def _access_check() -> dict:
+    """Who can change the hub: the team adds, the admin edits — is that set up?"""
+    from . import security
+
+    team_on = security.team_access_configured()
+    totp_on = security.totp_enabled()
+    strong_admin = security.strong_password(config.DASHBOARD_ADMIN_PASSWORD, minimum=16)
+    production = str(getattr(config, "HUB_ENV", "")).lower() == "production"
+
+    missing: list[str] = []
+    if not team_on:
+        missing.append(
+            "Team access is off, so anyone adding creators would need the admin password "
+            "(it can change everything). Set DASHBOARD_TEAM_PASSWORD in .env and restart "
+            "to give your team the add-only page at /team."
+        )
+    if not totp_on:
+        missing.append(
+            "Admin sign-in has no second factor. Run "
+            "`PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp --new` and put the "
+            "printed secret in ADMIN_TOTP_SECRET to require a 6-digit code."
+        )
+    if production and not strong_admin:
+        missing.append("The admin password is shorter than 16 characters.")
+
+    if not missing:
+        return _check(
+            "access", "Admin & team access", OK,
+            "Team has its own add-only sign-in and the admin signs in with a second factor.",
+        )
+    state = WARN
+    detail = ("Team adds with their own password; admin edits with the admin password"
+              + ("" if totp_on else " (no second factor yet)"))
+    return _check("access", "Admin & team access", state, detail, " ".join(missing))
+
+
 def _amazon_links_check() -> dict:
     """The promise to every creator: their own Associates tag on every link."""
     from . import amazon_watch
@@ -460,6 +499,7 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
         _guard("mirror", "Main → WhatsApp mirror", lambda: _mirror_check(plan)),
         _guard("history", "Ops history", _history_check),
         _guard("amazon_links", "Amazon links in real posts", _amazon_links_check),
+        _guard("access", "Admin & team access", _access_check),
         _guard("whatsapp", "WhatsApp hub", lambda: _whatsapp_check(live)),
     ]
     worst = max((_STATE_ORDER.get(check["state"], 0) for check in checks), default=0)

@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
     amazon_shortlinks, amazon_watch, config, db, hypd_shortlinks, lehlah_shortlinks,
-    link_router, ops,
+    link_router, ops, security,
     polls, pipeline, puller, readiness, selfcheck, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
@@ -571,6 +571,12 @@ def _reauth_return_url() -> str:
 def _csrf_failure_response():
     """Reject a bad CSRF token without dumping JSON into an operator's browser."""
     error = {"ok": False, "error": "csrf_validation_failed"}
+    if request.endpoint == "team_login":
+        return render_template(
+            "team_login.html", next_url=request.values.get("next", ""),
+            login_error="Your sign-in session expired. Enter the team password again.",
+            team_configured=security.team_access_configured(),
+        ), 400
     if request.endpoint == "login":
         # A lost/expired session on the sign-in screen: hand back a fresh page
         # instead of a bare 400 so the operator can simply sign in again.
@@ -578,6 +584,7 @@ def _csrf_failure_response():
             "login.html",
             next_url=request.values.get("next", ""),
             login_error="Your sign-in session expired. Enter the admin password again.",
+            totp_required=security.totp_enabled(),
         ), 400
     if not _expects_json_response():
         flash("Your session expired. Sign in again and repeat the change.", "warning")
@@ -596,6 +603,11 @@ def inject_dashboard_security_context():
         "setup_unlock_minutes": max(1, remaining // 60),
         "setup_unlock_window_minutes": _setup_unlock_window_seconds() // 60,
         "undo_channel": session.get(UNDO_CHANNEL_KEY),
+        "dashboard_role": _session_role(),
+        "is_team_session": _is_team(),
+        "team_name": session.get("team_name") or "",
+        "team_access_configured": security.team_access_configured(),
+        "admin_totp_enabled": security.totp_enabled(),
         "insecure_login": (
             config.HUB_ENV == "production" and not request.is_secure
         ),
@@ -615,7 +627,7 @@ def protect_dashboard_routes():
 
     endpoint = request.endpoint
     public_endpoints = {
-        "static", "login", "healthz", "amazon_short_link",
+        "static", "login", "team_login", "healthz", "amazon_short_link",
         "meesho_hypd_short_link", "lehlah_meesho_short_link",
     }
     # Only protect the session cookie when the browser can actually use it:
@@ -641,8 +653,30 @@ def protect_dashboard_routes():
     if not session.get("dashboard_authenticated"):
         if request.path.startswith("/api/"):
             return jsonify({"ok": False, "error": "authentication_required"}), 401
+        if request.path == "/team" or request.path.startswith("/team/") \
+                or request.path.startswith("/api/team"):
+            if request.path.startswith("/api/team"):
+                return jsonify({"ok": False, "error": "authentication_required"}), 401
+            return redirect(url_for("team_login", next=request.path))
         destination = request.full_path if request.query_string else request.path
         return redirect(url_for("login", next=destination))
+
+    # The team role may reach the team pages and nothing else. This is checked
+    # before any view runs, so a bookmarked admin URL, a crafted form post and
+    # an API call all fail the same way — editing is not hidden, it is refused.
+    if _is_team() and endpoint not in security.TEAM_ALLOWED_ENDPOINTS:
+        security.audit(_session_actor(), security.TEAM, "team_blocked_route",
+                       target=request.path, detail=f"{request.method} {endpoint or ''}",
+                       ip=_client_ip())
+        if request.path.startswith("/api/"):
+            return jsonify({
+                "ok": False,
+                "error": "admin_only",
+                "detail": "Editing needs the admin sign-in. Ask the owner to make the change.",
+            }), 403
+        flash("That page is admin-only. You can add creators on this page — ask the owner "
+              "to edit anything that is already saved.", "warning")
+        return redirect(url_for("team_home"))
 
     if request.method in {"POST", "PUT", "PATCH", "DELETE"} and endpoint in REAUTH_REQUIRED_ENDPOINTS:
         # Ask for the password once, then keep the dashboard unlocked for a
@@ -665,6 +699,41 @@ def protect_dashboard_routes():
             return redirect(_reauth_return_url())
         _renew_setup_unlock()
     return None
+
+
+# Mutations that already write their own, more specific audit line.
+_AUDIT_EXEMPT_ENDPOINTS = {
+    "static", "login", "logout", "team_login", "team_add", "reauthenticate_setup_change",
+    "lock_setup_changes", "amazon_short_link", "meesho_hypd_short_link",
+    "lehlah_meesho_short_link", "healthz",
+}
+
+
+@app.after_request
+def audit_admin_changes(response):
+    """One audit line for every change the admin really made.
+
+    This is deliberately generic: any future POST/PUT/PATCH/DELETE endpoint is
+    recorded without remembering to add a call, and a request that was stopped
+    for re-authentication (a redirect to /reauth) is *not* recorded, because it
+    changed nothing.
+    """
+    try:
+        # Only the admin role can change anything, so only the admin role can
+        # produce a change line — a refused team request must not look like one.
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} \
+                and _session_role() == security.ADMIN:
+            endpoint = request.endpoint or ""
+            location = str(response.headers.get("Location") or "")
+            blocked_for_reauth = "/reauth" in location or location.endswith("/login")
+            if (endpoint not in _AUDIT_EXEMPT_ENDPOINTS
+                    and 200 <= response.status_code < 400
+                    and not blocked_for_reauth):
+                security.audit(_session_actor(), _session_role(), f"change:{endpoint}",
+                               target=request.path, ip=_client_ip())
+    except Exception:  # pragma: no cover - auditing must never break a response
+        pass
+    return response
 
 
 @app.after_request
@@ -711,6 +780,29 @@ def _password_matches(supplied: str, expected: str) -> bool:
     return bool(expected) and hmac.compare_digest(supplied, expected)
 
 
+def _session_role() -> str:
+    """The role of the signed-in session.
+
+    A session created before roles existed (``dashboard_authenticated`` with no
+    role) is the admin's, so an upgrade never locks the owner out.
+    """
+    if not session.get("dashboard_authenticated"):
+        return ""
+    role = str(session.get("dashboard_role") or "").strip().lower()
+    return role if role in {security.ADMIN, security.TEAM} else security.ADMIN
+
+
+def _session_actor() -> str:
+    """The name that goes into the audit log for this session."""
+    if _session_role() == security.TEAM:
+        return str(session.get("team_name") or "team").strip() or "team"
+    return "admin"
+
+
+def _is_team() -> bool:
+    return _session_role() == security.TEAM
+
+
 def _safe_local_redirect(destination: str | None) -> str:
     candidate = (destination or "").strip()
     parsed = urlparse(candidate)
@@ -741,41 +833,253 @@ def login():
 
     next_url = request.values.get("next", "")
     if request.method == "GET":
-        return render_template("login.html", next_url=next_url, login_error="")
+        return render_template("login.html", next_url=next_url, login_error="",
+                               totp_required=security.totp_enabled())
 
     client_ip = request.remote_addr or "unknown"
-    now = time.monotonic()
-    recent = [
-        timestamp for timestamp in _LOGIN_FAILURES[client_ip]
-        if now - timestamp < LOGIN_WINDOW_SECONDS
-    ]
-    _LOGIN_FAILURES[client_ip] = recent
-    if len(recent) >= LOGIN_MAX_FAILURES:
+    state = security.block_state(security.ADMIN, client_ip)
+    if state["blocked"]:
+        security.audit("admin", security.ADMIN, "admin_login_blocked", ip=client_ip,
+                       detail=f"{state['failures']} failed attempts")
         return render_template(
-            "login.html", next_url=next_url,
+            "login.html", next_url=next_url, totp_required=security.totp_enabled(),
             login_error="Too many sign-in attempts. Try again in 15 minutes.",
         ), 429
 
     supplied = request.form.get("password", "")
-    if not hmac.compare_digest(supplied, config.DASHBOARD_ADMIN_PASSWORD):
-        _LOGIN_FAILURES[client_ip].append(now)
+    password_ok = security.admin_password_matches(supplied)
+    code_ok = True
+    if security.totp_enabled():
+        code_ok = security.verify_totp(request.form.get("totp", ""))
+    if not (password_ok and code_ok):
+        security.note_login(security.ADMIN, client_ip, ok=False)
+        security.audit("admin", security.ADMIN, "admin_login_failed", ip=client_ip,
+                       detail="password" if not password_ok else "two-factor code")
+        message = ("Sign-in failed. Check the password and try again."
+                   if not password_ok else
+                   "The password was right but the six-digit code did not match. "
+                   "Codes change every 30 seconds — enter the current one.")
         return render_template(
-            "login.html", next_url=next_url,
-            login_error="Sign-in failed. Check the password and try again.",
+            "login.html", next_url=next_url, totp_required=security.totp_enabled(),
+            login_error=message,
         ), 401
 
-    _LOGIN_FAILURES.pop(client_ip, None)
+    security.note_login(security.ADMIN, client_ip, ok=True)
+    security.audit("admin", security.ADMIN, "admin_login_ok", ip=client_ip)
     session.clear()
     session.permanent = True
     session["dashboard_authenticated"] = True
+    session["dashboard_role"] = security.ADMIN
+    session["auth_at"] = int(time.time())
     session["_csrf_token"] = secrets.token_urlsafe(32)
     return redirect(_safe_local_redirect(next_url))
 
 
+# --------------------------------------------------------------------------
+# Team access: add-only pages with their own password
+# --------------------------------------------------------------------------
+@app.route("/team/login", methods=["GET", "POST"])
+def team_login():
+    """Team sign-in: their own name and their own password (never the admin's)."""
+    if not security.team_access_configured():
+        return render_template(
+            "team_login.html", next_url="", team_configured=False,
+            login_error="Team access is not switched on yet — ask the owner to set "
+                        "DASHBOARD_TEAM_PASSWORD in the server environment.",
+        ), 503
+    if _session_role() == security.ADMIN:
+        return redirect(url_for("team_home"))
+    if _session_role() == security.TEAM:
+        return redirect(url_for("team_home"))
+
+    next_url = request.values.get("next", "")
+    if request.method == "GET":
+        return render_template("team_login.html", next_url=next_url, login_error="",
+                               team_configured=True)
+
+    client_ip = _client_ip()
+    state = security.block_state(security.TEAM, client_ip)
+    if state["blocked"]:
+        security.audit("team", security.TEAM, "team_login_blocked", ip=client_ip,
+                       detail=f"{state['failures']} failed attempts")
+        return render_template(
+            "team_login.html", next_url=next_url, team_configured=True,
+            login_error="Too many attempts. Try again in 15 minutes.",
+        ), 429
+
+    member = " ".join(str(request.form.get("name", "")).split())[:40]
+    if not member:
+        security.note_login(security.TEAM, client_ip, ok=False)
+        return render_template(
+            "team_login.html", next_url=next_url, team_configured=True,
+            login_error="Type your name first (it is recorded with every creator you add).",
+        ), 400
+    if not security.team_password_matches(request.form.get("password", "")):
+        security.note_login(security.TEAM, client_ip, ok=False)
+        security.audit(member, security.TEAM, "team_login_failed", ip=client_ip)
+        return render_template(
+            "team_login.html", next_url=next_url, team_configured=True,
+            login_error="Sign-in failed. Check the team password with the owner.",
+        ), 401
+
+    security.note_login(security.TEAM, client_ip, ok=True)
+    security.audit(member, security.TEAM, "team_login_ok", ip=client_ip)
+    session.clear()
+    session.permanent = True
+    session["dashboard_authenticated"] = True
+    session["dashboard_role"] = security.TEAM
+    session["team_name"] = member
+    session["auth_at"] = int(time.time())
+    session["_csrf_token"] = secrets.token_urlsafe(32)
+    return redirect(_safe_local_redirect(next_url) if next_url else url_for("team_home"))
+
+
+@app.route("/team")
+def team_home():
+    """What the team sees: add creators, and the ones they already added."""
+    member = _session_actor()
+    quota = security.team_quota(member, limit=config.TEAM_ADDS_PER_HOUR)
+    mine = db.list_influencers(added_by=member)
+    plan = None
+    try:
+        if mine:
+            plan = readiness.overview(
+                influencers=mine,
+                heartbeat=db.get_worker_heartbeat(),
+                sources=db.list_sources(active_only=False),
+                limit=100,
+            )
+    except Exception as exc:  # pragma: no cover - the page must still render
+        app.logger.warning("team readiness failed: %s", exc)
+    audit_rows = db.list_audit(limit=25, actor=member)
+    return render_template(
+        "team.html",
+        member=member,
+        quota=quota,
+        plan=plan,
+        added_total=len(mine),
+        audit_rows=audit_rows,
+        bulk_max=BULK_MAX_ROWS,
+    )
+
+
+@app.route("/team/add", methods=["POST"])
+def team_add():
+    """Add creators (one form or a paste). No edit, no delete, no settings."""
+    member = _session_actor()
+    quota = security.team_quota(member, limit=config.TEAM_ADDS_PER_HOUR)
+    if not quota["allowed"]:
+        security.audit(member, security.TEAM, "team_quota_blocked", ip=_client_ip(),
+                       detail=f"{quota['used']} adds in the last hour")
+        flash(f"You have added {quota['used']} creators in the last hour (limit "
+              f"{quota['limit']}). Ask the owner to raise it, or continue in a while.", "warning")
+        return redirect(url_for("team_home"))
+
+    # The same safe defaults Easy Setup uses: every network on, OUR central HYPD
+    # store, WhatsApp mirroring on for the main channel.
+    defaults = {
+        "name": "", "amazon_tag": config.AMAZON_ASSOCIATE_TAG,
+        "only_amazon": False, "allow_amazon": True, "allow_earnkaro": True,
+        "allow_hypd": True, "hypd_store_id": _effective_hypd_store_id(),
+        "mirror_whatsapp": True,
+    }
+    rows: list[dict] = []
+    if str(request.form.get("bulk_lines", "")).strip():
+        rows = parse_bulk_creators(request.form.get("bulk_lines", ""))
+    else:
+        rows = [{
+            "line": 1,
+            "name": request.form.get("name", ""),
+            "tag": request.form.get("amazon_tag", ""),
+            "main": request.form.get("main_channel", ""),
+            "approval": request.form.get("approval_channel", ""),
+            "whatsapp": request.form.get("whatsapp_id", ""),
+        }]
+    if not rows:
+        flash("Fill the form (or paste one creator per line) and try again.", "warning")
+        return redirect(url_for("team_home"))
+
+    known_profiles = {
+        str(profile.get("name") or "").strip().lower(): profile
+        for profile in db.list_influencers()
+    }
+    results: list[dict] = []
+    for row in rows[:BULK_MAX_ROWS]:
+        values, approval_ident, main_ident, error = _bulk_prepare_row(row, defaults)
+        name = str(row.get("name") or "?").strip() or "?"
+        if error:
+            results.append({"name": name, "status": "failed", "detail": error})
+            continue
+        # The team may only ADD: a name that already exists is reported, never
+        # silently updated (that would be an edit through the back door).
+        if name.lower() in known_profiles:
+            results.append({"name": name, "status": "exists",
+                            "detail": "already in the hub — ask the owner to change it"})
+            continue
+        try:
+            inf_id = db.add_influencer(
+                values["name"], values["amazon_tag"], added_by=member,
+                allow_amazon=values["allow_amazon"],
+                allow_earnkaro=values["allow_earnkaro"], allow_hypd=values["allow_hypd"],
+                only_amazon=values["only_amazon"], hypd_store_id=values["hypd_store_id"],
+            )
+        except Exception as exc:  # pragma: no cover - keep the batch going
+            results.append({"name": name, "status": "failed", "detail": str(exc)[:200]})
+            continue
+        detail_bits = []
+        for role, identifier in (("approval", approval_ident), ("broadcast", main_ident)):
+            if identifier:
+                try:
+                    db.add_channel(inf_id, "telegram", identifier, status="ready", role=role,
+                                   mirror_whatsapp="1" if role == "broadcast" else "")
+                    detail_bits.append(identifier)
+                except Exception as exc:  # pragma: no cover - report, keep going
+                    detail_bits.append(f"{role} failed: {str(exc)[:80]}")
+        whatsapp_saved, whatsapp_note = _bulk_whatsapp(values, int(inf_id))
+        if whatsapp_saved:
+            detail_bits.append(whatsapp_saved[0])
+        if whatsapp_note:
+            detail_bits.append(f"⚠ {whatsapp_note}")
+        known_profiles[name.lower()] = db.get_influencer(inf_id) or {"id": inf_id, "name": name}
+        security.audit(member, security.TEAM, "creator_added", target=values["name"],
+                       detail=f"tag {values['amazon_tag']} · {' · '.join(detail_bits) or 'no channels'}",
+                       ip=_client_ip())
+        results.append({"name": values["name"], "status": "created",
+                        "detail": " · ".join(detail_bits) or "no channels"})
+
+    created = sum(1 for row in results if row["status"] == "created")
+    failed = sum(1 for row in results if row["status"] == "failed")
+    existing = sum(1 for row in results if row["status"] == "exists")
+    summary = (f"✅ {created} added" if created else "Nothing added")
+    if existing:
+        summary += f" · {existing} already in the hub (not changed)"
+    if failed:
+        summary += f" · {failed} could not be added"
+    flash(summary, "success" if created and not failed else ("error" if failed and not created else "warning"))
+    session["team_last_results"] = results[:50]
+    return redirect(url_for("team_home"))
+
+
+@app.route("/api/team/creators")
+def team_creators():
+    """The creators this member added (read-only, capped)."""
+    member = _session_actor()
+    mine = db.list_influencers(added_by=member)
+    rows = [{
+        "id": inf.get("id"), "name": inf.get("name"), "amazon_tag": inf.get("amazon_tag"),
+        "active": bool(inf.get("active")),
+    } for inf in mine[:500]]
+    return jsonify({"ok": True, "member": member, "count": len(mine), "creators": rows})
+
+
 @app.route("/logout", methods=["POST"])
 def logout():
+    was_team = _is_team()
+    actor, role = _session_actor(), _session_role()
     session.clear()
-    return redirect(url_for("login"))
+    if actor and role:
+        security.audit(actor, role, "signed_out", ip=_client_ip())
+    return redirect(url_for("team_login") if was_team else url_for("login"))
 
 
 @app.route("/reauth", methods=["POST"])
@@ -1407,7 +1711,45 @@ def setup():
         source_error=request.args.get("source_error", ""),
         imported=request.args.get("imported", type=int),
         import_error=request.args.get("import_error", ""),
+        team_access=_team_access_snapshot(),
     )
+
+
+def _team_access_snapshot() -> dict:
+    """Who may do what, who added what, and the last lines of the audit log."""
+    try:
+        audit_rows = db.list_audit(limit=40)
+    except Exception:  # pragma: no cover - the page must still render
+        audit_rows = []
+    members: dict[str, dict] = {}
+    for row in audit_rows:
+        if row.get("role") != security.TEAM:
+            continue
+        member = str(row.get("actor") or "team")
+        entry = members.setdefault(member, {"member": member, "adds": 0, "last_seen": row.get("at")})
+        if row.get("action") == "creator_added":
+            entry["adds"] += 1
+    team_added = 0
+    try:
+        conn = db._connect()
+        try:
+            team_added = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM influencers WHERE TRIM(COALESCE(added_by,'')) <> ''"
+            ).fetchone()["n"])
+        finally:
+            conn.close()
+    except Exception:  # pragma: no cover - display only
+        team_added = 0
+    return {
+        "team_configured": security.team_access_configured(),
+        "totp_enabled": security.totp_enabled(),
+        "team_url": url_for("team_login", _external=True),
+        "team_added_creators": team_added,
+        "members": sorted(members.values(), key=lambda item: item["member"].lower()),
+        "audit": audit_rows,
+        "limit_per_hour": config.TEAM_ADDS_PER_HOUR,
+        "admin_password_strong": security.strong_password(config.DASHBOARD_ADMIN_PASSWORD, minimum=16),
+    }
 
 
 # ---------- Money Radar: where commission leaks out of posted deals ----------

@@ -1,0 +1,149 @@
+{% extends "layout.html" %}
+{% block title %}Team · Add creators{% endblock %}
+{% block content %}
+<section class="card" style="margin-bottom:16px;">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div>
+      <h1 style="margin:0;">👥 Team dashboard — add creators</h1>
+      <p class="hint">
+        Signed in as <strong>{{ member }}</strong>. You can add creators and see the ones you added.
+        Editing, deleting or changing settings is the owner's job — those pages stay locked for the team.
+      </p>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <span class="pill">Added by you: <strong>{{ added_total }}</strong></span>
+      <span class="pill">Hourly limit left: <strong>{{ quota.remaining }}</strong>/{{ quota.limit }}</span>
+      <form method="post" action="{{ url_for('logout') }}" style="margin:0;">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+        <button type="submit" class="btn btn-secondary">Sign out</button>
+      </form>
+    </div>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ 'error' if category == 'error' else ('warning' if category == 'warning' else 'success') }}" role="status">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  {% if session.get('team_last_results') %}
+    <details class="easy-advanced" open>
+      <summary>Result of your last add ({{ session.get('team_last_results')|length }} row(s))</summary>
+      <table class="table">
+        <thead><tr><th>Creator</th><th>Status</th><th>Details</th></tr></thead>
+        <tbody>
+          {% for row in session.get('team_last_results') %}
+            <tr>
+              <td>{{ row.name }}</td>
+              <td>{{ {'created': '✅ added', 'exists': '↺ already there', 'failed': '⛔ not added'}.get(row.status, row.status) }}</td>
+              <td class="hint">{{ row.detail }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  {% endif %}
+</section>
+
+<section class="card" style="margin-bottom:16px; border-color:#0f766e;">
+  <h2 style="margin-top:0;">➕ Add one creator</h2>
+  <p class="hint">
+    Creator name and their <strong>own Amazon Associate tag</strong> (for example <code>ravi-21</code>) —
+    that tag is used for every Amazon deal posted to their channels. Fill the channels you were given;
+    the WhatsApp link can be pasted now or after the phone is paired.
+  </p>
+  <form method="post" action="{{ url_for('team_add') }}" class="auth-form">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+    <div class="form-grid">
+      <div>
+        <label for="name">Creator name *</label>
+        <input id="name" type="text" name="name" required maxlength="80" placeholder="Ravi Loots" />
+      </div>
+      <div>
+        <label for="amazon_tag">Their own Amazon tag *</label>
+        <input id="amazon_tag" type="text" name="amazon_tag" required maxlength="30" placeholder="ravi-21" />
+      </div>
+      <div>
+        <label for="main_channel">Main (broadcast) channel</label>
+        <input id="main_channel" type="text" name="main_channel" maxlength="120" placeholder="@ravi_loots" />
+      </div>
+      <div>
+        <label for="approval_channel">Approval channel</label>
+        <input id="approval_channel" type="text" name="approval_channel" maxlength="120" placeholder="@ravi_amazon_deals" />
+      </div>
+      <div>
+        <label for="whatsapp_id">WhatsApp channel / group id</label>
+        <input id="whatsapp_id" type="text" name="whatsapp_id" maxlength="200" placeholder="1203630…@newsletter" />
+      </div>
+    </div>
+    <button type="submit" class="button-primary">Add this creator</button>
+  </form>
+</section>
+
+<section class="card" style="margin-bottom:16px;">
+  <h2 style="margin-top:0;">📋 Add many at once (paste)</h2>
+  <p class="hint">
+    One creator per line: <code>name, amazon_tag, main_channel, approval_channel, whatsapp_id</code>.
+    A CSV exported from the dashboard can be pasted as-is ({{ bulk_max }} rows at a time). Creators already
+    in the hub are <em>not</em> changed — the row is reported back to you and the owner edits it.
+  </p>
+  <form method="post" action="{{ url_for('team_add') }}" class="auth-form">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+    <textarea name="bulk_lines" rows="6" placeholder="Ravi Loots, ravi-21, @ravi_loots, @ravi_amazon_deals, 120363012345678901@newsletter&#10;Sita Deals, sita-21, @sita_loots, @sita_amazon_deals,"></textarea>
+    <button type="submit" class="button-primary">Add every line</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div>
+      <h2 style="margin:0;">🧾 Creators you added ({{ added_total }})</h2>
+      <p class="hint">What happens next for each one — read-only. The owner finishes phone pairing and posting.</p>
+    </div>
+  </div>
+  {% if plan and plan.creators %}
+    <table class="table">
+      <thead>
+        <tr><th>Creator</th><th>Own Amazon tag</th><th>Ready?</th><th>Next step</th><th>Channels</th></tr>
+      </thead>
+      <tbody>
+        {% for creator in plan.creators %}
+          <tr>
+            <td>{{ creator.name }}</td>
+            <td><code>{{ creator.amazon_tag }}</code></td>
+            <td>{{ '✅ ready' if creator.ready else '⏳ not yet' }}</td>
+            <td class="hint">{{ creator.next_step.action if creator.next_step else '—' }}</td>
+            <td class="hint">
+              {{ creator.channels.approval or '—' }} · {{ creator.channels.main or '—' }} ·
+              {{ creator.channels.whatsapp or '—' }}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="hint">Nothing yet — add your first creator above. It appears here immediately with its next step.</p>
+  {% endif %}
+</section>
+
+{% if audit_rows %}
+<section class="card" style="margin-top:16px;">
+  <h2 style="margin-top:0;">🕘 Your recent activity</h2>
+  <table class="table">
+    <thead><tr><th>When</th><th>Action</th><th>Creator</th><th>Details</th></tr></thead>
+    <tbody>
+      {% for row in audit_rows[:10] %}
+        <tr>
+          <td class="hint">{{ row.at }}</td>
+          <td>{{ row.action }}</td>
+          <td>{{ row.target or '—' }}</td>
+          <td class="hint">{{ row.detail }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

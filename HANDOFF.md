@@ -738,3 +738,57 @@ Two CLI bugs found while testing: `--limit 0` read zero posts (0 now means the
 default cap), and `--json --check` mixed the verdict line into the JSON.
 
 Tests: `tests/test_amazon_watch.py` (15). Full suite: 478 passed.
+
+---
+
+## 13. This session, part 8: team access (add-only) and admin 2FA
+
+`influencer_hub/security.py` (stdlib only) holds the primitives:
+
+* `password_matches` / `admin_password_matches` / `team_password_matches` —
+  salted SHA-256 digests compared with `hmac.compare_digest`, so string length
+  is not observable. `strong_password()` is the 16-character floor.
+* RFC 6238 TOTP built on `hmac` + `struct`: `new_totp_secret`, `totp_code`,
+  `verify_totp` (±1 step of drift), `totp_uri`, `totp_enabled`.
+* Throttling in the database (`login_attempts`): `block_state`, `note_login`
+  (a success clears the budget), `LOGIN_MAX_FAILURES=5` per 15 minutes, scopes
+  `admin` and `team` counted separately.
+* `audit()` plus `TEAM_ALLOWED_ENDPOINTS`; `team_quota()` (per-member hourly cap).
+
+`db.py`: `influencers.added_by` (schema + migration), `add_influencer(added_by=)`,
+`add_bulk_influencers(added_by=)`, `list_influencers(added_by=)`, `record_audit`,
+`list_audit`, `count_audit_since`, `note_login_attempt`, `count_login_failures`,
+`clear_login_failures`, `prune_login_attempts`, tables `team_audit` and
+`login_attempts` (+ indexes).
+
+Dashboard:
+* Session roles (`dashboard_role`, `team_name`); `_session_role()` treats a
+  pre-upgrade session as admin so nobody is locked out.
+* Admin `/login` gained the TOTP field and the database-backed lockout, and
+  writes `admin_login_ok` / `admin_login_failed` / `admin_login_blocked`.
+* `/team/login` (name + team password), `/team` (add form, paste-many, "creators
+  you added" with next steps, own activity), `/team/add` (add-only: an existing
+  name is reported, never updated; hourly quota; every add audited, `added_by`
+  stamped) and `/api/team/creators` (own rows only).
+* The guard in `before_request` refuses every endpoint outside
+  `security.TEAM_ALLOWED_ENDPOINTS` for the team role (JSON 403 for `/api/*`,
+  redirect to `/team` for pages) and audits the attempt; unauthenticated
+  `/team*` and `/api/team` requests go to the team sign-in.
+* Generic change audit in `after_request`: one `change:<endpoint>` line for every
+  successful admin mutation (exempt list for auth/team endpoints), skipped when a
+  request was stopped for re-authentication because it changed nothing.
+* `/setup` grew the **👥 Team access & audit** card (`_team_access_snapshot()`):
+  team link, configured/2FA pills, members seen in the log with add counts, the
+  hourly limit, the 40 newest audit rows and a password-strength warning.
+* `cli totp --new|--check|--uri|--secret`; the self-check has a thirteenth item
+  ("Admin & team access", WARN naming the exact command to fix).
+
+Templates: `team_login.html`, `team.html`, `login.html` (2FA field + team link),
+`setup.html` (audit card).
+
+Tests: `tests/test_team_access.py` (20) — two doors, cross-password rejection,
+lockout in the database, add + stamp + audit, "mine only", existing-name refusal,
+eight hand-crafted edit posts refused, admin pages/APIs refused for the team,
+paste-many, quota, admin edit + audit, "stopped request logs nothing", 2FA
+sign-in (wrong and right code), TOTP clock/drift, the CLI, the self-check item and
+the setup card. Full suite: 500 passed.

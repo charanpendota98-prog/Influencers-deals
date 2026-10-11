@@ -216,6 +216,17 @@ DASHBOARD_SECRET_KEY_FILE = Path(
 # The window is idle-based: every confirmed change renews it, so an active
 # operator is never interrupted, while an idle dashboard locks itself again.
 DASHBOARD_SETUP_UNLOCK_SECONDS = _int("DASHBOARD_SETUP_UNLOCK_SECONDS", 1800)
+# ----- Team access (add-only) and admin two-factor -----
+# Team members sign in on /team with THIS password (never the admin one) and can
+# only add creators and look at what they added. Leave it blank to keep the hub
+# single-operator.
+DASHBOARD_TEAM_PASSWORD = _env("DASHBOARD_TEAM_PASSWORD")
+# When set, the admin sign-in also asks for the six-digit code from an
+# authenticator app (RFC 6238). Generate one with `cli totp --new`.
+ADMIN_TOTP_SECRET = _env("ADMIN_TOTP_SECRET")
+# How many creators one team member may add per hour (a typo loop should not
+# fill the hub; the admin is never limited).
+TEAM_ADDS_PER_HOUR = _int("TEAM_ADDS_PER_HOUR", 120)
 # Bind the unlock to the IP that confirmed it, so a stolen cookie cannot be
 # replayed from another machine. Disable only behind a fixed-IP tunnel.
 DASHBOARD_SETUP_UNLOCK_BIND_IP = _bool("DASHBOARD_SETUP_UNLOCK_BIND_IP", True)

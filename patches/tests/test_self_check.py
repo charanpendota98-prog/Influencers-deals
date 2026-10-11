@@ -34,6 +34,12 @@ def _ready_hub(monkeypatch, tmp_path, tag="ravi-21"):
     # A provisioned VM: API credentials, an authorized session file, HTTPS in
     # front (production cookie flags). Without these the report is *supposed*
     # to complain, which the other tests assert.
+    # Access is part of a provisioned hub too: the team has its own add-only
+    # password and the admin signs in with a second factor.
+    from influencer_hub import security
+
+    monkeypatch.setattr(config, "DASHBOARD_TEAM_PASSWORD", "team-password-16chars")
+    monkeypatch.setattr(config, "ADMIN_TOTP_SECRET", security.new_totp_secret())
     monkeypatch.setattr(config, "TELEGRAM_API_ID", "12345")
     monkeypatch.setattr(config, "TELEGRAM_API_HASH", "abcdef0123456789")
     monkeypatch.setattr(config, "BASE_DIR", tmp_path)
@@ -190,7 +196,8 @@ def test_the_api_returns_the_same_report_json(client, monkeypatch, tmp_path):
     assert payload["verdict"] == "ready"
     assert {check["id"] for check in payload["checks"]} >= {
         "schema", "telegram", "dashboard", "worker", "sources", "amazon",
-        "central", "creators", "mirror", "history", "whatsapp",
+        "central", "creators", "mirror", "history", "amazon_links", "access",
+        "whatsapp",
     }
     narrowed = client.get("/api/self-check?inf_id=1").get_json()
     assert narrowed["ok"] is True
