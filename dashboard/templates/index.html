@@ -336,6 +336,17 @@
     {% endif %}
   </p>
 
+  {% if digest.trend and digest.trend.points|length >= 2 %}
+  <div class="ops-chart" data-live-ops="chart" title="Delivery per day (oldest → today)">
+    {% for point in digest.trend.points %}
+      <span class="ops-bar {{ 'is-green' if point.verdict == 'ready' else ('is-warn' if point.verdict == 'attention' else 'is-bad') }}"
+            style="height: {{ [point.delivery_pct or 0, 6]|max }}%"
+            title="{{ point.day }} · {{ point.posted }} posted · {{ point.failed }} failed{% if point.delivery_pct is not none %} · {{ point.delivery_pct }}% delivered{% endif %}"></span>
+    {% endfor %}
+  </div>
+  <p class="hint ops-chart-key">{{ digest.trend.points[0].day }} → today · each bar is one day's delivered share (green = the self-check was ready that day).</p>
+  {% endif %}
+
   <p class="hint" style="margin-top:6px;">
     <span data-live-ops="blocker">
       {% if digest.creators.biggest_blocker %}
@@ -354,6 +365,13 @@
     Top failures: <span data-live-ops-note="failures">{% for failure in digest.posts.top_failures %}{{ failure.count }}× {{ failure.reason }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
     — the reasons name the fix (credentials, permissions, pacing).
   </p>
+
+  <details class="easy-advanced" id="ops-alert-preview">
+    <summary>What would the ops alert say right now?</summary>
+    <p class="hint">Read-only: this asks <code>/api/self-check?preview_alert=1</code>, which runs the same
+      policy without sending anything or moving the cooldown.</p>
+    <pre class="ops-pre" data-live-ops="alert-preview">Open this block while signed in to load the message…</pre>
+  </details>
 
   <details class="easy-advanced">
     <summary>Run it yourself, on the VM</summary>

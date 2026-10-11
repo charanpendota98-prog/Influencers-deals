@@ -765,7 +765,17 @@
             trendRow.innerHTML = 'No history yet \u2014 one cron line (<code>cli snapshot</code>) turns this into a trend.';
           }
         }
-        const blockerRow = card.querySelector('[data-live-ops="blocker"]');
+        const chart = card.querySelector('[data-live-ops="chart"]');
+        if (chart && (trend.points || []).length >= 2) {
+          const tones = {ready: 'is-green', attention: 'is-warn'};
+          chart.innerHTML = trend.points.map(point => {
+            const note = `${point.day} \u00b7 ${point.posted} posted \u00b7 ${point.failed} failed`
+              + (point.delivery_pct === null || point.delivery_pct === undefined ? '' : ` \u00b7 ${point.delivery_pct}% delivered`);
+            return `<span class="ops-bar ${tones[point.verdict] || 'is-bad'}" `
+              + `style="height: ${Math.max(6, point.delivery_pct || 0)}%" title="${note}"></span>`;
+          }).join('');
+        }
+                const blockerRow = card.querySelector('[data-live-ops="blocker"]');
         const blocker = (data.creators || {}).biggest_blocker;
         if (blockerRow && blocker) {
           const labels = {tag: 'their own Amazon tag', approval: 'the approval channel', main: 'the main channel', whatsapp: 'the WhatsApp channel', phone: 'phone pairing', activate: 'activation', mirror: 'WhatsApp mirroring'};
@@ -778,4 +788,34 @@
     window.setTimeout(tick, failures ? Math.min(120000, 30000 * failures) : 30000);
   }
   tick();
+})();
+
+/* --- The ops alert preview: fetched only when the block is opened ---------- */
+(() => {
+  const block = document.getElementById('ops-alert-preview');
+  const target = document.querySelector('[data-live-ops="alert-preview"]');
+  if (!block || !target) return;
+  let loaded = false;
+  block.addEventListener('toggle', async () => {
+    if (!block.open || loaded) return;
+    loaded = true;
+    try {
+      const response = await fetch('/api/self-check?preview_alert=1',
+        { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      const preview = payload.alert_preview || {};
+      if (preview.error) throw new Error(preview.error);
+      const decision = preview.decision || {};
+      const why = preview.sends
+        ? `would be sent by the next \`cli self-check --alert\` (${decision.reason})`
+        : `nothing is sent right now (${decision.reason})`;
+      const channel = preview.ops_channel_configured
+        ? '' : '\n(OPS_TELEGRAM_CHANNEL is not configured, so nothing would be delivered.)';
+      target.textContent = `Verdict: ${payload.verdict} \u2014 ${why}${channel}\n\n${preview.message || ''}`;
+    } catch (error) {
+      target.textContent = `Could not load the preview: ${error.message}`;
+      loaded = false;
+    }
+  });
 })();

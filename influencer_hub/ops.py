@@ -453,12 +453,25 @@ def render_alert(report: dict, decision: dict, incident: dict | None = None) -> 
     alerts have been sent, so a long outage reads as one story instead of a
     stream of identical pings.
     """
+    reason = str(decision.get("reason"))
+    icon = {"ready": "🟢", "attention": "🟡", "fail": "🔴"}.get(
+        str(decision.get("verdict")), "⚪")
     head = {
         "got_worse": "🔴 Hub self-check got worse",
         "still_broken": "🟠 Hub self-check still not green",
         "recovered": "🟢 Hub self-check recovered",
         "forced": "🔵 Hub self-check — manual runbook check",
-    }.get(str(decision.get("reason")), "⚪ Hub self-check")
+    }.get(reason)
+    if head is None:
+        # A preview (or a dry run) also has to read like a sentence.
+        if reason == "cooldown":
+            remaining = int(decision.get("cooldown_remaining_minutes") or 0)
+            head = (f"{icon} Hub self-check is not green yet — the next message is "
+                    f"held for {humanize_minutes(remaining)}")
+        elif reason == "all_green":
+            head = "🟢 Hub self-check is green — nothing will be sent"
+        else:
+            head = "⚪ Hub self-check"
     title = f"{head} · {decision.get('verdict')}"
     incident = incident or {}
     if decision.get("reason") == "recovered" and incident.get("duration"):

@@ -158,6 +158,12 @@ it ("Ops history") that names the cron line when the row is not being written.
 instead of pretending it is new, and the recovery message closes it with the
 duration ("it was broken for 1d · 3 alert(s)").
 
+**The chart** — the ops card draws one bar per stored day (height = delivered
+share, colour = that day's verdict), so a slow week is visible at a glance, and
+**“What would the ops alert say right now?”** previews the exact message the ops
+channel would get — computed with the pure policy, so it neither sends anything
+nor moves the cooldown.
+
 **Metrics and the audit log** — `GET /api/metrics` is Prometheus text
 (`hub_posts_attempts{status="failed"}`, `hub_worker_up`, `hub_creators{state=…}`,
 `hub_selfcheck_state{verdict=…}`, `hub_green_streak_days`), so whatever already

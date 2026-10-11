@@ -697,5 +697,12 @@ Advanced round on top of `ops.py`:
 `prune_ops_snapshots`, `top_posting_creators`, `list_recent_posts`,
 `snapshot_table_exists` (all tolerant of a missing table).
 
-Tests: `tests/test_ops_advanced.py` (15) + the updated `tests/test_ops_digest.py`
-(12) and `tests/test_self_check.py` (10). Full suite: 461 passed.
+Plus the two read-only dashboard touches: a per-day bar chart in the ops card
+(server-rendered SVG-free markup, re-rendered by the poller) and
+`GET /api/self-check?preview_alert=1`, which renders the message the ops channel
+*would* receive using the pure policy only — it never sends and never moves the
+cooldown or the incident state. `render_alert` now also has headers for the
+quiet reasons ("not green yet — the next message is held for 2h 21m").
+
+Tests: `tests/test_ops_advanced.py` (17) + the updated `tests/test_ops_digest.py`
+(12) and `tests/test_self_check.py` (10). Full suite: 463 passed.

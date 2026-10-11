@@ -24,7 +24,7 @@ import threading
 import time
 import urllib.request
 from collections import OrderedDict, defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse
 
@@ -1234,6 +1234,23 @@ def api_self_check():
     except Exception as exc:  # pragma: no cover - defensive
         return jsonify({"ok": False, "error": str(exc)[:200]}), 500
     report["ok"] = bool(report.get("ok"))
+    if str(request.args.get("preview_alert", "")).strip() in {"1", "true", "yes"}:
+        # "What would the ops channel be told right now?" — computed with the
+        # pure policy functions, so it neither sends a message nor moves the
+        # cooldown/incident state.
+        try:
+            last_verdict = db.get_global_setting(ops.LAST_VERDICT_KEY, "")
+            last_alert_at = db.get_global_setting(ops.LAST_ALERT_KEY, "")
+            decision = ops.alert_decision(report, last_verdict=last_verdict,
+                                          last_alert_at=last_alert_at)
+            report["alert_preview"] = {
+                "decision": decision,
+                "message": ops.render_alert(report, decision, ops._incident(datetime.now(timezone.utc))),
+                "sends": bool(decision.get("alert")),
+                "ops_channel_configured": bool(str(config.OPS_TELEGRAM_CHANNEL or "").strip()),
+            }
+        except Exception as exc:  # pragma: no cover - defensive
+            report["alert_preview"] = {"error": str(exc)[:200]}
     return jsonify(report)
 
 

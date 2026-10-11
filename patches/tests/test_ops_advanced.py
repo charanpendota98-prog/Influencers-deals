@@ -254,6 +254,31 @@ def test_the_cli_can_snapshot_back_up_and_restore(hub, tmp_path, capsys):
     assert "not a hub database" in capsys.readouterr().out
 
 
+def test_the_alert_preview_explains_without_sending(hub, monkeypatch):
+    monkeypatch.setattr(config, "OPS_TELEGRAM_CHANNEL", "@ops")
+    _activity()
+    from dashboard.app import app
+
+    app.config.update(TESTING=True)
+    client = app.test_client()
+
+    preview = client.get("/api/self-check?preview_alert=1").get_json()["alert_preview"]
+
+    assert preview["sends"] is True                     # a fresh hub is not green
+    assert preview["decision"]["reason"] == "got_worse"
+    assert "got worse" in preview["message"]
+    # Read-only: the preview must not have started an incident or a cooldown.
+    assert db.get_global_setting(ops.LAST_ALERT_KEY) == ""
+    assert db.get_global_setting(ops.INCIDENT_STARTED_KEY) == ""
+
+    # After a real alert the same preview explains why it is now quiet.
+    ops.maybe_alert(client.get("/api/self-check").get_json(), send=lambda text: None)
+    quiet = client.get("/api/self-check?preview_alert=1").get_json()["alert_preview"]
+    assert quiet["sends"] is False
+    assert quiet["decision"]["reason"] == "cooldown"
+    assert "held for" in quiet["message"]
+
+
 def test_the_cli_digest_reports_history_when_it_exists(hub, capsys):
     from influencer_hub import cli
 
@@ -320,3 +345,13 @@ def test_the_dashboard_serves_metrics_the_audit_log_and_the_trend(hub, tmp_path,
     assert "Posts log (CSV)" in page
     assert "cli snapshot --days 30" in page
     assert "cli backup --out /var/backups/hub" in page
+    # One chart bar per stored day (the fixture writes a single day, so the
+    # chart stays hidden until there is something to compare).
+    assert 'data-live-ops="chart"' not in page
+
+    for days in range(3):
+        db.record_ops_snapshot(f"2026-10-0{days + 1}", captured_at="2026-10-01T00:00:00+00:00",
+                               posted=days + 1, attempts=days + 2, verdict="ready")
+    page = client.get("/").get_data(as_text=True)
+    assert page.count('class="ops-bar') == 4
+    assert 'id="ops-alert-preview"' in page

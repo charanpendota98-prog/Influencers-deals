@@ -1004,3 +1004,25 @@ button[aria-disabled="true"] {
   color: #0f766e;
 }
 .ops-trend small { color: #6b7280; }
+
+/* Ops digest: one bar per day of history (heights are % delivered). */
+.ops-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 46px;
+  margin-top: 10px;
+  padding: 4px 2px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.ops-bar {
+  flex: 1 1 0;
+  min-height: 4px;
+  border-radius: 3px 3px 0 0;
+  background: #0f766e;
+  opacity: .85;
+}
+.ops-bar.is-green { background: #16a34a; }
+.ops-bar.is-warn { background: #d97706; }
+.ops-bar.is-bad { background: #dc2626; }
+.ops-chart-key { margin-top: 4px; font-size: .82rem; }
