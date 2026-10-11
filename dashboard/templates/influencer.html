@@ -140,7 +140,7 @@
 </section>
 
 <!-- INFLUENCER PROFILE EDIT FORM -->
-<section class="card" style="border: 1px solid #4338ca; background: #13172c;">
+<section class="card" id="profile-card" style="border: 1px solid #4338ca; background: #13172c;">
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <h2 style="color: #a5b4fc; margin-top: 0; font-size:17px;">👤 Influencer Profile Settings &amp; Rules</h2>
     <span style="font-size:11px; background:#312e81; color:#c7d2fe; padding:2px 8px; border-radius:4px;">ZERO DOWNTIME EDIT</span>
@@ -354,7 +354,7 @@
 </section>
 
 <!-- CONFIGURED CHANNELS TABLE -->
-<section class="card">
+<section class="card" id="channels">
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <h2 style="margin:0; font-size:18px;">📺 Configured Channels for {{ inf.name }}</h2>
     <span class="hint">Approval Channel · Main Channel · WhatsApp Channel (+ Any Extra Channels)</span>
@@ -624,12 +624,12 @@
 </section>
 
 <!-- WHATSAPP CONNECTION SECTION -->
-<section class="card" style="border: 1px solid #16a34a; background: #0c1a14;">
+<section class="card" id="whatsapp" style="border: 1px solid #16a34a; background: #0c1a14;">
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <h2 style="color: #4ade80; margin: 0; font-size:18px;">💬 Dedicated WhatsApp Account &amp; Channel Linker</h2>
     <span style="background:#064e3b; color:#86efac; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ISOLATED SESSION</span>
   </div>
-  <div style="background:#07120c; border:1px solid {{ '#16a34a' if mirror.active else '#7c2d12' }}; padding:12px 14px; border-radius:8px; margin-top:10px;">
+  <div id="mirror-card" style="background:#07120c; border:1px solid {{ '#16a34a' if mirror.active else '#7c2d12' }}; padding:12px 14px; border-radius:8px; margin-top:10px;">
     <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
       <strong style="color:{{ '#4ade80' if mirror.active else '#fbbf24' }}; font-size:14px;">🔁 Mirror: Main Channel → WhatsApp</strong>
       <span style="font-size:11px; padding:2px 8px; border-radius:6px; background:{{ '#064e3b' if mirror.active else '#450a0a' }}; color:{{ '#86efac' if mirror.active else '#fca5a5' }};">
@@ -653,7 +653,7 @@
   
   <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-top:14px;">
     <!-- Step 1: Login Phone -->
-    <div style="background:#07120c; border:1px solid #14532d; padding:16px; border-radius:8px;">
+    <div id="whatsapp-pair" style="background:#07120c; border:1px solid #14532d; padding:16px; border-radius:8px;">
       <h3 style="margin-top:0; color:#86efac; font-size:14px;">1️⃣ Login Influencer Phone (Scan QR)</h3>
       <p class="hint" style="font-size:12px;">Influencer mobile lo WhatsApp > Linked Devices open chesi scan cheyandi.</p>
       <form method="post" action="{{ url_for('pair_wa', inf_id=inf.id) }}">

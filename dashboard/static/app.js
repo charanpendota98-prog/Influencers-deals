@@ -521,3 +521,132 @@
     }
   });
 })();
+
+/* --- Setup command center: live readiness (no reload, read-only) ----------
+   The panel is server-rendered first, so this is pure enhancement: it fetches
+   the same checklist JSON with `live=1`, which lets the dashboard ask the
+   WhatsApp hub for the real session state, and patches the cells that change
+   most often (phone link, WhatsApp live, worker, progress). */
+(() => {
+  const panel = document.getElementById('command-center');
+  if (!panel) return;
+  const src = panel.dataset.liveSrc;
+  if (!src) return;
+  let timer = null;
+  let failures = 0;
+
+  const setText = (selector, value) => {
+    const node = panel.querySelector(selector);
+    if (node && value !== undefined && value !== null) node.textContent = value;
+  };
+
+  function paint(payload) {
+    const summary = payload.summary || {};
+    const globals = payload.globals || {};
+    const bar = panel.querySelector('.command-bar > span');
+    if (bar) bar.style.width = `${summary.percent ?? 0}%`;
+    setText('.command-headline strong', `${summary.percent ?? 0}%`);
+    setText('[data-live-worker]',
+      `${globals.worker && globals.worker.done ? '🟢' : '🔴'} worker ${globals.worker && globals.worker.done ? 'running' : 'not running'}`);
+    const chips = panel.querySelectorAll('.command-chip');
+    if (chips[0] && summary.ready !== undefined) chips[0].textContent = `👥 ${summary.ready} ready to post`;
+    if (chips[1] && summary.blocked !== undefined) {
+      chips[1].textContent = `⚠️ ${summary.blocked} still blocked`;
+      chips[1].className = `command-chip ${summary.blocked ? 'is-warn' : 'is-ok'}`;
+    }
+    if (chips[2] && summary.mirroring !== undefined) chips[2].textContent = `🔁 ${summary.mirroring} mirroring to WhatsApp`;
+    (payload.creators || []).forEach((creator) => {
+      const steps = {};
+      (creator.steps || []).forEach((step) => { steps[step.id] = step; });
+      const phone = panel.querySelector(`[data-live-cell="phone-${creator.id}"]`);
+      if (phone && steps.phone) {
+        phone.textContent = steps.phone.done
+          ? '✅ linked'
+          : (creator.wa_status && creator.wa_status !== 'not_paired' ? `⛔ ${creator.wa_status}` : '➡️ not linked');
+        phone.className = `command-step is-${steps.phone.state}`;
+        phone.title = steps.phone.detail || '';
+      }
+      const live = panel.querySelector(`[data-live-cell="live-${creator.id}"]`);
+      if (live && steps.activate) {
+        live.textContent = steps.activate.done ? '🟢 live' : '· pending test';
+        live.className = `command-step is-${steps.activate.state}`;
+        live.title = steps.activate.detail || '';
+      }
+    });
+    const stamp = panel.querySelector('[data-live-updated]');
+    if (stamp) {
+      stamp.textContent = payload.live_error
+        ? `hub unreachable · saved state`
+        : `checked ${String(payload.generated_at || '').replace('T', ' ').replace('+00:00', 'Z')}`;
+    }
+  }
+
+  async function refresh() {
+    try {
+      const response = await fetch(src, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if (response.status === 401) return;
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error('readiness refresh failed');
+      failures = 0;
+      paint(payload);
+    } catch (error) {
+      failures += 1;
+    }
+    schedule();
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    const delay = failures ? Math.min(120000, 20000 * failures) : 20000;
+    timer = setTimeout(() => {
+      if (document.visibilityState === 'hidden') { schedule(); return; }
+      refresh();
+    }, delay);
+  }
+
+  schedule();
+})();
+
+/* --- Easy Setup stepper: keep the "what is done / next" track live --------
+   Read-only poll of the same checklist endpoint for the creator on screen. */
+(() => {
+  const panel = document.querySelector('[data-live-src][data-creator]');
+  if (!panel || panel.id !== 'next-steps') return;
+  const creator = panel.dataset.creator;
+  const src = `${panel.dataset.liveSrc}&inf_id=${encodeURIComponent(creator)}`;
+  let failures = 0;
+
+  function paint(payload) {
+    const creator = (payload.creators || [])[0];
+    if (!creator) return;
+    (creator.steps || []).forEach((step) => {
+      const dot = panel.querySelector(`[data-live-step="${step.id}"]`);
+      if (!dot) return;
+      const mark = step.done ? '✅' : (step.state === 'blocked' ? '⛔' : (step.state === 'next' ? '➡️' : '·'));
+      dot.className = `step-dot is-${step.state}`;
+      dot.title = `${step.label} — ${step.detail}`;
+      dot.textContent = `${mark} ${step.label}`;
+    });
+    const next = panel.querySelector('.next-action');
+    if (next && creator.next_step) {
+      const heading = next.querySelector('strong');
+      const copy = next.querySelector('p');
+      if (heading) heading.textContent = `🎯 Next: ${creator.next_step.label}`;
+      if (copy) copy.textContent = creator.next_step.action || creator.next_step.detail;
+    }
+  }
+
+  async function tick() {
+    try {
+      const response = await fetch(src, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if (response.status === 401) return;
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok && payload.ok) { failures = 0; paint(payload); }
+      else failures += 1;
+    } catch (error) {
+      failures += 1;
+    }
+    window.setTimeout(tick, failures ? Math.min(60000, 10000 * failures) : 10000);
+  }
+  tick();
+})();

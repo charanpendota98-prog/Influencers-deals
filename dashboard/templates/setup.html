@@ -431,16 +431,39 @@
     </form>
   </div>
   {% if influencers %}
+  {# The same readiness engine the dashboard and Easy Setup use: a card states
+     its next step here, so nobody has to open every profile to find it. #}
+  {% set cards = {} %}
+  {% if creator_plan %}
+    {% for entry in creator_plan.creators %}{% set _ = cards.update({entry.id: entry}) %}{% endfor %}
+  {% endif %}
   <div class="creator-directory">
     {% for creator in influencers %}
-      <a class="creator-directory-card" href="{{ url_for('influencer_detail', inf_id=creator.id) }}">
+      {% set entry = cards.get(creator.id) %}
+      <a class="creator-directory-card {{ '' if not entry or entry.ready else 'is-needs-work' }}"
+         href="{{ url_for('influencer_detail', inf_id=creator.id) }}">
         <span class="creator-avatar" aria-hidden="true">{{ (creator.name or 'C')[0]|upper }}</span>
-        <span class="creator-directory-info"><strong>{{ creator.name }}</strong><small>{{ creator.amazon_tag or 'Amazon tag not set' }}</small></span>
+        <span class="creator-directory-info">
+          <strong>{{ creator.name }}</strong>
+          <small>{{ creator.amazon_tag or 'Amazon tag not set' }}{% if entry and entry.tag_is_shared_default %} ⚠ shared default tag{% endif %}</small>
+          {% if entry %}
+            <small class="creator-next">
+              {% if entry.ready %}✅ ready · {{ entry.done_count }}/{{ entry.total_count }} steps{% if entry.mirror_active %} · 🔁 mirror on{% endif %}
+              {% else %}➡️ {{ entry.next_step.label }}: {{ entry.next_step.action or entry.next_step.detail }}{% endif %}
+            </small>
+          {% endif %}
+        </span>
         <span class="creator-state {{ 'is-active' if creator.active else 'is-paused' }}">{{ 'Active' if creator.active else 'Paused' }}</span>
         <span aria-hidden="true">›</span>
       </a>
     {% endfor %}
   </div>
+  {% if creator_plan and creator_plan.actions %}
+    <p class="hint" style="margin-top:10px;">
+      🎯 {{ creator_plan.actions | length }} step(s) waiting across these creators —
+      the full priority list is on the <a class="text-link" href="{{ url_for('index') }}#command-center">dashboard command center</a>.
+    </p>
+  {% endif %}
   {% else %}
     <p class="empty-state">No profiles yet. Add the first creator above or use guided onboarding.</p>
   {% endif %}

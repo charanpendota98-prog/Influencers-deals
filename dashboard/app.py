@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
     amazon_shortlinks, config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
-    pipeline, puller, telegram_ops, whatsapp_client,
+    pipeline, puller, readiness, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
 def _running_under_pytest() -> bool:
@@ -190,6 +190,39 @@ def _run(coro):
     if active_loop is loop:
         raise RuntimeError("dashboard _run cannot block its own asyncio event loop")
     return asyncio.run_coroutine_threadsafe(coro, loop).result()
+
+
+def _safe_next_url(default: str) -> str:
+    """Return the form's ``next`` path when it is a safe, local URL.
+
+    Lets one screen (Easy Setup) trigger an action that normally lives on the
+    creator page and come straight back, without ever redirecting off-site or
+    accepting a scheme-relative URL.
+    """
+    candidate = (request.form.get("next") or "").strip()
+    if candidate.startswith("/") and not candidate.startswith("//"):
+        if "\r" not in candidate and "\n" not in candidate:
+            return candidate
+    return default
+
+
+def _redirect_after_action(default: str, **params) -> "Response":
+    """Redirect to ``next`` when given, else back to ``default`` — status kept.
+
+    Query parameters from the caller (``wa_pair_status``, ``test_status``, …) are
+    merged into whichever URL wins, so the status is never lost when an action
+    is triggered from Easy Setup instead of the creator page.
+    """
+    def _with_params(url: str) -> str:
+        if not params:
+            return url
+        parsed = urlparse(url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query.update({key: str(value) for key, value in params.items()})
+        return parsed._replace(query=urlencode(query)).geturl()
+
+    next_url = _safe_next_url("")
+    return redirect(_with_params(next_url) if next_url else _with_params(default))
 
 
 def _form_flag_or_none(name: str) -> bool | None:
@@ -1063,6 +1096,18 @@ def index():
     insights = db.get_live_deal_insights()
     sources = db.list_sources(active_only=False)
     active_sources = sum(1 for source in sources if source.get("active"))
+    # Read-only checklist for every creator: what is done and what the single
+    # next action is. Database only — the live WhatsApp overlay is fetched by
+    # /api/readiness?live=1 so a slow hub can never hold this page open.
+    try:
+        plan = readiness.overview(
+            influencers=influencers,
+            heartbeat=db.get_worker_heartbeat(),
+            sources=sources,
+        )
+    except Exception as exc:  # pragma: no cover - the dashboard must still render
+        app.logger.warning("readiness overview failed: %s", exc)
+        plan = None
     return render_template(
         "index.html",
         creator_count=len(influencers),
@@ -1072,7 +1117,44 @@ def index():
         money=_money_summary(),
         source_count=len(sources),
         active_source_count=active_sources,
+        plan=plan,
     )
+
+
+@app.route("/api/readiness")
+def api_readiness():
+    """The same checklist as JSON; ``?live=1`` adds the hub's real session state.
+
+    Read-only: it never creates a session, sends a message or flips a switch.
+    """
+    inf_id = request.args.get("inf_id", type=int)
+    live = str(request.args.get("live", "")).strip() in {"1", "true", "yes"}
+    live_wa: dict[str, str] = {}
+    live_error = ""
+    if live:
+        try:
+            snapshot = _wa_hub_get("/sessions")
+            for row in snapshot.get("sessions") or []:
+                key = str(row.get("key") or row.get("session_key") or "")
+                status = str(row.get("status") or "")
+                if key and status:
+                    live_wa[key] = status
+        except Exception as exc:
+            live_error = f"{type(exc).__name__}: {exc}".strip()[:200]
+    try:
+        if inf_id:
+            inf = db.get_influencer(inf_id)
+            if not inf:
+                return jsonify({"ok": False, "error": "unknown creator"}), 404
+            payload = readiness.overview(influencers=[inf], live_wa=live_wa or None)
+        else:
+            payload = readiness.overview(live_wa=live_wa or None)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+    payload["ok"] = True
+    payload["live"] = live
+    payload["live_error"] = live_error
+    return jsonify(payload)
 
 
 @app.route("/setup")
@@ -1091,6 +1173,7 @@ def setup():
         settings=settings,
         sources=sources,
         readiness=_setup_readiness_snapshot(),
+        creator_plan=_creators_plan(influencers),
         search_query=q,
         current_ek_key=current_ek_key,
         current_ek_pubid=current_ek_pubid,
@@ -1147,6 +1230,21 @@ def _money_summary() -> dict | None:
     except Exception:  # pragma: no cover - the dashboard must still load
         import logging
         logging.getLogger(__name__).exception("money summary failed")
+        return None
+
+
+def _creators_plan(influencers: list[dict]) -> dict | None:
+    """Readiness for a listed set of creators (Setup Center directory).
+
+    Never raises: a checklist is a convenience, and the Setup Center must keep
+    working on a database that has not been migrated or is being written to.
+    """
+    if not influencers:
+        return None
+    try:
+        return readiness.overview(influencers=influencers)
+    except Exception as exc:  # pragma: no cover - defensive
+        app.logger.warning("creator readiness failed: %s", exc)
         return None
 
 
@@ -2581,6 +2679,54 @@ def easy_setup():
             return redirect(url_for("easy_setup", done=applied["inf_id"]))
 
     preview = _routing_preview(**_routing_arguments(values))
+
+    # Which creator is this screen about? The just-saved one, or the one the
+    # operator picked with "?creator=<id>" (so the same one screen edits an
+    # existing creator and still shows the next step).
+    focus_id = request.args.get("creator", type=int) or (result or {}).get("inf_id")
+    if request.method == "GET" and focus_id and not request.args.get("blank"):
+        profile = db.get_influencer(focus_id)
+        if profile:
+            values = _easy_setup_values_from_profile(profile)
+
+    creators = db.list_influencers()
+    plan = None
+    creator_plan = None
+    wa_pairing = None
+    wa_key = ""
+    example_link = ""
+    if creators:
+        try:
+            plan = readiness.overview(influencers=creators)
+            creator_plan = next(
+                (c for c in plan["creators"] if c["id"] == focus_id), None
+            )
+        except Exception as exc:  # pragma: no cover - the form must still render
+            app.logger.warning("easy-setup readiness failed: %s", exc)
+    wa_channel_id = 0
+    if focus_id:
+        wa_key = WA_SESSION_KEY(focus_id)
+        wa_channels = [c for c in db.list_channels(focus_id)
+                       if str(c.get("platform") or "") in {"whatsapp_channel", "whatsapp_group"}]
+        pending_first = next((c for c in wa_channels
+                              if str(c.get("status") or "").lower() not in pipeline.ACTIVE_CHANNEL_STATUSES),
+                             None)
+        wa_channel_id = int((pending_first or (wa_channels[0] if wa_channels else {})).get("id") or 0)
+        row = next(
+            (r for r in db.list_wa_sessions(focus_id) if r.get("session_key") == wa_key),
+            None,
+        ) or {}
+        wa_pairing = {
+            "phone": str(row.get("pairing_phone") or ""),
+            "code": str(row.get("pairing_code") or ""),
+            "error": str(row.get("pairing_error") or ""),
+            "status": str(row.get("status") or "offline"),
+            "has_code": bool(row.get("pairing_code")),
+        }
+        profile = db.get_influencer(focus_id)
+        if profile:
+            example_link = readiness.example_tagged_link(profile)
+
     return render_template(
         "easy_setup.html",
         values=values,
@@ -2591,7 +2737,71 @@ def easy_setup():
         source_count=len(sources),
         active_source_count=active_sources,
         flow=_flow_snapshot(live_probe=_wants_live_probe()),
+        plan=plan,
+        creator_plan=creator_plan,
+        creators=creators,
+        focus_id=focus_id,
+        wa_key=wa_key,
+        wa_pairing=wa_pairing,
+        wa_channel_id=wa_channel_id,
+        example_link=example_link,
     )
+
+
+def _easy_setup_values_from_profile(profile: dict) -> dict:
+    """Prefill the one-screen form from a saved creator (edit in place)."""
+    inf_id = int(profile["id"])
+    channels = db.list_channels(inf_id)
+
+    def _identifier(role: str) -> str:
+        match = next(
+            (c for c in channels
+             if str(c.get("role") or "broadcast") == role
+             and str(c.get("platform") or "") == "telegram"),
+            None,
+        )
+        return str(match.get("identifier") or "") if match else ""
+
+    whatsapp = next(
+        (c for c in channels
+         if str(c.get("platform") or "") in {"whatsapp_channel", "whatsapp_group"}),
+        None,
+    )
+    values = _easy_setup_defaults()
+    values.update({
+        "name": str(profile.get("name") or ""),
+        "amazon_tag": str(profile.get("amazon_tag") or config.AMAZON_ASSOCIATE_TAG),
+        "approval": _identifier("approval"),
+        "main": _identifier("broadcast"),
+        "whatsapp": str((whatsapp or {}).get("identifier") or ""),
+        "allow_amazon": bool(profile.get("allow_amazon", True)),
+        "allow_earnkaro": bool(profile.get("allow_earnkaro", True)),
+        "allow_hypd": bool(profile.get("allow_hypd", True)),
+        "only_amazon": bool(profile.get("only_amazon", False)),
+        # Our store stays ours: the profile's stored store id only matters when
+        # central accounts are switched off (legacy path).
+        "hypd_store_id": _routing_hypd_store(profile.get("hypd_store_id")),
+        "mirror_whatsapp": bool(_main_mirror_flag(channels)),
+    })
+    return values
+
+
+def _main_mirror_flag(channels: list[dict]) -> bool:
+    """The main channel's mirror switch: '' follows the global default (ON)."""
+    main = next(
+        (c for c in channels
+         if str(c.get("platform") or "") == "telegram"
+         and str(c.get("role") or "broadcast") == "broadcast"),
+        None,
+    )
+    if not main:
+        return pipeline.mirror_main_to_whatsapp_enabled()
+    flag = str(main.get("mirror_whatsapp") or "").strip().lower()
+    if flag in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if flag in {"0", "false", "no", "off", "disabled", "none"}:
+        return False
+    return pipeline.mirror_main_to_whatsapp_enabled()
 
 
 def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dict:
@@ -3211,7 +3421,7 @@ def pair_wa(inf_id):
         db.set_wa_session_status(key, "qr")
     except Exception as e:  # pragma: no cover
         res = {"error": str(e)}
-    return redirect(url_for("influencer_detail", inf_id=inf_id))
+    return _redirect_after_action(url_for("influencer_detail", inf_id=inf_id))
 
 
 @app.route("/influencer/<int:inf_id>/pair-wa-phone", methods=["POST"])
@@ -3230,13 +3440,15 @@ def pair_wa_phone(inf_id):
     # Rejecting it here keeps a mistyped number from creating a live session.
     phone = re.sub(r"[^0-9]", "", raw_phone)
     if not raw_phone:
-        return redirect(url_for(
-            "influencer_detail", inf_id=inf_id, wa_pair_status="missing_phone",
-        ))
+        return _redirect_after_action(
+            url_for("influencer_detail", inf_id=inf_id),
+            wa_pair_status="missing_phone",
+        )
     if not (10 <= len(phone) <= 15):
-        return redirect(url_for(
-            "influencer_detail", inf_id=inf_id, wa_pair_status="bad_phone",
-        ))
+        return _redirect_after_action(
+            url_for("influencer_detail", inf_id=inf_id),
+            wa_pair_status="bad_phone", phone=phone,
+        )
 
     db.upsert_wa_session(inf_id, key, phone="")
     try:
@@ -3244,24 +3456,27 @@ def pair_wa_phone(inf_id):
     except Exception as exc:
         db.set_wa_session_pairing(key, phone=phone, code="", error=str(exc))
         db.set_wa_session_status(key, "offline")
-        return redirect(url_for(
-            "influencer_detail", inf_id=inf_id, wa_pair_status="failed",
-        ))
+        return _redirect_after_action(
+            url_for("influencer_detail", inf_id=inf_id),
+            wa_pair_status="failed",
+        )
 
     code = str((res or {}).get("code") or "").strip()
     if (res or {}).get("ok") and code:
         db.set_wa_session_pairing(key, phone=phone, code=code)
-        return redirect(url_for(
-            "influencer_detail", inf_id=inf_id, wa_pair_status="code",
-        ))
+        return _redirect_after_action(
+            url_for("influencer_detail", inf_id=inf_id),
+            wa_pair_status="code",
+        )
 
     db.set_wa_session_pairing(
         key, phone=phone, code="",
         error=str((res or {}).get("error") or "WhatsApp did not return a pairing code"),
     )
-    return redirect(url_for(
-        "influencer_detail", inf_id=inf_id, wa_pair_status="failed",
-    ))
+    return _redirect_after_action(
+        url_for("influencer_detail", inf_id=inf_id),
+        wa_pair_status="failed",
+    )
 
 
 @app.route("/influencer/<int:inf_id>/create-group", methods=["POST"])
@@ -3519,17 +3734,22 @@ def send_test_message(channel_id):
             err_msg = str(exc)
             print(f"Test dispatch failed: {exc}")
 
-    return redirect(url_for(
-        "influencer_detail", inf_id=inf_id, test_status=status,
-        test_err=err_msg, ch_name=ch["identifier"] if ch else "",
-    ))
+    return _redirect_after_action(
+        url_for(
+            "influencer_detail", inf_id=inf_id, test_status=status,
+            test_err=err_msg, ch_name=ch["identifier"] if ch else "",
+        ),
+        test_status=status, test_err=err_msg, ch_name=ch["identifier"] if ch else "",
+    )
 
 
 @app.route("/influencer/<int:inf_id>/create-newsletter", methods=["POST"])
 def create_newsletter(inf_id):
     key = WA_SESSION_KEY(inf_id)
-    name = request.form.get("name") or f"{db.get_influencer(inf_id)['name']} Channel"
+    profile = db.get_influencer(inf_id) or {}
+    name = request.form.get("name") or f"{profile.get('name') or 'Creator'} Channel"
     desc = request.form.get("description", "")
+    status, error = "pending", ""
     try:
         res = _run(whatsapp_client.create_channel(key, name, desc))
         jid = res.get("jid")
@@ -3540,9 +3760,15 @@ def create_newsletter(inf_id):
                 role="whatsapp",
                 wa_session_key=key,
             )
+        else:
+            status = "failed"
+            error = str(res.get("error") or "WhatsApp did not return the new channel id")
     except Exception as e:  # pragma: no cover
-        res = {"error": str(e)}
-    return redirect(url_for("influencer_detail", inf_id=inf_id))
+        status, error = "failed", str(e)
+    return _redirect_after_action(
+        url_for("influencer_detail", inf_id=inf_id),
+        wa_link_status=status, wa_link_error=error,
+    )
 
 
 def _wa_hub_get(path: str) -> dict:

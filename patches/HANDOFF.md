@@ -467,3 +467,74 @@ received, never re-applies a destination's display filters, and never posts a
 link that fails the commission guard — a WhatsApp destination whose own policy
 forbids the deal records `mirrored/skipped` in the log and on the page instead
 of publishing a link that earns nothing.
+
+---
+
+## 7. This session, part 2: advanced dashboard + fully-easy setup
+
+### `influencer_hub/readiness.py` — one checklist, three screens
+
+A read-only engine that answers "is this creator ready, and what is the next
+step?" for every creator, in onboarding order:
+
+1. **Amazon tag** (own id vs. the hub-wide shared default — the DB always stores
+   *some* tag, so "is it theirs?" is the honest question; a shared default is a
+   warning, not a blocker, because the deal still earns)
+2. **Approval channel** (optional: recommended, never required, so a creator who
+   does not want a preview is not stuck at "not ready")
+3. **Main channel** (required)
+4. **WhatsApp channel link** (required: done once the destination is registered,
+   even while it is Pending — pending-ness is step 6)
+5. **Phone paired** (required; from the stored session row, or from the hub's
+   live state when the caller overlays it)
+6. **WhatsApp live** (required: the destination passed its visible Test post)
+7. **Mirror** (main → WhatsApp actually copying)
+
+`REQUIRED_STEPS` decides `ready`; the headline `next_step` is always a mandatory
+one, so the UI never sends an operator after an optional extra first.
+`global_checks()` adds the two hub-level steps (active deal source, worker
+heartbeat). `overview()` also returns `actions` (priority list), `warnings`
+(shared tag, saved-but-unpaired destination) and a `summary` with `percent`.
+
+### Dashboard command center (`/`) and `/api/readiness`
+
+The home page renders the checklist server-side and then refreshes itself every
+20 s from `GET /api/readiness?live=1` (`?inf_id=` narrows it; `live=1` overlays
+the hub's real session statuses through the existing loopback proxy). The API is
+GET-only and never creates a session or sends anything; when the hub is down it
+returns `live_error` and the saved state. `app.js` patches only the cells that
+change (progress, worker chip, phone, live) and backs off on failure.
+
+### Easy Setup (`/easy-setup`) is now the whole flow
+
+- A pill strip of every creator (🟢 ready / 🟡 blocked) links to
+  `?creator=<id>`, which prefills the form from the saved profile
+  (`_easy_setup_values_from_profile`) — one screen to edit, not only to create.
+- The focused creator gets a **step track**, the **next action** card, an inline
+  **QR + login-code** form (`#qrbox` / `#pairbox` reuse the existing read-only
+  pollers) and, once the phone is linked, either the **Send Test post** button
+  for the Pending destination or — when no WhatsApp channel exists yet — a
+  one-click **Create WhatsApp Channel** action that builds it from the creator's
+  own linked account (`create-newsletter` now also honours `next`).
+- `_safe_next_url` / `_redirect_after_action` let those actions post from Easy
+  Setup and land back there with their status (`wa_pair_status`, `test_status`),
+  while ignoring an off-site or scheme-relative `next`. The older behaviour
+  (no `next` → creator page with the same status) is unchanged and still tested.
+
+### Setup Center
+
+Each creator-directory card now shows its next step (or "ready · N/M steps ·
+🔁 mirror on") and flags a shared default tag, matching the dashboard.
+
+### Verification
+
+```bash
+HUB_ENV=development HUB_DB_PATH="$(mktemp /tmp/influencer-hub-deploy-test.XXXXXX.sqlite3)" \
+PYTHONPATH=. .venv/bin/python -m pytest -q      # 413 passed (397 + 16 new)
+cd wa_hub && node --test                       # 8 tests / 8 pass
+```
+
+New file: `tests/test_setup_readiness.py` (16 tests) — the engine, the
+command center, the JSON API (narrowing, live overlay, hub failure, read-only
+guarantee), Easy Setup (pill strip, prefill, inline tools gated on the phone
+link, off-site `next` rejected) and the Setup Center cards.

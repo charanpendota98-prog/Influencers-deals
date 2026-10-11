@@ -95,6 +95,43 @@ schedule runs in the background.
    destination; after that, deals post there — including mirrored
    main-channel deals.
 
+### 🚀 Dashboard: the setup command center
+
+The dashboard home (`/`) is not just counters. Above the metrics it renders a
+**read-only checklist** for every creator and the *single next action* that
+unblocks the most:
+
+| Column | What it answers |
+|---|---|
+| Own Amazon tag | Is this creator's Amazon money going to *their* id, or still the hub-wide shared default? |
+| Approval · Main · WhatsApp | Which of the three channels exist, and which are Pending instead of live |
+| Phone | Is the creator's WhatsApp phone actually linked (QR or login code)? |
+| Live | Has a WhatsApp destination passed its visible Test post? |
+| Mirror · 24h | Is main → WhatsApp copying deals right now, and how many went out today |
+| Next action | The one button/link for the next step, deep-linked to that creator page |
+
+A progress bar, chips (ready / blocked / mirroring / worker / sources) and a
+**"Do this next"** list put the blocked creators first, so a hub with twenty
+creators still answers "what do I do now?" in one line. The panel re-checks
+itself every 20 seconds against `/api/readiness?live=1` — a GET-only JSON API
+(also available per creator: `/api/readiness?inf_id=<id>`) that never creates a
+session, sends a message or flips a switch. A stopped WhatsApp hub degrades to
+the saved state with a visible "hub unreachable" note instead of an empty panel.
+
+The Setup Center's creator directory shows the same next step on each card, and
+Easy Setup shows it for the creator being edited.
+
+Everything in the pairing list can also be done without leaving **Easy Setup**
+(`/easy-setup`): pick the creator from the pill strip at the top (a 🟡 pill is
+blocked on a step), and the screen shows that creator's readiness track, the
+inline QR / login-code form and, once the phone is linked, the **Send Test
+post** button for the Pending destination. If the creator has no WhatsApp
+channel at all, the same screen creates one from the creator's own linked
+account in one click (saved as Pending, then the Test post activates it).
+Actions triggered there return to the same screen with their status, and the
+form prefills the creator's saved tag, channels and switches, so editing an
+existing creator is one screen too.
+
 ### How to onboard unlimited influencers (1-Click Easy Setup)
 1. **Dashboard Self-Serve (/onboard):**
    Go to `/onboard`, enter the influencer's own Amazon Associate tag (the configured `mama086-21` value is only a fallback). Choose the supported affiliate-network and platform toggles, then click **"⚡ Save & Create Selected Destinations"**. When Telegram is enabled, the app attempts to create the Approval + Broadcast channels; when WhatsApp is enabled, it starts a QR session. Check the result messages, pair WhatsApp, and connect or create a group/channel afterward.

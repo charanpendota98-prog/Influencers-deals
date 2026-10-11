@@ -7,8 +7,33 @@
     <h1>⚡ Easy Setup</h1>
     <p class="hint">Creator name, two channels, three switches — that's it. Deals keep flowing from your sources automatically.</p>
   </div>
-  <a class="btn btn-secondary" href="{{ url_for('setup') }}">Advanced Setup Center →</a>
+  <div style="display:flex; gap:10px; flex-wrap:wrap;">
+    {% if focus_id or result %}<a class="btn btn-primary" href="{{ url_for('easy_setup') }}">➕ New creator</a>{% endif %}
+    <a class="btn btn-secondary" href="{{ url_for('setup') }}">Advanced Setup Center →</a>
+    <a class="btn btn-secondary" href="{{ url_for('index') }}">📊 Dashboard</a>
+  </div>
 </section>
+
+{% if creators %}
+<section class="easy-card" style="border-color:#1e3a8a;">
+  <h2>👥 Your creators — pick one to edit in this same screen</h2>
+  <div class="creator-strip">
+    <a class="creator-pill {{ 'is-focus' if focus_id == 0 or not focus_id else '' }}" href="{{ url_for('easy_setup') }}">
+      ➕ New creator
+    </a>
+    {% for card in (plan.creators if plan else []) %}
+      <a class="creator-pill {{ 'is-focus' if focus_id == card.id else '' }} {{ 'is-ready' if card.ready else 'is-blocked' }}"
+         href="{{ url_for('easy_setup', creator=card.id) }}"
+         title="{{ card.next_step.action if card.next_step else 'nothing to do' }}">
+        {{ '🟢' if card.ready else '🟡' }} {{ card.name }}
+        <small>{{ card.amazon_tag or 'no tag' }}{% if card.mirror_active %} · 🔁 {{ card.mirrored_posts_24h }}{% endif %}</small>
+      </a>
+    {% endfor %}
+  </div>
+  <p class="hint">A yellow creator is blocked on at least one step — open it here and the next action is listed
+     right below the form, with the pairing and test buttons in the same place. Nothing has to be guessed.</p>
+</section>
+{% endif %}
 
 {% if errors %}
   <div class="flash-stack" role="alert">
@@ -51,6 +76,98 @@
       <a class="btn btn-primary" href="{{ url_for('influencer_detail', inf_id=result.inf_id) }}">Open {{ result.name }} →</a>
       <a class="btn btn-secondary" href="{{ url_for('easy_setup') }}">➕ Add another creator</a>
     </div>
+  </section>
+{% endif %}
+
+{% if creator_plan %}
+  {% set steps = {} %}
+  {% for step in creator_plan.steps %}{% set _ = steps.update({step.id: step}) %}{% endfor %}
+  <section class="easy-card" id="next-steps" style="border-color:#1e3a8a;"
+           data-live-src="{{ url_for('api_readiness') }}?live=1" data-creator="{{ creator_plan.id }}">
+    <h2>🧭 {{ creator_plan.name }} — what is done, and what to do next</h2>
+    <div class="step-track">
+      {% for step in creator_plan.steps %}
+        <span class="step-dot is-{{ step.state }}" title="{{ step.label }} — {{ step.detail }}"
+              data-live-step="{{ step.id }}">
+          {{ '✅' if step.done else ('⛔' if step.state == 'blocked' else ('➡️' if step.state == 'next' else '·')) }}
+          {{ step.label }}
+        </span>
+      {% endfor %}
+    </div>
+
+    {% if creator_plan.next_step %}
+      <div class="next-action">
+        <strong>🎯 Next: {{ creator_plan.next_step.label }}</strong>
+        <p>{{ creator_plan.next_step.action or creator_plan.next_step.detail }}</p>
+        <p class="hint">{{ creator_plan.next_step.detail }}</p>
+        {% if creator_plan.next_step.url %}<a class="btn btn-secondary" href="{{ creator_plan.next_step.url }}">Open that step →</a>{% endif %}
+      </div>
+    {% else %}
+      <p class="routing-note">✅ {{ creator_plan.name }} is fully set up and posting. Nothing to do here.</p>
+    {% endif %}
+
+    {% if not steps.phone.done %}
+      <div class="easy-inline-tools" id="whatsapp-pair">
+        <h3>1️⃣ Link the creator's WhatsApp phone — QR or code, both work</h3>
+        <div class="easy-inline-grid">
+          <form method="post" action="{{ url_for('pair_wa', inf_id=creator_plan.id) }}">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+            <input type="hidden" name="next" value="{{ url_for('easy_setup', creator=creator_plan.id) }}" />
+            <button type="submit" class="btn btn-primary" style="width:100%;">📲 Generate live QR code</button>
+          </form>
+          <form method="post" action="{{ url_for('pair_wa_phone', inf_id=creator_plan.id) }}" class="easy-inline-otp">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+            <input type="hidden" name="next" value="{{ url_for('easy_setup', creator=creator_plan.id) }}" />
+            <input name="pairing_phone" value="{{ wa_pairing.phone if wa_pairing else '' }}"
+                   placeholder="919876543210 (country code tho)" style="font-family:monospace;" required />
+            <button type="submit" class="btn btn-secondary">🔢 Get login code</button>
+          </form>
+        </div>
+        <div id="qrbox" data-key="{{ wa_key }}" class="qrbox" style="margin-top:12px;"></div>
+        <div id="pairbox" data-key="{{ wa_key }}" style="margin-top:10px;">
+          {% if wa_pairing and wa_pairing.has_code %}
+            <div style="background:#052e16; border:1px solid #22c55e; padding:10px 12px; border-radius:8px; text-align:center;">
+              <div class="hint" style="font-size:11px; margin:0;">WhatsApp lo ee code type cheyandi ({{ wa_pairing.phone }}):</div>
+              <div style="font-size:26px; font-weight:900; letter-spacing:4px; color:#4ade80; font-family:monospace;">{{ wa_pairing.code }}</div>
+            </div>
+          {% elif wa_pairing and wa_pairing.error %}
+            <div class="flash flash-warning" role="status">Login code ivvaledu: {{ wa_pairing.error }}</div>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
+
+    {% if steps.phone.done and not creator_plan.channels.whatsapp %}
+      <div class="easy-inline-tools">
+        <h3>2️⃣ No WhatsApp channel yet? Let the linked account create one</h3>
+        <p class="hint">Creates the channel from the creator's own WhatsApp account and saves it as Pending for this
+           profile — then one Test post makes it live. You can also paste an existing channel link in the form above.</p>
+        <form method="post" action="{{ url_for('create_newsletter', inf_id=creator_plan.id) }}" style="display:flex; gap:8px; flex-wrap:wrap;">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+          <input type="hidden" name="next" value="{{ url_for('easy_setup', creator=creator_plan.id) }}" />
+          <input name="name" value="{{ creator_plan.name }} Deals" style="flex:1; min-width:200px;" />
+          <button type="submit" class="btn btn-primary">✳️ Create WhatsApp Channel</button>
+        </form>
+      </div>
+    {% endif %}
+
+    {% if steps.phone.done and not steps.activate.done and creator_plan.channels.whatsapp %}
+      <div class="easy-inline-tools">
+        <h3>2️⃣ Activate the WhatsApp destination with one visible test post</h3>
+        <p class="hint">A destination stays Pending until one real post is visible there — that is the safety rule that
+           keeps a half-configured channel from going live.</p>
+        <form method="post" action="{{ url_for('send_test_message', channel_id=wa_channel_id) if wa_channel_id else '#' }}">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+          <input type="hidden" name="inf_id" value="{{ creator_plan.id }}" />
+          <input type="hidden" name="next" value="{{ url_for('easy_setup', creator=creator_plan.id) }}" />
+          <button type="submit" class="btn btn-primary">🚀 Send Test post to {{ creator_plan.channels.whatsapp }}</button>
+        </form>
+      </div>
+    {% endif %}
+
+    {% if creator_plan.own_tag %}
+      <p class="hint">Amazon links are signed <code>{{ example_link }}</code> — this creator's own tag, never anyone else's.</p>
+    {% endif %}
   </section>
 {% endif %}
 
