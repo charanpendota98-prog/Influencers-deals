@@ -619,3 +619,42 @@ VM runbook built from the same checks.
 Tests: `tests/test_self_check.py` (9 tests) — honesty (empty hub ≠ ready, dead
 worker and shared tag are amber), secret non-leakage, live-only hub failure,
 read-only guarantee, API shape/404, and the rendered panel naming the fix.
+
+---
+
+## 10. This session, part 5: the ops layer (digest, alerts, exports)
+
+`influencer_hub/ops.py` adds the three pieces that make a large hub operable:
+
+* **`digest(hours=24)`** — one JSON object (posted/failed/skipped/mirrored, the
+  conversion-retry queue, worker, sources, creator readiness, self-check verdict,
+  top failure reasons) plus `render_digest()` for the ops Telegram card. Failure
+  counting needed a real timestamp on failed attempts, so `posts.created_at` was
+  added (schema + migration, filled by `record_post` for every attempt); the
+  window is `COALESCE(NULLIF(posted_at,''), created_at)`. The digest tolerates a
+  fresh/unmigrated database instead of raising (it must be printable from cron).
+* **`alert_decision()` / `maybe_alert()` / `render_alert()`** — a pure policy
+  (got worse → alert; same verdict → cooldown, default 180 min; recovered →
+  one message; green → silence) plus the function that stores `ops_last_verdict`
+  / `ops_last_alert_at` and posts to `OPS_TELEGRAM_CHANNEL`. No channel
+  configured ⇒ nothing sent *and nothing recorded* (so the first configured run
+  still alerts). Every message carries the failing checks and their fixes, never
+  a secret.
+* **`readiness_csv()` / `bulk_template_csv()`** — the checklist as one row per
+  creator (filters honoured) and the exact columns the bulk paste accepts. A
+  test round-trips the template through `parse_bulk_creators()`.
+
+CLI: `python -m influencer_hub.cli self-check [--live] [--json] [--alert
+[--force]]` (exit code 0 only when the verdict is `ready`) and `digest [--hours
+N] [--send] [--json]`. Every check in `run_checks()` is guarded, so a missing
+table shows as a failed check with a fix instead of a traceback in a cron log.
+
+Dashboard: the 📈 **Ops digest** card (metrics + the two CSV downloads + the
+copy-paste commands), live-refreshed from `GET /api/digest?hours=24`; plus
+`GET /api/readiness.csv` and `GET /api/easy-setup/template.csv`. README has the
+"Ops" section and VERIFICATION.md a step 5b with crontab lines.
+
+Tests: `tests/test_ops_digest.py` (12) — digest window/attempt counting, card
+shape, alert policy table, one-send-then-cooldown, recovery, no-channel
+behaviour, forced runbook alerts, CSV contents/filters and template round-trip,
+CLI exit codes + JSON, and the HTTP surfaces. Full suite: 445 passed.

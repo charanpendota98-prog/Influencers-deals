@@ -12,6 +12,9 @@ Examples
   python -m influencer_hub.cli audit-links --text "Deal ... bit.ly/abc"
   python -m influencer_hub.cli audit-links --file /tmp/post.txt --json
   python -m influencer_hub.cli vm-watch
+  python -m influencer_hub.cli self-check --live
+  python -m influencer_hub.cli self-check --alert        # only when it got worse
+  python -m influencer_hub.cli digest --send
 """
 from __future__ import annotations
 
@@ -484,6 +487,64 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
     return 0 if all_ok else 1
 
 
+def _cmd_self_check(args):
+    """Run the hub self-check from the shell (same checks as the dashboard)."""
+    import json as _json
+
+    from . import ops, selfcheck
+
+    report = selfcheck.run_checks(live=args.live)
+    if args.alert:
+        result = ops.maybe_alert(report, force=args.force)
+        report["alert"] = result
+    if args.json:
+        print(_json.dumps(report, indent=2))
+    else:
+        icons = {"ok": "✅", "warn": "⚠️", "fail": "⛔", "skip": "·"}
+        print(f"self-check: {report['verdict']} ({report['summary']})")
+        for check in report["checks"]:
+            print(f"  {icons.get(check['state'], '·')} {check['label']}: {check['detail']}")
+            if check["state"] in {"warn", "fail"} and check["fix"]:
+                print(f"      → {check['fix']}")
+        if args.alert:
+            alert = report.get("alert") or {}
+            decision = alert.get("decision") or {}
+            state = "sent" if alert.get("sent") else f"not sent ({decision.get('reason', 'n/a')})"
+            print(f"ops alert: {state}" + (f" — {alert['error']}" if alert.get("error") else ""))
+    return 0 if report["verdict"] == "ready" else 1
+
+
+def _cmd_digest(args):
+    """Print (and optionally send) the operational digest."""
+    import json as _json
+
+    from . import ops
+
+    data = ops.digest(hours=args.hours)
+    text = ops.render_digest(data)
+    sent, error = False, ""
+    if args.send:
+        channel = str(config.OPS_TELEGRAM_CHANNEL or "").strip()
+        if not channel:
+            error = "OPS_TELEGRAM_CHANNEL is not configured"
+        else:
+            try:
+                from . import telegram_ops
+
+                asyncio.run(telegram_ops.post_to_channel(channel, text))
+                sent = True
+            except Exception as exc:  # pragma: no cover - network
+                error = str(exc)[:200]
+    if args.json:
+        data = {**data, "sent": sent, "error": error}
+        print(_json.dumps(data, indent=2))
+    else:
+        print(text)
+        if args.send:
+            print(f"\nops send: {'sent' if sent else 'not sent'}" + (f" — {error}" if error else ""))
+    return 0 if not error else 1
+
+
 def _cmd_amazon_items(args):  # pragma: no cover - requires configured Amazon credentials
     """Fetch product details from the official Amazon Creators API."""
     import json
@@ -577,6 +638,26 @@ def build_parser() -> argparse.ArgumentParser:
     d.set_defaults(func=_cmd_doctor)
 
     sub.add_parser("status", help="overview of everything").set_defaults(func=_cmd_status)
+
+    sc = sub.add_parser(
+        "self-check",
+        help="check database, Telegram, worker, sources, accounts, creators and the mirror",
+    )
+    sc.add_argument("--live", action="store_true",
+                    help="also ping the WhatsApp hub on the loopback port")
+    sc.add_argument("--json", action="store_true", help="machine-readable output")
+    sc.add_argument("--alert", action="store_true",
+                    help="post to OPS_TELEGRAM_CHANNEL when the verdict got worse "
+                         "(cooldown applies)")
+    sc.add_argument("--force", action="store_true",
+                    help="with --alert: send even if the verdict improved or is in cooldown")
+    sc.set_defaults(func=_cmd_self_check)
+
+    dg = sub.add_parser("digest", help="operational summary for the ops channel or a terminal")
+    dg.add_argument("--hours", type=int, default=24, help="window in hours (default 24)")
+    dg.add_argument("--send", action="store_true", help="post the card to OPS_TELEGRAM_CHANNEL")
+    dg.add_argument("--json", action="store_true", help="machine-readable output")
+    dg.set_defaults(func=_cmd_digest)
 
     r = sub.add_parser("render-demo", help="show how a sample deal renders for an influencer")
     r.add_argument("id", type=int)

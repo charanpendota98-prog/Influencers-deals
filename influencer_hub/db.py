@@ -79,6 +79,10 @@ CREATE TABLE IF NOT EXISTS posts (
     status        TEXT NOT NULL DEFAULT 'queued', -- queued|posted|failed|skipped
     error         TEXT NOT NULL DEFAULT '',
     posted_at     TEXT,
+    -- Set on every attempt, including failed/skipped ones (posted_at stays NULL
+    -- unless the post succeeded), so "what happened in the last 24h" can count
+    -- failures too.
+    created_at    TEXT NOT NULL DEFAULT '',
     -- 0 = posted by the normal deal flow; otherwise the id of the Telegram
     -- channel whose successful post this WhatsApp destination mirrored.
     mirror_source_id INTEGER NOT NULL DEFAULT 0
@@ -363,6 +367,7 @@ def migrate() -> None:
         for col, ddl in (
             ("deal_text", "TEXT NOT NULL DEFAULT ''"),
             ("mirror_source_id", "INTEGER NOT NULL DEFAULT 0"),
+            ("created_at", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in posts_cols:
                 try:
@@ -1966,11 +1971,13 @@ def record_post(influencer_id: int, channel_id: int, deal_sig: str,
     """
     con = _connect()
     try:
+        now = _now()
         cur = con.execute(
-            "INSERT INTO posts (influencer_id, channel_id, deal_sig, status, error, posted_at, deal_text, mirror_source_id) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO posts (influencer_id, channel_id, deal_sig, status, error, "
+            "posted_at, created_at, deal_text, mirror_source_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (influencer_id, channel_id, deal_sig, status, error,
-             _now() if status == "posted" else None, deal_text,
+             now if status == "posted" else None, now, deal_text,
              int(mirror_source_id or 0)))
         con.commit()
         return int(cur.lastrowid)

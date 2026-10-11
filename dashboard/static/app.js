@@ -710,3 +710,38 @@
   }
   window.setTimeout(tick, 3000);
 })();
+
+/* --- Ops digest: keep the 24h numbers current without a reload ------------- */
+(() => {
+  const card = document.getElementById('ops-digest');
+  if (!card) return;
+  const src = card.dataset.liveSrc;
+  if (!src) return;
+  let failures = 0;
+  const set = (key, value) => {
+    const node = card.querySelector(`[data-live-ops="${key}"]`);
+    if (node && value !== undefined && value !== null) node.textContent = value;
+  };
+  async function tick() {
+    try {
+      const response = await fetch(src, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if (response.status === 401) return;
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.ok) {
+        failures = 0;
+        set('posted', data.posts.posted);
+        set('failed', data.posts.failed);
+        set('retry', data.retry_queue);
+        set('worker', `${['running', 'idle', 'polling', 'healthy'].includes(data.worker.state) ? '🟢' : '🔴'} ${data.worker.state}`);
+        set('ready', `${data.creators.ready} / ${data.creators.total}`);
+        set('percent', `${data.creators.setup_percent}%`);
+        const bad = card.querySelector('[data-live-ops="failed"]');
+        if (bad) bad.className = data.posts.failed ? 'is-bad' : '';
+      } else failures += 1;
+    } catch (error) {
+      failures += 1;
+    }
+    window.setTimeout(tick, failures ? Math.min(120000, 30000 * failures) : 30000);
+  }
+  tick();
+})();

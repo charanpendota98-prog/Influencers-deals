@@ -331,6 +331,10 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
             heartbeat = db.get_worker_heartbeat()
         except Exception:  # pragma: no cover - defensive
             heartbeat = None
+    if influencers is None or sources is None or heartbeat is None:
+        # Reads already failed above (fresh or unreadable database); report it in
+        # the schema check instead of raising here.
+        pass
     if plan is None and influencers:
         try:
             plan = readiness.overview(influencers=influencers)
@@ -344,17 +348,29 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
         except Exception:  # pragma: no cover - defensive
             plan = None
 
+    # Every check is guarded: a missing table or an unreadable file must show up
+    # as a failed check with a fix, never as a traceback in a cron log.
+    def _guard(check_id: str, label: str, run) -> dict:
+        try:
+            return run()
+        except Exception as exc:  # pragma: no cover - defensive
+            return _check(check_id, label, FAIL,
+                          f"Check could not run: {type(exc).__name__}: {str(exc)[:120]}",
+                          "Run `PYTHONPATH=. .venv/bin/python -c \"from influencer_hub "
+                          "import db; db.init()\"` and check HUB_DB_PATH / file "
+                          "permissions, then re-run this check.")
+
     checks = [
-        _schema_check(),
-        _telegram_check(),
-        _dashboard_check(),
-        _worker_check(heartbeat),
-        _sources_check(sources),
-        _amazon_check(plan),
-        _central_accounts_check(),
-        _creators_check(plan),
-        _mirror_check(plan),
-        _whatsapp_check(live),
+        _guard("schema", "Database & schema", _schema_check),
+        _guard("telegram", "Telegram account", _telegram_check),
+        _guard("dashboard", "Dashboard access", _dashboard_check),
+        _guard("worker", "Background worker", lambda: _worker_check(heartbeat)),
+        _guard("sources", "Deal sources", lambda: _sources_check(sources)),
+        _guard("amazon", "Amazon attribution", lambda: _amazon_check(plan)),
+        _guard("central", "Central EarnKaro / HYPD", _central_accounts_check),
+        _guard("creators", "Creator readiness", lambda: _creators_check(plan)),
+        _guard("mirror", "Main → WhatsApp mirror", lambda: _mirror_check(plan)),
+        _guard("whatsapp", "WhatsApp hub", lambda: _whatsapp_check(live)),
     ]
     worst = max((_STATE_ORDER.get(check["state"], 0) for check in checks), default=0)
     verdict = {3: "fail", 2: "attention", 1: "ready", 0: "unknown"}[worst]

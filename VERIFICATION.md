@@ -94,6 +94,22 @@ center (per-creator state), and Money Radar (every posted link carries the
 expected attribution). Then treat the self-check as the daily glance: all ten
 checks green is the definition of "everything works".
 
+## 5b. Let it watch itself (optional, recommended)
+
+```bash
+# every 15 minutes: alert the ops channel only when the verdict got worse,
+# when it is still broken after the 3h cooldown, or once when it recovers
+*/15 * * * * cd /home/ubuntu/Influencers-deals && PYTHONPATH=. .venv/bin/python -m influencer_hub.cli self-check --alert >> /var/log/influencer-selfcheck.log 2>&1
+
+# daily 09:00 IST card to the ops channel (needs OPS_TELEGRAM_CHANNEL in .env)
+0 9 * * * cd /home/ubuntu/Influencers-deals && PYTHONPATH=. .venv/bin/python -m influencer_hub.cli digest --send >> /var/log/influencer-digest.log 2>&1
+```
+
+Both commands are read-only apart from the optional ops message. Hand the
+offline work to the exports: **Creator checklist (CSV)** and **Bulk template
+(CSV)** are on the dashboard's 📈 Ops digest card
+(`/api/readiness.csv`, `/api/easy-setup/template.csv`).
+
 ## 6. If a check is not green
 
 The panel names the fix. The short versions:

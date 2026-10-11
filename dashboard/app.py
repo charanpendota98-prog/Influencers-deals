@@ -28,14 +28,17 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse
 
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for, session
+from flask import (
+    Flask, Response, abort, flash, jsonify, redirect, render_template, request,
+    url_for, session,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
-    amazon_shortlinks, config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
-    pipeline, puller, readiness, selfcheck, telegram_ops, whatsapp_client,
+    amazon_shortlinks, config, db, hypd_shortlinks, lehlah_shortlinks, link_router, ops,
+    polls, pipeline, puller, readiness, selfcheck, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
 def _running_under_pytest() -> bool:
@@ -1122,14 +1125,24 @@ def index():
         plan = None
     # The self-check panel: same checks the API returns, minus the one network
     # call (the browser asks /api/self-check?live=1 for that).
+    heartbeat = db.get_worker_heartbeat()
     try:
         report = selfcheck.run_checks(
             live=False, influencers=influencers, sources=sources,
-            heartbeat=db.get_worker_heartbeat(), plan=plan,
+            heartbeat=heartbeat, plan=plan,
         )
     except Exception as exc:  # pragma: no cover - the dashboard must still render
         app.logger.warning("self-check failed: %s", exc)
         report = None
+
+    # Ops digest: the same numbers the ops-channel card and `cli digest` print.
+    digest = None
+    try:
+        digest = ops.digest(hours=24, plan=plan, sources=sources,
+                            heartbeat=heartbeat, report=report, insights=insights)
+    except Exception as exc:  # pragma: no cover - the dashboard must still render
+        app.logger.warning("ops digest failed: %s", exc)
+        digest = None
     paging = {"offset": offset, "page_size": page_size, "prev": max(0, offset - page_size),
               "next": offset + page_size}
     if plan:
@@ -1148,6 +1161,7 @@ def index():
         active_source_count=active_sources,
         plan=plan,
         report=report,
+        digest=digest,
         query=query,
         state=state,
         paging=paging,
@@ -1221,6 +1235,49 @@ def api_self_check():
         return jsonify({"ok": False, "error": str(exc)[:200]}), 500
     report["ok"] = bool(report.get("ok"))
     return jsonify(report)
+
+
+@app.route("/api/readiness.csv")
+def api_readiness_csv():
+    """The readiness checklist as a spreadsheet (same filters as /api/readiness)."""
+    query = (request.args.get("q") or "").strip()
+    state = (request.args.get("state") or "").strip().lower()
+    try:
+        plan = readiness.overview(query=query, state=state)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+    csv_text = ops.readiness_csv(plan)
+    return Response(
+        csv_text,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=creator-readiness.csv"},
+    )
+
+
+@app.route("/api/easy-setup/template.csv")
+def api_easy_setup_template():
+    """The exact columns the bulk paste accepts, with example rows."""
+    return Response(
+        ops.bulk_template_csv(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=creators-template.csv"},
+    )
+
+
+@app.route("/api/digest")
+def api_digest():
+    """Operational summary (read-only). ``?hours=`` sets the window."""
+    try:
+        hours = max(1, min(24 * 30, request.args.get("hours", 24, type=int) or 24))
+    except (TypeError, ValueError):
+        hours = 24
+    try:
+        data = ops.digest(hours=hours)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+    data["ok"] = True
+    data["card"] = ops.render_digest(data)
+    return jsonify(data)
 
 
 @app.route("/setup")

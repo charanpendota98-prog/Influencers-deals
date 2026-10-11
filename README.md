@@ -112,6 +112,49 @@ The same checks, in VM order, live in **[VERIFICATION.md](VERIFICATION.md)** —
 the copy-paste runbook (blanked-credential test run, schema, stack, per-creator
 proof, worker start, and what each red check means).
 
+### 📈 Ops: the digest, the alerts, and the exports
+
+Three things make a 1000-creator hub something you *operate* rather than watch.
+
+**The digest** — one card, on the dashboard (📈 Ops digest, refreshed live at
+`/api/digest?hours=24`) and on the command line:
+
+```bash
+python -m influencer_hub.cli digest                 # print the 24h card
+python -m influencer_hub.cli digest --send          # ...to OPS_TELEGRAM_CHANNEL
+python -m influencer_hub.cli digest --json --hours 6
+```
+
+It reports delivered / failed / skipped / mirrored posts, the conversion-retry
+queue, worker state, active sources, creator readiness (ready · blocked ·
+mirroring · setup %), the current self-check verdict and the two most common
+failure reasons. Failure counting uses each attempt's own timestamp
+(`posts.created_at`), so a bad hour can never look like a quiet one.
+
+**The alert policy** — `python -m influencer_hub.cli self-check --alert` (cron
+or a systemd timer) speaks to the ops channel only when it matters:
+
+| Situation | What happens |
+|---|---|
+| verdict got worse (e.g. `attention` → `fail`) | alerts immediately |
+| same verdict still not green | re-alerts once the cooldown (default 3h) passes |
+| everything is green again after being broken | one “recovered” message |
+| green and was green | silence |
+
+The message names the failing checks **and the fix** (`systemctl start …`,
+“save each creator's own tag”, …). Without `OPS_TELEGRAM_CHANNEL` nothing is
+sent and nothing is recorded, so a hub that has not opted in gets no surprise
+messages. State lives in global settings, so a restart does not re-alert.
+
+**The exports** — the checklist and the bulk template as spreadsheets:
+
+* `GET /api/readiness.csv` — one row per creator (same `q`/`state` filters as
+  the API): ready, tag + where it came from, the three channels, phone status,
+  next step + action, mirror state, warnings and the per-step track.
+* `GET /api/easy-setup/template.csv` — the exact columns the bulk paste accepts
+  with three example rows (the template is parsed by the same code that imports
+  it, so a filled-in spreadsheet always loads).
+
 ### 🚀 Dashboard: the setup command center
 
 The dashboard home (`/`) is not just counters. Above the metrics it renders a
