@@ -82,6 +82,25 @@ async def get_qr(session_key: str) -> dict:
     return await _request("GET", f"/sessions/{session_key}/qr")
 
 
+async def request_pairing_code(session_key: str, phone: str, label: str = "") -> dict:
+    """Link a phone number with an 8-character code instead of a QR scan.
+
+    The operator types the number (country code included) shown on the phone,
+    so the same number can be linked even when the camera/QR route is awkward.
+    """
+    safe_key = quote(str(session_key), safe="")
+    return await _request("POST", f"/sessions/{safe_key}/pairing-code", json={
+        "phone": phone,
+        "label": label,
+    }, timeout=40)
+
+
+async def pairing_state(session_key: str) -> dict:
+    """Read-only: the live pairing code (if any) for this session."""
+    safe_key = quote(str(session_key), safe="")
+    return await _request("GET", f"/sessions/{safe_key}/pairing", timeout=10)
+
+
 async def session_status(session_key: str) -> dict:
     return await _request("GET", f"/sessions/{session_key}")
 

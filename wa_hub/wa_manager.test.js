@@ -15,6 +15,15 @@ class FakeSocket {
     this.logoutCalls = 0
     this.endCalls = 0
     this.sendCalls = []
+    this.pairingCalls = []
+    this.pairingCode = 'ABCDEFGH'
+    this.pairingError = null
+  }
+
+  async requestPairingCode(phoneNumber) {
+    this.pairingCalls.push(phoneNumber)
+    if (this.pairingError) throw this.pairingError
+    return this.pairingCode
   }
 
   async sendMessage(to, payload) {
@@ -195,4 +204,112 @@ test('logged-out sessions clear credentials and can be explicitly paired again',
   await hub.start('inf-3-wa')
   assert.equal(sockets.length, 2)
   assert.equal(session.status, 'connecting')
+})
+
+const settle = () => new Promise((resolve) => setImmediate(resolve))
+
+test('phone-link pairing normalizes the number, issues one code per socket, and caches it', async (t) => {
+  const fixture = makeFixture(t)
+  const { hub, sockets, sessionsFile } = fixture
+  const key = 'inf-9-wa'
+  const meta = { influencer_id: 9, label: 'wa' }
+
+  const pairing = hub.requestPairingCode(key, '+91 98765-43210', meta)
+  await settle()
+  assert.equal(sockets.length, 1)
+
+  sockets[0].emitUpdate({ connection: 'qr', qr: 'one-time-qr' })
+  const result = await pairing
+
+  assert.deepEqual(sockets[0].pairingCalls, ['919876543210'])
+  assert.equal(result.ok, true)
+  assert.equal(result.phone, '919876543210')
+  assert.equal(result.code, 'ABCD-EFGH')
+  assert.equal(hub.get(key).status, 'pairing')
+
+  // Asking again while the code is live must not spam WhatsApp with a new code.
+  const cached = await hub.requestPairingCode(key, '919876543210')
+  assert.equal(cached.code, 'ABCD-EFGH')
+  assert.equal(cached.cached, true)
+  assert.equal(sockets[0].pairingCalls.length, 1)
+
+  // The one-time code is never listed; only that a pairing is waiting.
+  const listed = hub.list().find((session) => session.key === key)
+  assert.equal(listed.pairing, true)
+  assert.equal(Object.prototype.hasOwnProperty.call(listed, 'code'), false)
+
+  // Read-only state reads persist nothing and do not create sockets.
+  const stateBefore = fs.readFileSync(sessionsFile, 'utf8')
+  assert.deepEqual(hub.pairingState(key), {
+    ok: true,
+    status: 'pairing',
+    phone: '919876543210',
+    code: 'ABCD-EFGH',
+    hasCode: true,
+    error: '',
+  })
+  assert.equal(fs.readFileSync(sessionsFile, 'utf8'), stateBefore)
+  assert.equal(sockets.length, 1)
+})
+
+test('pairing rejects an unusable number before any socket exists', async (t) => {
+  const { hub, sockets } = makeFixture(t)
+
+  await assert.rejects(hub.requestPairingCode('inf-4-wa', '98765'), /10-15 digits/)
+  await assert.rejects(hub.requestPairingCode('inf-4-wa', ''), /10-15 digits/)
+  assert.equal(sockets.length, 0)
+  assert.deepEqual(hub.pairingState('inf-4-wa'), {
+    ok: true, status: 'offline', phone: '', code: '', hasCode: false, error: '',
+  })
+})
+
+test('a closed socket drops the stale code and the next socket issues a fresh one', async (t) => {
+  const fixture = makeFixture(t)
+  const { hub, sockets, timers } = fixture
+  const key = 'inf-11-wa'
+
+  const pairing = hub.requestPairingCode(key, '919876543210')
+  await settle()
+  sockets[0].emitUpdate({ connection: 'qr', qr: 'qr-1' })
+  assert.equal((await pairing).code, 'ABCD-EFGH')
+
+  sockets[0].emitUpdate({
+    connection: 'close',
+    lastDisconnect: { error: { output: { statusCode: DisconnectReason.connectionLost } } },
+  })
+  assert.deepEqual(hub.pairingState(key), {
+    ok: true, status: 'offline', phone: '919876543210', code: '', hasCode: false, error: '',
+  })
+
+  // The reconnect keeps the requested number, so the replacement socket can be
+  // linked with a fresh code instead of an expired one.
+  await timers[0].callback()
+  sockets[1].pairingCode = 'ZZZZYYYY'
+  sockets[1].emitUpdate({ connection: 'qr', qr: 'qr-2' })
+  await settle()
+  assert.deepEqual(sockets[1].pairingCalls, ['919876543210'])
+  assert.equal(hub.pairingState(key).code, 'ZZZZ-YYYY')
+  assert.equal(hub.pairingState(key).status, 'pairing')
+
+  // Once linked, the pairing attempt is finished and cannot be restarted blind.
+  sockets[1].emitUpdate({ connection: 'open' })
+  assert.equal(hub.pairingState(key).hasCode, false)
+  assert.equal(hub.get(key).status, 'connected')
+  await assert.rejects(hub.requestPairingCode(key, '919876543210'), /already linked/)
+})
+
+test('a failed pairing request reports the reason instead of a silent wait', async (t) => {
+  const fixture = makeFixture(t)
+  const { hub, sockets } = fixture
+  const key = 'inf-13-wa'
+
+  const pairing = hub.requestPairingCode(key, '919876543210')
+  await settle()
+  sockets[0].pairingError = new Error('connection closed before pairing')
+  sockets[0].emitUpdate({ connection: 'qr', qr: 'qr-1' })
+
+  await assert.rejects(pairing, /connection closed before pairing/)
+  const state = hub.pairingState(key)
+  assert.equal(state.hasCode, false)
+  assert.match(state.error, /connection closed before pairing/)
 })

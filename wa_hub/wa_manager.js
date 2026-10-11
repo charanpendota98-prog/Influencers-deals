@@ -33,10 +33,17 @@ class Session {
     this.startPromise = null
     this.stopping = false
     this.qr = null
-    this.status = 'offline' // offline | qr | connecting | connected | error
+    this.status = 'offline' // offline | qr | pairing | connecting | connected | error
     this.phone = ''
     this.listeners = new Set() // SSE subscribers
     this.authDir = path.join(authRoot, sanitize(key))
+    // Phone-link (OTP) pairing: the operator types the number, WhatsApp shows
+    // an 8-character code on that phone, and the same registered device results.
+    // The code is a one-time login credential, so it is never logged.
+    this.pairingPhone = ''
+    this.pairingCode = ''
+    this.pairingError = ''
+    this.pairingIssued = false
   }
 
   emit(event) {
@@ -50,6 +57,25 @@ class Session {
 
 function sanitize(key) {
   return key.replace(/[^a-zA-Z0-9_-]/g, '_')
+}
+
+// A WhatsApp phone-linking code is only offered for a full international
+// number (country code included). Anything shorter cannot be routed by
+// WhatsApp, so it is rejected before a socket is even created.
+const PAIRING_PHONE_MIN_DIGITS = 10
+const PAIRING_PHONE_MAX_DIGITS = 15
+
+export function normalizePairingPhone(raw) {
+  const digits = String(raw ?? '').replace(/[^0-9]/g, '')
+  if (digits.length < PAIRING_PHONE_MIN_DIGITS || digits.length > PAIRING_PHONE_MAX_DIGITS) return ''
+  return digits
+}
+
+// WhatsApp prints the code in two groups of four (e.g. "ABCD-EFGH").
+export function formatPairingCode(code) {
+  const clean = String(code ?? '').toUpperCase().replace(/[^0-9A-Z]/g, '')
+  if (clean.length !== 8) return clean
+  return `${clean.slice(0, 4)}-${clean.slice(4)}`
 }
 
 export class Hub {
@@ -99,6 +125,9 @@ export class Hub {
       label: s.meta?.label,
       status: s.status,
       phone: s.phone,
+      // Only whether a code is waiting; the one-time code itself stays on the
+      // session and is returned solely by the explicit pairing endpoints.
+      pairing: !!s.pairingCode,
     }))
   }
 
@@ -145,17 +174,31 @@ export class Hub {
       // Ignore late events from a socket replaced during reconnect or logout.
       if (this.sessions.get(sess.key) !== sess || sess.sock !== sock) return
       const { connection, qr, lastDisconnect } = u
+      // A pairing code can only be requested while the device is still
+      // unregistered and the socket is open (Baileys sends the code over the
+      // live websocket), so it is issued on the first connection update of a
+      // requested number and cached on the session.
+      if (sess.pairingPhone && !sess.pairingCode && !sess.pairingIssued) {
+        void this._issuePairingCode(sess, sock)
+      }
       if (qr) {
         sess.qr = qr
-        sess.status = 'qr'
+        if (!sess.pairingPhone) sess.status = 'qr'
         sess.emit({ type: 'qr', qr })
         this.logger.info({ key: sess.key }, 'QR available')
       }
-      if (connection === 'connecting') sess.status = 'connecting'
+      if (connection === 'connecting') {
+        if (sess.status !== 'pairing') sess.status = 'connecting'
+      }
       if (connection === 'open') {
         sess.status = 'connected'
         sess.phone = sock.user?.id?.split('@')[0] || ''
         sess.qr = null
+        // The number is linked now: the one-time code is finished.
+        sess.pairingPhone = ''
+        sess.pairingCode = ''
+        sess.pairingError = ''
+        sess.pairingIssued = false
         sess.emit({ type: 'status', status: 'connected', phone: sess.phone })
         this.logger.info({ key: sess.key, phone: sess.phone }, 'session connected')
       }
@@ -165,8 +208,13 @@ export class Hub {
         sess.sock = null
         sess.qr = null
         sess.status = 'offline'
+        // A code belongs to one socket attempt; drop it so a reconnect can
+        // issue a fresh one instead of showing an expired code.
+        sess.pairingCode = ''
+        sess.pairingIssued = false
         if (loggedOut) {
           sess.phone = ''
+          sess.pairingPhone = ''
           try {
             fs.rmSync(sess.authDir, { recursive: true, force: true })
           } catch (error) {
@@ -195,6 +243,146 @@ export class Hub {
 
   // Latest QR string (used for polling fallback).
   getQR(key) { return this.sessions.get(key)?.qr || null }
+
+  /**
+   * Link a phone number with an 8-character pairing code instead of a QR scan.
+   *
+   * The operator enters the influencer's full international number; WhatsApp
+   * shows the code on that phone (Linked devices -> "Link with phone number").
+   * The result is the same registered device as a QR scan, so every later
+   * send/read path is unchanged. One socket attempt can only request one code,
+   * and the code dies with its socket, so it is cached on the session and
+   * re-issued by the next connect attempt.
+   */
+  async requestPairingCode(key, phone, meta = {}) {
+    const digits = normalizePairingPhone(phone)
+    if (!digits) {
+      throw new Error('a full international WhatsApp number is required (10-15 digits, country code included)')
+    }
+
+    const sess = this.sessions.get(key) || new Session(key, meta, this.authRoot)
+    sess.meta = { ...sess.meta, ...meta }
+    this.sessions.set(key, sess)
+    this._save()
+
+    if (sess.status === 'connected') {
+      throw new Error('this WhatsApp number is already linked; disconnect it before pairing again')
+    }
+
+    sess.pairingPhone = digits
+    sess.pairingError = ''
+    if (sess.pairingCode) {
+      return this._pairingPayload(sess, true)
+    }
+
+    if (!sess.sock) {
+      // Creating the socket makes Baileys emit its connection updates, which is
+      // where the code gets requested (the code needs a live connection).
+      await this.start(key, sess.meta)
+    }
+    if (sess.sock && sess.qr && !sess.pairingIssued && !sess.pairingCode) {
+      // The socket was already past its first update (for example a QR that is
+      // live right now), so nothing new would trigger the request on its own.
+      void this._issuePairingCode(sess, sess.sock)
+    }
+
+    const payload = await this._waitForPairingCode(sess, 25_000)
+    if (!payload.ok || !payload.code) {
+      const detail = sess.pairingError
+        || (sess.status === 'connected'
+          ? 'this WhatsApp number is already linked'
+          : 'WhatsApp did not answer with a pairing code in time')
+      const error = new Error(detail)
+      error.status = 504
+      throw error
+    }
+    return payload
+  }
+
+  /** Read-only view of the pairing attempt (never starts or mutates a socket). */
+  pairingState(key) {
+    const sess = this.sessions.get(key)
+    if (!sess) return { ok: true, status: 'offline', phone: '', code: '', error: '', hasCode: false }
+    return {
+      ok: true,
+      status: sess.status,
+      phone: sess.pairingPhone,
+      code: formatPairingCode(sess.pairingCode),
+      hasCode: !!sess.pairingCode,
+      error: sess.pairingError,
+    }
+  }
+
+  _pairingPayload(sess, cached = false) {
+    return {
+      ok: true,
+      status: sess.status,
+      phone: sess.pairingPhone,
+      code: formatPairingCode(sess.pairingCode),
+      cached,
+    }
+  }
+
+  async _issuePairingCode(sess, sock) {
+    if (sess.pairingIssued || !sess.pairingPhone) return
+    sess.pairingIssued = true
+    try {
+      if (typeof sock.requestPairingCode !== 'function') {
+        throw new Error('this WhatsApp build cannot request a pairing code; scan the QR instead')
+      }
+      const code = await sock.requestPairingCode(sess.pairingPhone)
+      if (this.sessions.get(sess.key) !== sess || sess.sock !== sock) return
+      sess.pairingCode = String(code || '').trim().toUpperCase()
+      if (!sess.pairingCode) throw new Error('WhatsApp returned an empty pairing code')
+      sess.status = 'pairing'
+      sess.pairingError = ''
+      // The code itself is a one-time credential and is never logged.
+      this.logger.info({ key: sess.key }, 'phone-link pairing code issued')
+      sess.emit({ type: 'pairing', phone: sess.pairingPhone })
+    } catch (error) {
+      sess.pairingIssued = false
+      sess.pairingCode = ''
+      sess.pairingError = String(error?.message || error)
+      this.logger.warn({ key: sess.key, error: sess.pairingError }, 'pairing code request failed')
+      sess.emit({ type: 'pairing_error', error: sess.pairingError })
+    }
+  }
+
+  _waitForPairingCode(sess, timeoutMs) {
+    if (sess.pairingCode || sess.status === 'connected') {
+      return Promise.resolve(this._pairingPayload(sess))
+    }
+    if (sess.pairingError && !sess.pairingIssued) {
+      return Promise.resolve({
+        ok: false, status: sess.status, phone: sess.pairingPhone, error: sess.pairingError,
+      })
+    }
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (payload) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        unsubscribe()
+        resolve(payload)
+      }
+      const unsubscribe = sess.addListener((event) => {
+        if (event.type === 'pairing_error') {
+          finish({ ok: false, status: sess.status, phone: sess.pairingPhone, error: event.error })
+        }
+        if (event.type === 'pairing') finish(this._pairingPayload(sess))
+        if (event.type === 'status' && event.status === 'connected') finish(this._pairingPayload(sess))
+      })
+      const timer = setTimeout(() => {
+        finish({
+          ok: false, status: sess.status, phone: sess.pairingPhone,
+          error: sess.pairingError || 'WhatsApp did not answer with a pairing code in time',
+        })
+      }, timeoutMs)
+      // A pending pairing wait must never hold the process (or a test run) open.
+      if (typeof timer.unref === 'function') timer.unref()
+    })
+  }
 
   async sendText(key, to, text) {
     const s = this.sessions.get(key)
@@ -362,6 +550,10 @@ export class Hub {
     s.qr = null
     s.phone = ''
     s.status = 'offline'
+    s.pairingPhone = ''
+    s.pairingCode = ''
+    s.pairingError = ''
+    s.pairingIssued = false
     if (sock) {
       try { await sock.logout() } catch (_) { /* best effort */ }
       try { sock.end() } catch (_) { /* best effort */ }

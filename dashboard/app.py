@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
     amazon_shortlinks, config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
-    puller, telegram_ops, whatsapp_client,
+    pipeline, puller, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
 def _running_under_pytest() -> bool:
@@ -1390,13 +1390,23 @@ def toggle_deal_source(source_id):
 
 @app.route("/global-settings/update", methods=["POST"])
 def update_global_settings():
-    nav_btn_en = "1" if request.form.get("nav_button_enabled") in ("1", "on", "true") else "0"
-    nav_btn_text = request.form.get("nav_button_text", "Join Shpsy Loots ❤️").strip()
-    nav_btn_url = request.form.get("nav_button_url", "").strip()
+    # Each card posts only its own fields; a card that is not on the page must
+    # never blank another card's settings.
+    if {"nav_button_enabled", "nav_button_text", "nav_button_url"} & set(request.form):
+        nav_btn_en = "1" if request.form.get("nav_button_enabled") in ("1", "on", "true") else "0"
+        nav_btn_text = request.form.get("nav_button_text", "Join Shpsy Loots ❤️").strip()
+        nav_btn_url = request.form.get("nav_button_url", "").strip()
 
-    db.set_global_setting("nav_button_enabled", nav_btn_en)
-    db.set_global_setting("nav_button_text", nav_btn_text)
-    db.set_global_setting("nav_button_url", nav_btn_url)
+        db.set_global_setting("nav_button_enabled", nav_btn_en)
+        db.set_global_setting("nav_button_text", nav_btn_text)
+        db.set_global_setting("nav_button_url", nav_btn_url)
+
+    if "mirror_main_to_whatsapp" in request.form:
+        # Default of the mirror itself: every creator's ready main Telegram
+        # channel is copied to their ready WhatsApp destinations. A per-channel
+        # switch on the creator page overrides this.
+        mirror_on = "1" if request.form.get("mirror_main_to_whatsapp") in ("1", "on", "true") else "0"
+        db.set_global_setting("mirror_main_to_whatsapp", mirror_on)
 
     return redirect(url_for("setup"))
 
@@ -1679,6 +1689,12 @@ def update_channel_route(channel_id):
     channel_min_tier = request.form.get("min_deal_tier")
     channel_min_tier = channel_min_tier.strip() if channel_min_tier is not None else None
 
+    # Main-channel mirror switch ('' inherit the global setting, 1 on, 0 off).
+    # Only the main Telegram channels show this control, so an absent field
+    # means "this destination has no mirror switch to change".
+    mirror_whatsapp = request.form.get("mirror_whatsapp")
+    mirror_whatsapp = mirror_whatsapp.strip() if mirror_whatsapp is not None else None
+
     if current_channel.get("platform") in {"whatsapp_group", "whatsapp_channel"}:
         if ident:
             destination, error = _resolve_whatsapp_destination(owner_id, ident)
@@ -1730,6 +1746,7 @@ def update_channel_route(channel_id):
         custom_button_text=btn_text,
         custom_button_url=btn_url,
         min_deal_tier=channel_min_tier,
+        mirror_whatsapp=mirror_whatsapp,
     )
     if needs_test:
         return redirect(url_for(
@@ -2434,6 +2451,8 @@ def _easy_setup_defaults() -> dict:
         "allow_hypd": True,
         "only_amazon": False,
         "hypd_store_id": _effective_hypd_store_id(),
+        # Main Telegram channel -> the creator's WhatsApp channel mirror.
+        "mirror_whatsapp": True,
     }
 
 
@@ -2454,6 +2473,7 @@ def _easy_setup_form_values() -> dict:
         "allow_earnkaro": bool(_form_flag("allow_earnkaro", default=True)),
         "allow_hypd": bool(_form_flag("allow_hypd", default=True)),
         "only_amazon": bool(_form_flag("only_amazon", default=False)),
+        "mirror_whatsapp": bool(_form_flag("mirror_whatsapp", default=True)),
         "hypd_store_id": (
             request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
         ),
@@ -2539,6 +2559,23 @@ def easy_setup():
             elif proof.get("short_link_status", {}).get("active") and proof.get("short_link_error"):
                 proof_message += " ⚠ " + proof["short_link_error"] + " Using canonical tagged URL instead."
             flash(proof_message, "success" if proof["ok"] else "warning")
+            if applied["whatsapp"]:
+                flash(
+                    "💬 WhatsApp channel saved as Pending. Pair the creator's phone "
+                    "(QR or the phone-linking code) and send one Test post from their "
+                    "page — after that, main-channel deals are mirrored there "
+                    "automatically.",
+                    "success" if values.get("mirror_whatsapp", True) else "warning",
+                )
+            elif applied["whatsapp_note"]:
+                flash("⚠ WhatsApp channel: " + applied["whatsapp_note"], "warning")
+            elif values.get("mirror_whatsapp", True):
+                flash(
+                    "🔁 WhatsApp mirror is ON: as soon as this creator has a ready "
+                    "WhatsApp channel, every post from their main channel is copied "
+                    "there with the same deals.",
+                    "warning",
+                )
             if tag_note:
                 flash("⚠ " + tag_note, "warning")
             return redirect(url_for("easy_setup", done=applied["inf_id"]))
@@ -2592,6 +2629,11 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
     def _upsert(identifier: str, role: str) -> None:
         if not identifier:
             return
+        # Only a main (broadcast) Telegram channel mirrors into WhatsApp; the
+        # creator can still switch it off per channel on their page.
+        mirror_flag = (
+            "1" if values.get("mirror_whatsapp", True) else "0"
+        ) if role == "broadcast" else None
         match = next(
             (channel for channel in db.list_channels(inf_id)
              if channel.get("platform") == "telegram"
@@ -2605,6 +2647,7 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
                 allow_earnkaro=values["allow_earnkaro"],
                 allow_hypd=values["allow_hypd"],
                 hypd_store_id=values["hypd_store_id"],
+                mirror_whatsapp=mirror_flag,
             )
             updated.append(identifier)
         else:
@@ -2614,11 +2657,28 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
                 allow_earnkaro=values["allow_earnkaro"],
                 allow_hypd=values["allow_hypd"],
                 hypd_store_id=values["hypd_store_id"],
+                mirror_whatsapp=mirror_flag or "",
             )
             created.append(identifier)
 
     _upsert(approval_ident, "approval")
     _upsert(main_ident, "broadcast")
+
+    # WhatsApp channel (optional): saved as Pending on purpose — it starts
+    # receiving posts (including mirrored main-channel posts) only after the
+    # phone is paired and one real test post succeeds.
+    whatsapp_added: list[str] = []
+    whatsapp_note = ""
+    if values.get("whatsapp"):
+        destination, wa_error = _resolve_whatsapp_destination(inf_id, values["whatsapp"])
+        if destination:
+            _save_whatsapp_destination(
+                inf_id, destination, role="whatsapp",
+                wa_session_key=WA_SESSION_KEY(inf_id),
+            )
+            whatsapp_added.append(destination["identifier"])
+        else:
+            whatsapp_note = wa_error or "The WhatsApp channel link could not be resolved."
 
     sources = db.list_sources(active_only=False)
     return {
@@ -2627,6 +2687,8 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
         "name": name,
         "created": created,
         "updated": updated,
+        "whatsapp": whatsapp_added,
+        "whatsapp_note": whatsapp_note,
         "existing_channels": len(channels),
         "active_sources": sum(1 for source in sources if source.get("active")),
     }
@@ -2979,6 +3041,46 @@ def influencer_detail(inf_id):
             wa_status_info["chats"] = [c for c in chats if c.get("isGroup") or c.get("isChannel")]
     except Exception:
         pass
+
+    # Phone-link (code) pairing: the live hub is the source of truth, the DB
+    # copy keeps the code visible across a page reload.
+    wa_pairing = {"phone": "", "code": "", "error": "", "has_code": False}
+    stored_session = next(
+        (row for row in wa_sessions if row.get("session_key") == wa_key), None
+    )
+    if stored_session:
+        wa_pairing.update({
+            "phone": str(stored_session.get("pairing_phone") or ""),
+            "code": str(stored_session.get("pairing_code") or ""),
+            "error": str(stored_session.get("pairing_error") or ""),
+            "has_code": bool(stored_session.get("pairing_code")),
+        })
+    pairing_attempted = bool(
+        stored_session
+        and (
+            stored_session.get("pairing_phone")
+            or stored_session.get("pairing_code")
+            or str(stored_session.get("status") or "") == "pairing"
+        )
+    )
+    if pairing_attempted:
+        # Only ask the hub when a pairing attempt is actually in flight: an
+        # idle creator page must not pay for a round trip it cannot use.
+        try:
+            live_pairing = _run(whatsapp_client.pairing_state(wa_key))
+            if live_pairing and live_pairing.get("ok"):
+                wa_pairing.update({
+                    "phone": str(live_pairing.get("phone") or "") or wa_pairing["phone"],
+                    "code": str(live_pairing.get("code") or ""),
+                    "error": str(live_pairing.get("error") or ""),
+                    "has_code": bool(live_pairing.get("hasCode")),
+                })
+        except Exception:
+            pass
+
+    # What the main-channel -> WhatsApp mirror will do for this creator, as a
+    # fact instead of a toggle: sources, destinations and mirrored posts.
+    mirror_info = pipeline.mirror_plan(inf)
     
     # Generate live preview demo if requested or for display
     demo_sample = (
@@ -3003,6 +3105,7 @@ def influencer_detail(inf_id):
         "influencer.html", inf=inf, channels=channels,
         wa_sessions=wa_sessions, stats=stats, wa_key=wa_key,
         wa_hub_url=config.WA_HUB_URL, wa_status_info=wa_status_info,
+        wa_pairing=wa_pairing, mirror=mirror_info,
         poll_targets=poll_targets, poll_target_counts=poll_target_counts,
         poll_history=poll_history,
         demo_approval=demo_approval, demo_broadcast=demo_broadcast,
@@ -3109,6 +3212,56 @@ def pair_wa(inf_id):
     except Exception as e:  # pragma: no cover
         res = {"error": str(e)}
     return redirect(url_for("influencer_detail", inf_id=inf_id))
+
+
+@app.route("/influencer/<int:inf_id>/pair-wa-phone", methods=["POST"])
+def pair_wa_phone(inf_id):
+    """Link the influencer's phone with a code instead of a QR scan.
+
+    The operator types the number; WhatsApp shows an 8-character code on that
+    phone (Linked devices -> Link with phone number) and the same registered
+    device results, so every posting path below stays unchanged. The code is a
+    one-time credential: it is stored for the operator's own page and cleared
+    the moment the number is linked.
+    """
+    key = WA_SESSION_KEY(inf_id)
+    raw_phone = request.form.get("pairing_phone", "").strip()
+    # Same rule the hub enforces: a full international number, digits only.
+    # Rejecting it here keeps a mistyped number from creating a live session.
+    phone = re.sub(r"[^0-9]", "", raw_phone)
+    if not raw_phone:
+        return redirect(url_for(
+            "influencer_detail", inf_id=inf_id, wa_pair_status="missing_phone",
+        ))
+    if not (10 <= len(phone) <= 15):
+        return redirect(url_for(
+            "influencer_detail", inf_id=inf_id, wa_pair_status="bad_phone",
+        ))
+
+    db.upsert_wa_session(inf_id, key, phone="")
+    try:
+        res = _run(whatsapp_client.request_pairing_code(key, phone))
+    except Exception as exc:
+        db.set_wa_session_pairing(key, phone=phone, code="", error=str(exc))
+        db.set_wa_session_status(key, "offline")
+        return redirect(url_for(
+            "influencer_detail", inf_id=inf_id, wa_pair_status="failed",
+        ))
+
+    code = str((res or {}).get("code") or "").strip()
+    if (res or {}).get("ok") and code:
+        db.set_wa_session_pairing(key, phone=phone, code=code)
+        return redirect(url_for(
+            "influencer_detail", inf_id=inf_id, wa_pair_status="code",
+        ))
+
+    db.set_wa_session_pairing(
+        key, phone=phone, code="",
+        error=str((res or {}).get("error") or "WhatsApp did not return a pairing code"),
+    )
+    return redirect(url_for(
+        "influencer_detail", inf_id=inf_id, wa_pair_status="failed",
+    ))
 
 
 @app.route("/influencer/<int:inf_id>/create-group", methods=["POST"])
@@ -3420,6 +3573,19 @@ def wa_status(key):
         return jsonify(_wa_hub_get(f"/sessions/{key}"))
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)})
+
+
+@app.route("/api/wa/<key>/pairing")
+def wa_pairing_status(key):
+    """Read-only live view of a phone-link pairing code (never starts a session).
+
+    The payload contains a one-time login code, so it stays behind the
+    dashboard's own authentication — exactly like the QR frame beside it.
+    """
+    try:
+        return jsonify(_wa_hub_get(f"/sessions/{key}/pairing"))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "code": "", "hasCode": False})
 
 
 @app.route("/vm")

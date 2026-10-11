@@ -401,3 +401,69 @@ named private invites.
   verify `git status` before committing or opening a PR.
 - Never run pytest against a provisioned/live DB: root `tests/conftest.py`
   redirects every test to `tmp_path`.
+
+---
+
+## 6. This session: main-channel → WhatsApp mirror + phone-code pairing
+
+Two operator-facing additions on top of the release above (see `README.md` →
+“Main channel → WhatsApp mirror” and “Pairing a creator's phone: QR or login
+code” for the behaviour in full).
+
+**1. Main Telegram channel → the creator's WhatsApp destinations (mirror).**
+`influencer_hub/pipeline.py` now renders and delivers *every* destination
+through one function (`_render_and_deliver_destination`), so a mirrored post
+passes the same rendering, `commission_guard`, dedup (`deal_sig`, physical
+identifier, 24h content hash, 12h near-duplicate), rate limits (20/hour,
+5/10min) and 45–65s WhatsApp pacing as a direct post. The mirror pass runs
+after the channel loop: a ready Telegram `broadcast` channel that really posted
+the deal feeds the creator's ready WhatsApp destinations (group or Channel)
+with the creator's own Amazon tag (channel override → creator tag → fallback).
+It re-applies only the *display* filters the main channel already decided
+(source label, posting window, category, price, tier); the destination's own
+affiliate switches (`only_amazon`, `strip_amazon`, EarnKaro/HYPD off) and the
+money guards still decide what may appear there. Posts are recorded with
+`posts.mirror_source_id`, and `pipeline.mirror_plan(inf)` is the read-only truth
+the creator page shows (sources, destinations, mirrored posts in 24h).
+
+Switches: `.env` `MIRROR_MAIN_TO_WHATSAPP` (default `1`), the Setup Center
+global switch (`mirror_main_to_whatsapp`), the per-main-channel
+`Mirror: inherit / ON / OFF` select (`channels.mirror_whatsapp` = `''`/`1`/`0`),
+and the Easy Setup checkbox. Mirroring is inert until the creator has a **ready**
+WhatsApp destination, i.e. paired phone plus one successful test post — the
+Pending-activation rule is unchanged.
+
+**2. Phone-linking (OTP) pairing in the WhatsApp hub.** `POST
+/sessions/:key/pairing-code {phone}` asks WhatsApp for the 8-character code
+shown on the influencer's phone; `GET /sessions/:key/pairing` is the read-only
+live view the dashboard polls. One code per socket attempt, re-issued after a
+reconnect, cleared on link, never logged and never included in `/sessions`
+listings. New dashboard route `POST /influencer/<id>/pair-wa-phone` validates
+10–15 digits, stores the attempt (`wa_sessions.pairing_*`) and reports the
+outcome on the creator page; `db.set_wa_session_status(key, "connected")` clears
+the code.
+
+**Verification performed in this session (sandbox, no VM changes):**
+
+```bash
+# WhatsApp hub unit tests (8 contracts incl. pairing-code lifecycle)
+cd wa_hub && npm install --no-audit --no-fund && node --test
+
+# Full Python suite against an isolated temporary DB
+HUB_ENV=development HUB_DB_PATH="$(mktemp /tmp/influencer-hub-deploy-test.XXXXXX.sqlite3)" \
+PYTHONPATH=. .venv/bin/python -m pytest -q      # 394 passed (380 pre-existing + 14 new)
+```
+
+New tests: `tests/test_mirror_to_whatsapp.py` (8), `tests/test_mirror_dashboard_switch.py` (3),
+`tests/test_whatsapp_pairing_code.py` (5), plus 4 pairing tests in
+`wa_hub/wa_manager.test.js`. Schema changes are additive and applied by
+`db.migrate()` (`channels.mirror_whatsapp`, `posts.mirror_source_id`,
+`wa_sessions.pairing_phone/pairing_code/pairing_error`); run the normal
+deployment sequence and `db.migrate()` will add them to an existing DB.
+
+**What the mirror deliberately does not do:** it never mirrors from a channel
+that did not post the deal, never re-posts a deal a destination already
+received, never re-applies a destination's display filters, and never posts a
+link that fails the commission guard — a WhatsApp destination whose own policy
+forbids the deal records `mirrored/skipped` in the log and on the page instead
+of publishing a link that earns nothing.

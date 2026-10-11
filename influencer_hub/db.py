@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS channels (
     bitly_api_key  TEXT NOT NULL DEFAULT '',        -- per-channel custom Bitly token
     categories    TEXT NOT NULL DEFAULT '',        -- e.g. 'clothing,electronics,home' (empty = all)
     posting_schedule TEXT NOT NULL DEFAULT '',     -- e.g. '06:00-09:00,18:00-23:00' (empty = 24/7)
+    mirror_whatsapp TEXT NOT NULL DEFAULT '',      -- '' inherit | '1' mirror main posts to this creator's WhatsApp | '0' never
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -55,7 +56,10 @@ CREATE TABLE IF NOT EXISTS wa_sessions (
     influencer_id INTEGER NOT NULL REFERENCES influencers(id) ON DELETE CASCADE,
     phone         TEXT NOT NULL DEFAULT '',
     session_key   TEXT NOT NULL,   -- key used by wa_hub
-    status        TEXT NOT NULL DEFAULT 'offline', -- offline|qr|connected|error
+    status        TEXT NOT NULL DEFAULT 'offline', -- offline|qr|pairing|connected|error
+    pairing_phone TEXT NOT NULL DEFAULT '',        -- number being linked by code (empty = none)
+    pairing_code  TEXT NOT NULL DEFAULT '',        -- live one-time code, cleared once linked
+    pairing_error TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -74,7 +78,10 @@ CREATE TABLE IF NOT EXISTS posts (
     deal_sig      TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'queued', -- queued|posted|failed|skipped
     error         TEXT NOT NULL DEFAULT '',
-    posted_at     TEXT
+    posted_at     TEXT,
+    -- 0 = posted by the normal deal flow; otherwise the id of the Telegram
+    -- channel whose successful post this WhatsApp destination mirrored.
+    mirror_source_id INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS vm_stats (
@@ -313,6 +320,9 @@ def migrate() -> None:
             ("custom_button_text", "TEXT NOT NULL DEFAULT ''"),
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
             ("min_deal_tier", "TEXT NOT NULL DEFAULT ''"),
+            # '' = inherit the global setting, '1' = mirror this channel's posts
+            # into the creator's WhatsApp destinations, '0' = never mirror.
+            ("mirror_whatsapp", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
                 try:
@@ -322,12 +332,29 @@ def migrate() -> None:
                         raise
 
         posts_cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
-        if "deal_text" not in posts_cols:
-            try:
-                con.execute("ALTER TABLE posts ADD COLUMN deal_text TEXT NOT NULL DEFAULT ''")
-            except sqlite3.OperationalError as exc:
-                if "duplicate column name" not in str(exc).lower():
-                    raise
+        for col, ddl in (
+            ("deal_text", "TEXT NOT NULL DEFAULT ''"),
+            ("mirror_source_id", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if col not in posts_cols:
+                try:
+                    con.execute(f"ALTER TABLE posts ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+
+        wa_cols = {r["name"] for r in con.execute("PRAGMA table_info(wa_sessions)")}
+        for col, ddl in (
+            ("pairing_phone", "TEXT NOT NULL DEFAULT ''"),
+            ("pairing_code", "TEXT NOT NULL DEFAULT ''"),
+            ("pairing_error", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if col not in wa_cols:
+                try:
+                    con.execute(f"ALTER TABLE wa_sessions ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
         activity_cols = {r["name"] for r in con.execute("PRAGMA table_info(source_activity)")}
         if activity_cols and "source_name" not in activity_cols:
@@ -355,6 +382,18 @@ def _clean_deal_tier(value: str | None) -> str:
     """Normalise a quality tier; empty string means "use the global default"."""
     tier = str(value or "").strip().upper()
     return tier if tier in DEAL_TIERS else ""
+
+
+def _clean_mirror_flag(value: Any) -> str:
+    """Tri-state mirror switch: '' inherits the global setting, else '1'/'0'."""
+    raw = str(value if value is not None else "").strip().lower()
+    if raw in {"", "default", "inherit"}:
+        return ""
+    if raw in {"1", "true", "yes", "on", "enabled"}:
+        return "1"
+    if raw in {"0", "false", "no", "off", "disabled", "none"}:
+        return "0"
+    return ""
 
 
 def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
@@ -596,7 +635,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 custom_button_enabled: bool = False,
                 custom_button_text: str = "",
                 custom_button_url: str = "",
-                min_deal_tier: str = "") -> int:
+                min_deal_tier: str = "",
+                mirror_whatsapp: str = "") -> int:
     con = _connect()
     try:
         profile = con.execute(
@@ -611,8 +651,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
             or config.HYPD_STORE_ID
         )
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url, min_deal_tier) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url, min_deal_tier, mirror_whatsapp) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
              amazon_override_tag.strip(), 1 if _as_bool(strip_amazon, unrestricted=False) else 0, price_filter.strip(), allowed_sources.strip(),
              wa_session_key.strip(), bitly_api_key.strip(), categories.strip(), posting_schedule.strip(),
@@ -622,7 +662,7 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
              1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
              effective_hypd_store_id,
              1 if _as_bool(custom_button_enabled) else 0, custom_button_text.strip(), custom_button_url.strip(),
-             _clean_deal_tier(min_deal_tier)),
+             _clean_deal_tier(min_deal_tier), _clean_mirror_flag(mirror_whatsapp)),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -649,7 +689,8 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            custom_button_enabled: bool | None = None,
                            custom_button_text: str | None = None,
                            custom_button_url: str | None = None,
-                           min_deal_tier: str | None = None) -> None:
+                           min_deal_tier: str | None = None,
+                           mirror_whatsapp: str | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -717,6 +758,9 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if min_deal_tier is not None:
             updates.append("min_deal_tier=?")
             params.append(_clean_deal_tier(min_deal_tier))
+        if mirror_whatsapp is not None:
+            updates.append("mirror_whatsapp=?")
+            params.append(_clean_mirror_flag(mirror_whatsapp))
         if updates:
             params.append(channel_id)
             con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)
@@ -1045,9 +1089,44 @@ def upsert_wa_session(influencer_id: int, session_key: str, phone: str = "") -> 
 
 
 def set_wa_session_status(session_key: str, status: str) -> None:
+    """Record the live session state; linking a number ends the pairing attempt."""
+    clean_status = str(status or "").strip() or "offline"
     con = _connect()
     try:
-        con.execute("UPDATE wa_sessions SET status=? WHERE session_key=?", (status, session_key))
+        if clean_status == "connected":
+            # The one-time code is spent the moment the phone is linked.
+            con.execute(
+                "UPDATE wa_sessions SET status=?, pairing_code='', pairing_phone='', "
+                "pairing_error='' WHERE session_key=?",
+                (clean_status, session_key),
+            )
+        else:
+            con.execute(
+                "UPDATE wa_sessions SET status=? WHERE session_key=?", (clean_status, session_key)
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
+def set_wa_session_pairing(session_key: str, phone: str = "", code: str = "",
+                           error: str = "") -> None:
+    """Store the phone-link (OTP) attempt so the dashboard survives a reload.
+
+    An empty code clears the attempt (finished, expired or failed). The code is
+    a one-time login credential: it is only ever shown to the authenticated
+    operator, and `set_wa_session_status(..., "connected")` clears it.
+    """
+    clean_code = str(code or "").strip().upper()
+    con = _connect()
+    try:
+        con.execute(
+            "UPDATE wa_sessions SET pairing_phone=?, pairing_code=?, pairing_error=?, "
+            "status=CASE WHEN ? <> '' THEN 'pairing' WHEN status='pairing' THEN 'offline' ELSE status END "
+            "WHERE session_key=?",
+            (str(phone or "").strip(), clean_code, str(error or "").strip()[:300],
+             clean_code, session_key),
+        )
         con.commit()
     finally:
         con.close()
@@ -1839,17 +1918,46 @@ def get_lehlah_short_link(code: str) -> dict | None:
 # -------------------------------- posts --------------------------------
 
 def record_post(influencer_id: int, channel_id: int, deal_sig: str,
-                status: str = "queued", error: str = "", deal_text: str = "") -> int:
+                status: str = "queued", error: str = "", deal_text: str = "",
+                mirror_source_id: int = 0) -> int:
+    """Record one delivery attempt.
+
+    ``mirror_source_id`` is 0 for a normal deal post and otherwise the Telegram
+    channel id whose successful post this WhatsApp destination mirrored, so the
+    dashboard can show that a mirror happened instead of guessing.
+    """
     con = _connect()
     try:
-        # Check if deal_text column exists
         cur = con.execute(
-            "INSERT INTO posts (influencer_id, channel_id, deal_sig, status, error, posted_at, deal_text) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO posts (influencer_id, channel_id, deal_sig, status, error, posted_at, deal_text, mirror_source_id) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (influencer_id, channel_id, deal_sig, status, error,
-             _now() if status == "posted" else None, deal_text))
+             _now() if status == "posted" else None, deal_text,
+             int(mirror_source_id or 0)))
         con.commit()
         return int(cur.lastrowid)
+    finally:
+        con.close()
+
+
+def mirrored_post_count(channel_id: int, hours: int = 24) -> int:
+    """How many of this channel's posts came from mirroring a main channel."""
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        window = max(1, int(hours))
+    except (TypeError, ValueError):
+        window = 24
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=window)
+    ).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM posts WHERE channel_id=? AND status='posted' "
+            "AND COALESCE(mirror_source_id,0) <> 0 AND posted_at >= ?",
+            (channel_id, cutoff)).fetchone()
+        return int(row["n"] if row else 0)
     finally:
         con.close()
 

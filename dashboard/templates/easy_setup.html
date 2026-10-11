@@ -43,6 +43,8 @@
     <ul class="easy-result-list">
       {% for identifier in result.created %}<li>➕ {{ identifier }} connected</li>{% endfor %}
       {% for identifier in result.updated %}<li>🔄 {{ identifier }} updated</li>{% endfor %}
+      {% for identifier in result.whatsapp %}<li>💬 {{ identifier }} saved as Pending — pair the phone and send one Test post to activate it</li>{% endfor %}
+      {% if result.whatsapp_note %}<li>⚠ WhatsApp channel not saved: {{ result.whatsapp_note }}</li>{% endif %}
       <li>📡 New deals from {{ result.active_sources }} active source(s) will post automatically.</li>
     </ul>
     <div class="easy-result-actions">
@@ -94,7 +96,12 @@
       <label class="easy-field">
         <span>📢 Main channel *</span>
         <input name="main_channel" value="{{ values.main }}" placeholder="@ravi_loots" autocomplete="off" />
-        <small>Everything you switch on below is posted here.</small>
+        <small>Everything you switch on below is posted here — and mirrored to WhatsApp.</small>
+      </label>
+      <label class="easy-field">
+        <span>💬 WhatsApp channel (optional)</span>
+        <input name="whatsapp_channel" value="{{ values.whatsapp }}" placeholder="https://whatsapp.com/channel/… or 120363…@newsletter" autocomplete="off" />
+        <small>Link or JID. Saved as <b>Pending</b>: pair the creator's phone on their page (QR or login code), send one Test post, and it starts receiving posts.</small>
       </label>
     </div>
     <p class="hint">Paste an existing channel (<code>@username</code> or a <code>t.me/…</code> link). This never creates or joins a channel — it only posts to it, so make sure the connected account can post there.</p>
@@ -117,6 +124,14 @@
         </label>
       {% endfor %}
     </div>
+    <label class="easy-strict" for="switch-mirror-whatsapp" style="border-color:#14532d; background:#052e16;">
+      {# hidden 0 first: unticking is an explicit OFF for this main channel #}
+      <input type="hidden" name="mirror_whatsapp" value="0" />
+      <input type="checkbox" id="switch-mirror-whatsapp" name="mirror_whatsapp" value="1"
+             {{ 'checked' if values.mirror_whatsapp else '' }} data-preview-input />
+      <span><strong>🔁 Main → WhatsApp mirror</strong> — whatever goes to the main channel is also posted to this creator's WhatsApp channel, signed with the same own Amazon tag (same commission guard, dedup and 45-65s WhatsApp pacing).</span>
+    </label>
+
     <label class="easy-strict" for="switch-only-amazon">
       <input type="checkbox" id="switch-only-amazon" name="only_amazon" value="1"
              {{ 'checked' if values.only_amazon else '' }} data-preview-input />

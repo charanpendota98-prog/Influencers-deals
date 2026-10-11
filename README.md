@@ -34,6 +34,33 @@ Each profile can use an Amazon-only Telegram preview, a broadcast Telegram chann
 | **Channel 2: Real / Broadcast Channel** | Telegram | Amazon, EarnKaro, and HYPD links follow their independent selected toggles; the explicit Only Amazon mode suppresses non-Amazon affiliate links. | Per-profile and per-channel routing controls. |
 | **Channel 3: WhatsApp Feed** | WhatsApp | Same independent network routing as its profile/channel settings; the explicit Only Amazon mode remains exclusive. | Per-profile and per-channel routing controls. |
 
+### Main channel → WhatsApp mirror ("main lo vachinavi WhatsApp lo raval")
+
+A deal that really went out on a creator's ready **main Telegram channel** is
+also delivered to that creator's ready **WhatsApp destinations** (Channel or
+group). The mirror is one click in Easy Setup and one switch in the Setup
+Center (global) or per main channel (`Mirror: inherit / ON / OFF`).
+
+The copy is not a second-class renderer. It runs the **same** delivery path as
+a direct post — the same WhatsApp rendering, the creator's **own** Amazon tag
+(channel override → creator tag → configured fallback, never another creator's
+tag), the same earned-link checks (`commission guard`), the same dedup layers
+(signature, physical identifier, 24h content hash, 12h near-duplicate), the
+same 20/hour + 5/10min rate limits and the same 45–65s WhatsApp safety pacing.
+A mirrored post is stored with its source channel, so
+`pipeline.mirror_plan()` (and the creator page) can state exactly which main
+channel feeds which WhatsApp destination and how many posts were mirrored in
+the last 24h.
+
+The only thing the mirror does not re-apply is the *display* filtering the main
+channel already decided — source label, posting window, category, price and
+quality tier. The WhatsApp destination keeps its **own affiliate policy**: an
+Amazon-only destination still refuses a non-Amazon deal instead of publishing a
+link that earns nothing, and `strip_amazon` is respected. Mirroring never
+happens from a channel that did not actually post the deal, never double-posts
+a deal a destination already received, and is off entirely until that creator
+has a **ready** WhatsApp destination (paired phone + one successful test post).
+
 ### Native engagement polls (manual + no-repeat)
 The influencer detail page includes an explicit poll composer for native Telegram
 polls and WhatsApp **groups**. Questions and answer options are validated,
@@ -51,6 +78,22 @@ sends are recorded and are not blindly retried because a timeout may occur after
 a platform accepted the poll. Poll creation is manual and requires fresh
 password confirmation; no AI prompt generator or automatic poll
 schedule runs in the background.
+
+### Pairing a creator's phone: QR or login code
+
+1. Open the creator page → **💬 Dedicated WhatsApp Account & Channel Linker**.
+2. **QR path:** click *Generate Live QR Code* and scan it on the influencer's
+   phone (WhatsApp → Linked devices).
+3. **Code path (no camera):** type the full international number
+   (`919876543210`, country code included) and click *🔢 Get Login Code*. The
+   dashboard shows the live 8-character code; on the phone open
+   *Linked devices → Link with phone number* and type it. Status and code are
+   polled read-only — the browser never creates a session or sends a message.
+4. Paste the WhatsApp Channel link (`https://whatsapp.com/channel/…`) or a
+   group invite. It resolves to the real JID and is saved as **Pending**.
+5. Press **Test** once. Only a successful visible test activates the
+   destination; after that, deals post there — including mirrored
+   main-channel deals.
 
 ### How to onboard unlimited influencers (1-Click Easy Setup)
 1. **Dashboard Self-Serve (/onboard):**
@@ -546,7 +589,7 @@ WhatsApp group invite is different: resolving its JID does not silently join
 the group; the paired account must already be a member with posting access.
 
 This is **not an official Meta Channel API**: Meta's Cloud API documentation
-lists Channels as unsupported ([Meta onboarding feature comparison](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-business-app-users/)). Baileys uses the WhatsApp-Web protocol; behavior can change and account restrictions cannot be ruled out. The pipeline sends text and links to Channels; newsletter media delivery is not guaranteed (see the [Baileys newsletter text/media report](https://github.com/WhiskeySockets/Baileys/issues/2345)). QR pairing is implemented; a phone-number pairing-code flow is not currently included. Test with a low-risk creator/channel before enabling automatic posts.
+lists Channels as unsupported ([Meta onboarding feature comparison](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-business-app-users/)). Baileys uses the WhatsApp-Web protocol; behavior can change and account restrictions cannot be ruled out. The pipeline sends text and links to Channels; newsletter media delivery is not guaranteed (see the [Baileys newsletter text/media report](https://github.com/WhiskeySockets/Baileys/issues/2345)). Two pairing routes are implemented and produce the same registered device: scanning the QR, or typing the influencer's full international number and entering the 8-character **phone-linking code** WhatsApp shows on that phone (*Linked devices → Link with phone number*). A code belongs to one socket attempt — it is re-issued after a reconnect, cleared the moment the number is linked, never logged, and shown only on the authenticated creator page. Test with a low-risk creator/channel before enabling automatic posts.
 
 ## VM watch ("ma VM chusthundta bot")
 

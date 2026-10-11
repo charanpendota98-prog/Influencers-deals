@@ -52,6 +52,23 @@
         ⚠️ Test Message Failed to {{ request.args.get('ch_name') }}: {{ request.args.get('test_err') }}
       </div>
     {% endif %}
+    {% if request.args.get('wa_pair_status') == 'code' %}
+      <div style="background:#0c4a6e; color:#bae6fd; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
+        🔢 Login code ready. Influencer phone lo WhatsApp → Linked devices → <b>Link with phone number</b> open chesi, kindha chupinchina 8-character code type cheyandi. Code 25 seconds lo phone lo kanipistundi; pair ayye varaku page refresh cheyyakandi.
+      </div>
+    {% elif request.args.get('wa_pair_status') == 'missing_phone' %}
+      <div style="background:#713f12; color:#fde68a; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
+        Country code tho full WhatsApp number ivvandi (e.g. 919876543210).
+      </div>
+    {% elif request.args.get('wa_pair_status') == 'bad_phone' %}
+      <div style="background:#713f12; color:#fde68a; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
+        ⚠ Number 10-15 digits undali (country code tho). Example: 919876543210 — '+' leda spaces avasaram ledu.
+      </div>
+    {% elif request.args.get('wa_pair_status') == 'failed' %}
+      <div style="background:#7f1d1d; color:#fecaca; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
+        Login code ivvaledu. Reason kindha chupinchindi — QR scan try cheyyandi leda 30s tarvata malli phone number tho try cheyyandi.
+      </div>
+    {% endif %}
     {% if request.args.get('wa_link_status') == 'pending' %}
       <div style="background:#713f12; color:#fde68a; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
         WhatsApp destination resolved and saved as Pending. Use Test to verify this account can post; it will not receive deal posts before a successful test.
@@ -398,6 +415,13 @@
             <input form="channel-update-{{ c.id }}" name="categories" value="{{ c.categories or '' }}" placeholder="clothing,electronics (All)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Allowed categories" />
             <input form="channel-update-{{ c.id }}" name="posting_schedule" value="{{ c.posting_schedule or '' }}" placeholder="06:00-02:00 (24/7)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Timing schedule" />
             <input form="channel-update-{{ c.id }}" name="allowed_sources" value="{{ c.allowed_sources or '' }}" placeholder="powerloot (All Src)" style="font-size: 10px; padding: 2px 4px; width: 110px; font-family: monospace;" title="Specific deal source for this channel" />
+            {% if c.platform == 'telegram' %}
+              <select form="channel-update-{{ c.id }}" name="mirror_whatsapp" style="font-size: 10px; padding: 2px 4px; width: 110px; margin-top: 3px;" title="Copy this main channel's posts into the creator's WhatsApp destinations (inherit uses the global Mirror switch)">
+                <option value="" {{ 'selected' if not c.mirror_whatsapp else '' }}>🔁 Mirror: inherit</option>
+                <option value="1" {{ 'selected' if c.mirror_whatsapp == '1' else '' }}>🔁 Mirror: ON</option>
+                <option value="0" {{ 'selected' if c.mirror_whatsapp == '0' else '' }}>🚫 Mirror: OFF</option>
+              </select>
+            {% endif %}
             <select form="channel-update-{{ c.id }}" name="min_deal_tier" style="font-size: 10px; padding: 2px 4px; width: 110px; margin-top: 3px;" title="Minimum deal quality for this channel">
               <option value="" {{ 'selected' if not c.min_deal_tier else '' }}>Quality: inherit</option>
               <option value="S" {{ 'selected' if c.min_deal_tier == 'S' else '' }}>Quality: S</option>
@@ -605,6 +629,26 @@
     <h2 style="color: #4ade80; margin: 0; font-size:18px;">💬 Dedicated WhatsApp Account &amp; Channel Linker</h2>
     <span style="background:#064e3b; color:#86efac; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:700;">ISOLATED SESSION</span>
   </div>
+  <div style="background:#07120c; border:1px solid {{ '#16a34a' if mirror.active else '#7c2d12' }}; padding:12px 14px; border-radius:8px; margin-top:10px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <strong style="color:{{ '#4ade80' if mirror.active else '#fbbf24' }}; font-size:14px;">🔁 Mirror: Main Channel → WhatsApp</strong>
+      <span style="font-size:11px; padding:2px 8px; border-radius:6px; background:{{ '#064e3b' if mirror.active else '#450a0a' }}; color:{{ '#86efac' if mirror.active else '#fca5a5' }};">
+        {{ 'ACTIVE' if mirror.active else 'NOT POSTING' }}
+      </span>
+    </div>
+    <p class="hint" style="font-size:12px; margin:6px 0 0;">
+      Main Telegram channel lo post ayye prathi deal WhatsApp channel lo kuda vastundi — ade deal, vaallaki own Amazon tag tho, 45-65s safe pacing tho. Rendering, commission guard, dedup, rate limit anni direct post laage run avutayi (wrong tag / zero-commission link mirror nunchi ravadu).
+      {% if mirror.mirrored_posts_24h %}✅ Last 24h lo <b>{{ mirror.mirrored_posts_24h }}</b> post(s) mirror ayayi.{% endif %}
+      {% if mirror.enabled and not mirror.targets %}⚠ Ready WhatsApp channel ledu — pair chesi oka Test post pampandi, appude mirror start avutundi.{% endif %}
+      {% if not mirror.enabled and mirror.opted_out %}🚫 Mirror ee creator's main channel ki OFF ({{ mirror.opted_out | map(attribute='identifier') | join(', ') }}).{% endif %}
+      {% if not mirror.global_default %}🌍 Global switch OFF — per-channel 'Mirror: ON' tho maatrame run avutundi.{% endif %}
+    </p>
+    <p class="hint" style="font-size:11px; margin:6px 0 0;">
+      Sources: {% for src in mirror.sources %}{{ src.identifier }}{{ ', ' if not loop.last }}{% else %}— (ready main Telegram channel ledu){% endfor %}
+      · Destinations: {% for dst in mirror.targets %}{{ dst.identifier }} ({{ dst.status }}){{ ', ' if not loop.last }}{% else %}— (ready WhatsApp destination ledu){% endfor %}
+    </p>
+  </div>
+
   <p class="hint">Influencer permission tho valla own WhatsApp number-ni Linked Devices QR tho pair cheyandi. Channel link resolve ayyaka destination Pending-ga untundi; admin account nunchi oka real test post successful ayithe maatrame automatic deal posting enable avutundi. QR session is sensitive and Baileys is an unofficial WhatsApp-Web integration, so account behavior/risk cannot be guaranteed.</p>
   
   <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-top:14px;">
@@ -616,6 +660,25 @@
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
         <button type="submit" style="background:#16a34a; width:100%; font-weight:bold;">📲 Generate Live QR Code</button>
       </form>
+
+      <div style="margin-top:10px; padding-top:10px; border-top:1px dashed #14532d;">
+        <p class="hint" style="font-size:12px; margin:0 0 6px;">Leda QR scan kudarakapothe — <b>influencer phone number</b> isthe, WhatsApp aa phone lo <b>8-character code</b> chupistundi (Linked devices → Link with phone number). Camera avasaram ledu.</p>
+        <form method="post" action="{{ url_for('pair_wa_phone', inf_id=inf.id) }}" style="display:flex; gap:6px;">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+          <input name="pairing_phone" value="{{ wa_pairing.phone }}" placeholder="919876543210 (country code tho)" style="flex:1; font-size:13px; font-family:monospace;" required />
+          <button type="submit" style="background:#0284c7; color:white; font-weight:bold; white-space:nowrap;">🔢 Get Login Code</button>
+        </form>
+        <div id="pairbox" data-key="{{ wa_key }}" style="margin-top:10px;">
+          {% if wa_pairing.has_code %}
+            <div style="background:#052e16; border:1px solid #22c55e; padding:10px 12px; border-radius:8px; text-align:center;">
+              <div class="hint" style="font-size:11px; margin:0;">WhatsApp lo ee code type cheyandi ({{ wa_pairing.phone }}):</div>
+              <div style="font-size:26px; font-weight:900; letter-spacing:4px; color:#4ade80; font-family:monospace;">{{ wa_pairing.code }}</div>
+            </div>
+          {% elif wa_pairing.error %}
+            <p class="hint" style="color:#fbbf24; font-size:11px; margin:0;">⚠ {{ wa_pairing.error }}</p>
+          {% endif %}
+        </div>
+      </div>
       <div id="qrbox" class="qrbox" data-key="{{ wa_key }}" style="margin-top:12px; text-align:center; min-height:120px; display:flex; flex-direction:column; align-items:center; justify-content:center;">
         <p class="hint" style="color:#86efac;">Click 'Generate Live QR Code' above to start QR session.</p>
       </div>

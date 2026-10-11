@@ -140,6 +140,14 @@ ONLY_EARNING_DEALS = _bool("ONLY_EARNING_DEALS", False)
 # this cycle instead of spending a post — the worker re-reads the source post,
 # so it goes out as soon as EarnKaro converts it. Set to 1 to post anyway.
 ALLOW_UNCONVERTED_POSTS = _bool("ALLOW_UNCONVERTED_POSTS", False)
+# Mirror a creator's Telegram main-channel posts into that creator's WhatsApp
+# destinations (Channel/group). The main channel has already decided the deal is
+# worth posting, so the WhatsApp side receives the same offer — rendered for
+# WhatsApp and signed with the creator's own Amazon tag. Every affiliate switch,
+# commission guard, dedup and rate limit still runs, so a mirror can never
+# publish an unverified link. Per-channel 'mirror_whatsapp' (1/0) overrides this
+# default, and the dashboard's Mirror switch writes that value.
+MIRROR_MAIN_TO_WHATSAPP = _bool("MIRROR_MAIN_TO_WHATSAPP", True)
 
 # ----- EarnKaro (optional configured network for eligible non-Amazon links) -----
 EARNKARO_API_KEY = _env("EARNKARO_API_KEY")

@@ -22,7 +22,9 @@ On boot it auto-resumes any previously paired sessions from `./auth/<key>/`.
 | POST | `/sessions` | start a session `{key, influencer_id, label}` |
 | GET | `/sessions/:key` | status + phone |
 | GET | `/sessions/:key/qr` | latest QR as a PNG data URL (null if connected) |
-| GET | `/sessions/:key/qr/stream` | SSE: live QR + status |
+| GET | `/sessions/:key/qr/stream` | SSE: live QR + status + `pairing`/`pairing_error` events |
+| POST | `/sessions/:key/pairing-code` | `{phone}` → `{code}`: link the number with an 8-character phone-linking code instead of a QR scan |
+| GET | `/sessions/:key/pairing` | `{status, phone, code, hasCode, error}` for the live code (read-only, persists nothing) |
 | POST | `/sessions/:key/send` | `{to, text}` |
 | POST | `/sessions/:key/poll` | `{to, question, options, allow_multiple}` → native WhatsApp poll in a group only |
 | POST | `/sessions/:key/group` | `{subject, participant}` → creates a group the influencer owns |
@@ -33,6 +35,24 @@ On boot it auto-resumes any previously paired sessions from `./auth/<key>/`.
 All routes require `Authorization: Bearer <token>` when `WA_HUB_TOKEN` is set;
 production refuses to start without it. The server binds to `127.0.0.1` by
 default (`WA_HUB_HOST` can override this only for an intentional private setup).
+
+## Pairing a phone number (QR or code)
+
+Two ways in, one outcome (a registered companion device):
+
+1. **QR scan** — `POST /sessions/:key`, then render `/sessions/:key/qr`.
+2. **Phone-linking code** — `POST /sessions/:key/pairing-code {phone}` with the
+   full international number (country code, 10–15 digits). WhatsApp shows the
+   code on that phone under *Linked devices → Link with phone number*; the
+   operator types the returned 8 characters (for example `ABCD-EFGH`).
+
+A code belongs to one socket attempt: only one code can be requested per
+connection, it is dropped when that connection closes, and the replacement
+socket issues a fresh one for the same number. Pairing states are `qr`,
+`pairing`, `connecting` (see `/sessions/:key`), and a request against an
+already-linked number is refused instead of silently replacing it. The code
+itself is a one-time login credential — it is returned only by the two pairing
+endpoints above, never logged, and never included in `/sessions` listings.
 
 ## Notes
 - Session identities and labels are saved in `sessions.json`; Baileys credentials

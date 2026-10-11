@@ -74,6 +74,89 @@
   tick();
 })();
 
+// Phone-linking (OTP) pairing: show the live 8-character code WhatsApp puts on
+// the influencer's phone, without ever starting a session from the browser.
+// GET-only polling; the dashboard proxies the loopback endpoints.
+(function () {
+  const box = document.getElementById('pairbox');
+  if (!box) return;
+  const key = box.dataset.key;
+  if (!key) return;
+
+  function paint(code, phone, status) {
+    box.replaceChildren();
+    if (code) {
+      const card = document.createElement('div');
+      card.style.cssText = 'background:#052e16; border:1px solid #22c55e; padding:10px 12px; border-radius:8px; text-align:center;';
+      const hint = document.createElement('div');
+      hint.className = 'hint';
+      hint.style.cssText = 'font-size:11px; margin:0;';
+      hint.textContent = `WhatsApp → Linked devices → Link with phone number (${phone || 'this phone'}):`;
+      const value = document.createElement('div');
+      value.style.cssText = 'font-size:26px; font-weight:900; letter-spacing:4px; color:#4ade80; font-family:monospace;';
+      value.textContent = code;
+      const note = document.createElement('div');
+      note.className = 'hint';
+      note.style.cssText = 'font-size:11px; margin-top:4px;';
+      note.textContent = 'Type this code on the influencer phone. It is valid while this page shows it.';
+      card.append(hint, value, note);
+      box.appendChild(card);
+      return;
+    }
+    if (status === 'connected') {
+      const done = document.createElement('div');
+      done.style.cssText = 'background:#064e3b; color:#86efac; padding:8px 12px; border-radius:6px; font-weight:bold; font-size:13px;';
+      done.textContent = '✅ Phone linked — the code is no longer needed.';
+      box.appendChild(done);
+      return;
+    }
+    if (status === 'pairing') {
+      const waiting = document.createElement('p');
+      waiting.className = 'hint';
+      waiting.style.cssText = 'font-size:11px; margin:0;';
+      waiting.textContent = 'Pairing code requested — WhatsApp is answering. Keep this page open.';
+      box.appendChild(waiting);
+    }
+  }
+
+  let stopped = false;
+  async function tick() {
+    if (stopped) return;
+    let nextPollMs = 3000;
+    try {
+      const response = await fetch(`/api/wa/${encodeURIComponent(key)}/pairing`, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+      });
+      const state = await response.json();
+      if (state && state.ok) {
+        if (state.hasCode && state.code) {
+          paint(state.code, state.phone, state.status);
+        } else if (state.status === 'connected') {
+          paint(null, state.phone, 'connected');
+          stopped = true;
+          return;
+        } else if (state.status === 'pairing') {
+          paint(null, state.phone, 'pairing');
+        }
+      }
+      if (state && state.error) {
+        const error = document.createElement('p');
+        error.className = 'hint';
+        error.style.cssText = 'color:#fbbf24; font-size:11px; margin:0;';
+        error.textContent = `⚠ ${state.error}`;
+        box.replaceChildren(error);
+      }
+    } catch (_error) {
+      // Hub restarting or unavailable: keep whatever is on screen.
+      nextPollMs = 5000;
+    }
+    window.setTimeout(tick, nextPollMs);
+  }
+
+  tick();
+})();
+
 // Removals (delete a channel, a creator, a deal source) need one password
 // confirmation per unlock window: the first delete asks, later deletes in the
 // window do not. Adding and saving are never intercepted. Passwords travel
