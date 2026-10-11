@@ -658,3 +658,44 @@ Tests: `tests/test_ops_digest.py` (12) — digest window/attempt counting, card
 shape, alert policy table, one-send-then-cooldown, recovery, no-channel
 behaviour, forced runbook alerts, CSV contents/filters and template round-trip,
 CLI exit codes + JSON, and the HTTP surfaces. Full suite: 445 passed.
+
+---
+
+## 11. This session, part 6: history, incidents, metrics, backup/restore
+
+Advanced round on top of `ops.py`:
+
+* **History** — `ops_snapshots(day PRIMARY KEY, captured_at, posted, failed,
+  skipped, mirrored, attempts, ready, blocked, setup_percent, verdict, notes)`,
+  written by `ops.record_snapshot()` (upsert per day, pruned after
+  `SNAPSHOT_RETENTION_DAYS=400`), exposed by `cli snapshot --days N --note`,
+  and written automatically by `cli digest --send`. `ops.trend(days)` reads it
+  back (delivery %, green streak, ±% vs yesterday) and `ops.sparkline()` draws
+  the `▁▅▇█` line used by both the digest card and the dashboard.
+  Digest additions: `trend`, `creators.blocked_by_step`, `creators.biggest_blocker`,
+  `creators.top` (leaderboard via `db.top_posting_creators`).
+* **Incident continuity** — settings `ops_incident_started_at` /
+  `ops_incident_alerts` / `ops_incident_verdict`; repeat alerts read
+  `(open 4h · alert #2)`, recovery closes with a duration, `humanize_minutes()`
+  formats them, and the first alert of a fresh incident stays short.
+* **Metrics + audit** — `ops.metrics_text()` (Prometheus) is served at
+  `GET /api/metrics`; `ops.posts_csv()` at `GET /api/posts.csv?hours=` falls
+  back to `db.list_recent_posts()`.
+* **Backup/restore** — `ops.backup_database(out, keep)` (SQLite online backup +
+  JSON sidecar + retention that never deletes the file it just wrote),
+  `ops.inspect_backup()` (validates the four required tables), and
+  `ops.restore_database(file, dry_run)` (keeps `*.pre-restore-*`, deletes stale
+  `-wal`/`-shm`, re-runs `migrate()`).
+* **Self-check grew an eleventh check** — "Ops history" warns when the table is
+  missing or no snapshot has been written in 48 h, with the cron line as the fix.
+* **Dashboard** — the ops card now carries the trend sparkline, the biggest
+  blocker (step labels in plain words), the leaderboard line, a Posts-log CSV
+  button, a metrics link and the new commands in its `<details>` block; the
+  poller refreshes trend/blocker/failures too.
+
+`db.py` gained `record_ops_snapshot`, `list_ops_snapshots`,
+`prune_ops_snapshots`, `top_posting_creators`, `list_recent_posts`,
+`snapshot_table_exists` (all tolerant of a missing table).
+
+Tests: `tests/test_ops_advanced.py` (15) + the updated `tests/test_ops_digest.py`
+(12) and `tests/test_self_check.py` (10). Full suite: 461 passed.

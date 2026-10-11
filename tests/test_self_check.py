@@ -55,6 +55,14 @@ def _ready_hub(monkeypatch, tmp_path, tag="ravi-21"):
     key = f"inf-{inf_id}-wa"
     db.upsert_wa_session(inf_id, key, phone="919876543210")
     db.set_wa_session_status(key, "connected")
+    # A provisioned hub also runs the nightly snapshot (that is what the trend
+    # reads), so "ready" stays reachable without weakening the check.
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    db.record_ops_snapshot(now.strftime("%Y-%m-%d"),
+                           captured_at=now.isoformat(timespec="seconds"),
+                           posted=1, attempts=1, ready=1, verdict="ready")
     return inf_id
 
 
@@ -143,6 +151,17 @@ def test_a_broken_whatsapp_hub_is_a_live_only_failure(client, monkeypatch, tmp_p
     assert "influencer-wa-hub" in fix
 
 
+def test_the_history_check_asks_for_the_cron_line_when_there_is_no_history(client, monkeypatch):
+    db.record_worker_heartbeat("running")
+
+    report = selfcheck.run_checks(live=False)
+    history = next(c for c in report["checks"] if c["id"] == "history")
+
+    assert history["state"] == "warn"
+    assert "no daily snapshot" in history["detail"].lower()
+    assert "cli snapshot" in history["fix"]
+
+
 def test_checks_are_read_only(client, monkeypatch, tmp_path):
     _ready_hub(monkeypatch, tmp_path)
     before = (
@@ -171,7 +190,7 @@ def test_the_api_returns_the_same_report_json(client, monkeypatch, tmp_path):
     assert payload["verdict"] == "ready"
     assert {check["id"] for check in payload["checks"]} >= {
         "schema", "telegram", "dashboard", "worker", "sources", "amazon",
-        "central", "creators", "mirror", "whatsapp",
+        "central", "creators", "mirror", "history", "whatsapp",
     }
     narrowed = client.get("/api/self-check?inf_id=1").get_json()
     assert narrowed["ok"] is True

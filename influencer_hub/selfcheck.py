@@ -9,6 +9,8 @@ trusting a hub with a creator's money:
   store for HYPD — and is the Telegram session authorized?
 * is the worker alive, and are deal sources switched on?
 * is the WhatsApp hub reachable, and how many creators still need a phone?
+* is the daily history being written (that is what the trend line and the
+  7-day view read)?
 * which creators are ready to post, which are blocked, and is anything still
   signed with the shared Amazon tag?
 
@@ -304,6 +306,47 @@ def _dashboard_check() -> dict:
                   "Admin password is set and the session cookie is production-grade.")
 
 
+def _history_check() -> dict:
+    """The daily snapshot is what turns "how is it now" into a trend."""
+    if not db.snapshot_table_exists():
+        return _check(
+            "history", "Ops history", WARN,
+            "The ops_snapshots table is missing, so the trend cannot be drawn.",
+            "Run `PYTHONPATH=. .venv/bin/python -c \"from influencer_hub import db; "
+            "db.init()\"` once; the table is part of the schema.",
+        )
+    rows = db.list_ops_snapshots(days=400)
+    if not rows:
+        return _check(
+            "history", "Ops history", WARN,
+            "No daily snapshot stored yet — the trend line is empty.",
+            "Add one cron line: `PYTHONPATH=. .venv/bin/python -m influencer_hub.cli "
+            "snapshot >> /var/log/influencer-snapshot.log 2>&1` (or send the daily "
+            "digest, which stores the same row).",
+        )
+    last = rows[-1]
+    captured = str(last.get("captured_at") or "")
+    age_hours = None
+    try:
+        moment = datetime.fromisoformat(captured)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        age_hours = max(0, int((datetime.now(timezone.utc) - moment).total_seconds() // 3600))
+    except (TypeError, ValueError):
+        age_hours = None
+    if age_hours is not None and age_hours > 48:
+        return _check(
+            "history", "Ops history", WARN,
+            f"The last snapshot is {age_hours}h old ({len(rows)} day(s) stored).",
+            "Check the snapshot cron/timer — the hub cannot show a trend if the "
+            "row is not written: `python -m influencer_hub.cli snapshot`.",
+        )
+    when = "just now" if age_hours in (None, 0) else f"{age_hours}h ago"
+    return _check("history", "Ops history", OK,
+                  f"{len(rows)} day(s) stored · last snapshot {when} "
+                  f"({last.get('posted', 0)} posted / {last.get('failed', 0)} failed).")
+
+
 # --------------------------------------------------------------------------
 # The report
 # --------------------------------------------------------------------------
@@ -370,6 +413,7 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
         _guard("central", "Central EarnKaro / HYPD", _central_accounts_check),
         _guard("creators", "Creator readiness", lambda: _creators_check(plan)),
         _guard("mirror", "Main → WhatsApp mirror", lambda: _mirror_check(plan)),
+        _guard("history", "Ops history", _history_check),
         _guard("whatsapp", "WhatsApp hub", lambda: _whatsapp_check(live)),
     ]
     worst = max((_STATE_ORDER.get(check["state"], 0) for check in checks), default=0)

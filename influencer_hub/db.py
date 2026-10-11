@@ -14,7 +14,7 @@ import os
 import re
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 from urllib.parse import parse_qs, parse_qsl, urlparse
@@ -216,6 +216,25 @@ CREATE TABLE IF NOT EXISTS poll_deliveries (
     created_at           TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(poll_id, channel_id)
+);
+
+-- One row per calendar day, written by `cli snapshot` (and by
+-- `cli digest --send`). This is the hub's memory: without it the dashboard can
+-- only ever show "right now", and nobody can tell whether delivery is getting
+-- better or worse.
+CREATE TABLE IF NOT EXISTS ops_snapshots (
+    day            TEXT PRIMARY KEY,          -- YYYY-MM-DD (UTC)
+    captured_at    TEXT NOT NULL,
+    posted         INTEGER NOT NULL DEFAULT 0,
+    failed         INTEGER NOT NULL DEFAULT 0,
+    skipped        INTEGER NOT NULL DEFAULT 0,
+    mirrored       INTEGER NOT NULL DEFAULT 0,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    ready          INTEGER NOT NULL DEFAULT 0,
+    blocked        INTEGER NOT NULL DEFAULT 0,
+    setup_percent  INTEGER NOT NULL DEFAULT 0,
+    verdict        TEXT NOT NULL DEFAULT 'unknown',
+    notes          TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_channels_influencer ON channels(influencer_id);
@@ -2287,6 +2306,129 @@ def purge_old_posts_and_stats(days_to_keep: int = 14) -> int:
         return deleted
     finally:
         con.close()
+
+
+# --------------------------------------------------------------------------
+# Ops history: the daily snapshot, rankings and the raw audit log
+# --------------------------------------------------------------------------
+def record_ops_snapshot(day: str, *, captured_at: str = "", posted: int = 0,
+                        failed: int = 0, skipped: int = 0, mirrored: int = 0,
+                        attempts: int = 0, ready: int = 0, blocked: int = 0,
+                        setup_percent: int = 0, verdict: str = "unknown",
+                        notes: str = "") -> str:
+    """Write (or refresh) one day's numbers. Same day twice = latest wins."""
+    ensure_schema()
+    day = str(day or "")[:10]
+    if not day:
+        raise ValueError("day must be YYYY-MM-DD")
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO ops_snapshots (day, captured_at, posted, failed, skipped, "
+            "mirrored, attempts, ready, blocked, setup_percent, verdict, notes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(day) DO UPDATE SET captured_at=excluded.captured_at, "
+            "posted=excluded.posted, failed=excluded.failed, skipped=excluded.skipped, "
+            "mirrored=excluded.mirrored, attempts=excluded.attempts, "
+            "ready=excluded.ready, blocked=excluded.blocked, "
+            "setup_percent=excluded.setup_percent, verdict=excluded.verdict, "
+            "notes=excluded.notes",
+            (day, captured_at or _now(), int(posted), int(failed), int(skipped),
+             int(mirrored), int(attempts), int(ready), int(blocked),
+             int(setup_percent), str(verdict or "unknown"), str(notes or "")[:400]),
+        )
+        con.commit()
+        return day
+    finally:
+        con.close()
+
+
+def list_ops_snapshots(days: int = 30) -> list[dict]:
+    """The most recent snapshots, oldest first (so a chart reads left→right)."""
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT * FROM ops_snapshots ORDER BY day DESC LIMIT ?",
+            (max(1, min(400, int(days or 30))),),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+    return [dict(row) for row in reversed(rows)]
+
+
+def prune_ops_snapshots(keep_days: int = 400) -> int:
+    """Drop snapshots older than ``keep_days``; returns how many were removed."""
+    con = _connect()
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(7, int(keep_days)))).strftime("%Y-%m-%d")
+        cur = con.execute("DELETE FROM ops_snapshots WHERE day < ?", (cutoff,))
+        con.commit()
+        return int(cur.rowcount or 0)
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        con.close()
+
+
+def top_posting_creators(hours: int = 24, limit: int = 5) -> list[dict]:
+    """Who actually delivered in the window — the leaderboard for the digest."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT i.name AS name, COUNT(*) AS posted, "
+            "SUM(CASE WHEN COALESCE(p.mirror_source_id, 0) <> 0 THEN 1 ELSE 0 END) AS mirrored "
+            "FROM posts p JOIN influencers i ON i.id = p.influencer_id "
+            "WHERE p.status='posted' "
+            "AND COALESCE(NULLIF(p.posted_at, ''), p.created_at, '') >= ? "
+            "GROUP BY p.influencer_id ORDER BY posted DESC, i.name LIMIT ?",
+            (cutoff, max(1, min(50, int(limit or 5)))),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+    return [{"name": str(row["name"]), "posted": int(row["posted"] or 0),
+             "mirrored": int(row["mirrored"] or 0)} for row in rows]
+
+
+def list_recent_posts(hours: int = 24, limit: int = 2000) -> list[dict]:
+    """Every attempt in the window, newest first — the audit log behind the CSVs."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT p.id AS id, p.created_at AS created_at, p.posted_at AS posted_at, "
+            "i.name AS creator, c.platform AS platform, c.identifier AS identifier, "
+            "p.status AS status, p.deal_sig AS deal_sig, p.error AS error, "
+            "COALESCE(p.mirror_source_id, 0) AS mirror_source_id "
+            "FROM posts p LEFT JOIN influencers i ON i.id = p.influencer_id "
+            "LEFT JOIN channels c ON c.id = p.channel_id "
+            "WHERE COALESCE(NULLIF(p.posted_at, ''), p.created_at, '') >= ? "
+            "ORDER BY p.id DESC LIMIT ?",
+            (cutoff, max(1, min(20000, int(limit or 2000)))),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+    return [dict(row) for row in rows]
+
+
+def snapshot_table_exists() -> bool:
+    """True when the ops history table is present (used by the self-check)."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ops_snapshots'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        con.close()
+    return bool(row)
 
 
 def get_live_deal_insights() -> dict:

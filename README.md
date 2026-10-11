@@ -146,6 +146,33 @@ The message names the failing checks **and the fix** (`systemctl start …`,
 sent and nothing is recorded, so a hub that has not opted in gets no surprise
 messages. State lives in global settings, so a restart does not re-alert.
 
+**The history** — one row per day in `ops_snapshots` (`python -m influencer_hub.cli
+snapshot`, or automatically whenever the daily digest is sent). From it the card
+draws a delivery trend: `7d: ▁▅▇█ · green 2d`, plus "±N% vs the previous day".
+Without history a hub can only ever say how it is *right now*; with it you can
+tell a slow week from a bad afternoon. The self-check has an eleventh check for
+it ("Ops history") that names the cron line when the row is not being written.
+
+**One story per outage** — alerts carry the incident with them: the first
+"got worse" message opens an incident, repeat messages say `(open 4h · alert #2)`
+instead of pretending it is new, and the recovery message closes it with the
+duration ("it was broken for 1d · 3 alert(s)").
+
+**Metrics and the audit log** — `GET /api/metrics` is Prometheus text
+(`hub_posts_attempts{status="failed"}`, `hub_worker_up`, `hub_creators{state=…}`,
+`hub_selfcheck_state{verdict=…}`, `hub_green_streak_days`), so whatever already
+watches the VM can watch the hub too. `GET /api/posts.csv?hours=24` (the
+**⬇️ Posts log (CSV)** button) is every attempt with creator, channel, status and
+reason — the audit trail behind the counts.
+
+**Backup and restore** — `python -m influencer_hub.cli backup --out /var/backups/hub
+--keep 14` takes a *consistent* copy with SQLite's online backup API (safe while
+the worker is posting; a plain `cp` of a WAL database is not) plus a JSON sidecar
+saying what is inside. `cli restore <file>` refuses anything that is not a hub
+database, asks before doing anything (`--yes`), and keeps the previous file as
+`*.pre-restore-<timestamp>`. Secrets live in `.env` and are deliberately **not**
+in a backup, so a copy is safe to move to another machine.
+
 **The exports** — the checklist and the bulk template as spreadsheets:
 
 * `GET /api/readiness.csv` — one row per creator (same `q`/`state` filters as

@@ -750,6 +750,27 @@
         note('failures', failures);
         const failuresRow = card.querySelector('[data-live-ops="failures"]');
         if (failuresRow) failuresRow.style.display = failures ? '' : 'none';
+
+        const trend = data.trend || {};
+        const trendRow = card.querySelector('[data-live-ops="trend"]');
+        if (trendRow) {
+          if (trend.captured_days) {
+            const bits = [`<span class="ops-spark">${trend.sparkline || '\u00b7'}</span>`];
+            bits.push(`last ${trend.captured_days} day(s) of delivery`);
+            if (trend.green_streak) bits.push(`🟢 green ${trend.green_streak} day(s) in a row`);
+            else if (trend.delta_pct !== null && trend.delta_pct !== undefined) bits.push(`${trend.delta_pct >= 0 ? '+' : ''}${trend.delta_pct}% vs the previous day`);
+            bits.push('<small>\u00b7 history is one row per day: <code>python -m influencer_hub.cli snapshot</code></small>');
+            trendRow.innerHTML = bits.join(' ');
+          } else {
+            trendRow.innerHTML = 'No history yet \u2014 one cron line (<code>cli snapshot</code>) turns this into a trend.';
+          }
+        }
+        const blockerRow = card.querySelector('[data-live-ops="blocker"]');
+        const blocker = (data.creators || {}).biggest_blocker;
+        if (blockerRow && blocker) {
+          const labels = {tag: 'their own Amazon tag', approval: 'the approval channel', main: 'the main channel', whatsapp: 'the WhatsApp channel', phone: 'phone pairing', activate: 'activation', mirror: 'WhatsApp mirroring'};
+          blockerRow.textContent = `Biggest blocker: ${labels[blocker.step] || blocker.step} \u2014 ${blocker.count} creator(s) are waiting on it.`;
+        }
       } else failures += 1;
     } catch (error) {
       failures += 1;

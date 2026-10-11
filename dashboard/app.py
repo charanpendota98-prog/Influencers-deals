@@ -1249,7 +1249,7 @@ def api_readiness_csv():
     csv_text = ops.readiness_csv(plan)
     return Response(
         csv_text,
-        mimetype="text/csv; charset=utf-8",
+        content_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=creator-readiness.csv"},
     )
 
@@ -1259,7 +1259,7 @@ def api_easy_setup_template():
     """The exact columns the bulk paste accepts, with example rows."""
     return Response(
         ops.bulk_template_csv(),
-        mimetype="text/csv; charset=utf-8",
+        content_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=creators-template.csv"},
     )
 
@@ -1278,6 +1278,31 @@ def api_digest():
     data["ok"] = True
     data["card"] = ops.render_digest(data)
     return jsonify(data)
+
+
+@app.route("/api/posts.csv")
+def api_posts_csv():
+    """Every delivery attempt in the window — the audit log behind the counts."""
+    try:
+        hours = max(1, min(24 * 30, request.args.get("hours", 24, type=int) or 24))
+    except (TypeError, ValueError):
+        hours = 24
+    csv_text = ops.posts_csv(hours=hours)
+    return Response(
+        csv_text,
+        content_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=posts-last-{hours}h.csv"},
+    )
+
+
+@app.route("/api/metrics")
+def api_metrics():
+    """The digest as Prometheus text — point any scraper at this."""
+    try:
+        body = ops.metrics_text()
+    except Exception as exc:  # pragma: no cover - defensive
+        return Response(f"# metrics unavailable: {exc}\n", content_type="text/plain; charset=utf-8", status=500)
+    return Response(body, content_type="text/plain; charset=utf-8")
 
 
 @app.route("/setup")

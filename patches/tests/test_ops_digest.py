@@ -88,7 +88,9 @@ def test_the_card_is_short_plain_text_with_no_secret(hub, monkeypatch):
     assert text.startswith(("🟢", "🟡", "🔴", "⚪"))
     assert "Posts:" in text and "Self-check:" in text
     assert "super-secret-key" not in text
-    assert len(text.splitlines()) <= 8
+    # Short enough for a phone: the core lines plus at most a trend, a blocker
+    # and a leaderboard line.
+    assert len(text.splitlines()) <= 12
 
 
 # --------------------------------------------------------------------------

@@ -106,9 +106,28 @@ checks green is the definition of "everything works".
 ```
 
 Both commands are read-only apart from the optional ops message. Hand the
-offline work to the exports: **Creator checklist (CSV)** and **Bulk template
-(CSV)** are on the dashboard's 📈 Ops digest card
-(`/api/readiness.csv`, `/api/easy-setup/template.csv`).
+offline work to the exports: **Creator checklist (CSV)**, **Bulk template
+(CSV)** and **Posts log (CSV)** are on the dashboard's 📈 Ops digest card
+(`/api/readiness.csv`, `/api/easy-setup/template.csv`, `/api/posts.csv?hours=24`).
+
+```bash
+# history: one row per day, so the card can show a trend (and the self-check
+# has something to read). `digest --send` stores the same row automatically.
+5 0 * * * cd /home/ubuntu/Influencers-deals && PYTHONPATH=. .venv/bin/python -m influencer_hub.cli snapshot --note nightly >> /var/log/influencer-snapshot.log 2>&1
+
+# backup: consistent copy (online backup API, safe while the worker posts),
+# 14 kept, sidecar JSON next to each file. Secrets stay in .env, not in a backup.
+30 2 * * * cd /home/ubuntu/Influencers-deals && PYTHONPATH=. .venv/bin/python -m influencer_hub.cli backup --out /var/backups/hub --keep 14 >> /var/log/influencer-backup.log 2>&1
+```
+
+Monitoring already on the VM can scrape `GET /api/metrics` (Prometheus text:
+posts by status, worker up, creator readiness, self-check verdict, green streak).
+A restore is one command and is reversible:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli restore /var/backups/hub/hub-20261011-023000.sqlite3        # asks first
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli restore /var/backups/hub/hub-20261011-023000.sqlite3 --yes    # keeps the old file as *.pre-restore-*
+```
 
 ## 6. If a check is not green
 

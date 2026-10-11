@@ -15,6 +15,9 @@ Examples
   python -m influencer_hub.cli self-check --live
   python -m influencer_hub.cli self-check --alert        # only when it got worse
   python -m influencer_hub.cli digest --send
+  python -m influencer_hub.cli snapshot          # one row of history per day
+  python -m influencer_hub.cli backup --out /var/backups/hub --keep 14
+  python -m influencer_hub.cli restore /var/backups/hub/hub-20261011-0900.sqlite3 --yes
 """
 from __future__ import annotations
 
@@ -535,14 +538,106 @@ def _cmd_digest(args):
                 sent = True
             except Exception as exc:  # pragma: no cover - network
                 error = str(exc)[:200]
+    # A daily card that goes to the ops channel is also the day's history row.
+    snapshot = None
+    if args.send and sent:
+        try:
+            snapshot = ops.record_snapshot(hours=args.hours, data=data)
+        except Exception as exc:  # pragma: no cover - history is best-effort
+            error = error or str(exc)[:200]
     if args.json:
-        data = {**data, "sent": sent, "error": error}
+        data = {**data, "sent": sent, "error": error, "snapshot": snapshot}
         print(_json.dumps(data, indent=2))
     else:
         print(text)
         if args.send:
             print(f"\nops send: {'sent' if sent else 'not sent'}" + (f" — {error}" if error else ""))
+            if snapshot:
+                print(f"history: day {snapshot['day']} recorded ({snapshot['attempts']} attempts)")
     return 0 if not error else 1
+
+
+def _cmd_snapshot(args):
+    """Freeze today's numbers into the history (a nightly cron line)."""
+    import json as _json
+
+    from . import db, ops
+
+    db.init()
+    row = ops.record_snapshot(hours=args.hours, notes=args.note)
+    trend = ops.trend(days=args.days)
+    if args.json:
+        print(_json.dumps({"snapshot": row, "trend": trend}, indent=2))
+    else:
+        print(f"history: {row['day']} · {row['posted']} posted · {row['failed']} failed "
+              f"· {row['attempts']} attempts · verdict {row['verdict']}")
+        if trend["captured_days"]:
+            if trend["sparkline"]:
+                line = f"{trend['days']}d: {trend['sparkline']}"
+                if trend["green_streak"]:
+                    line += f" · green {trend['green_streak']}d"
+                elif trend["delta_pct"] is not None:
+                    line += f" · {trend['delta_pct']:+d}% vs previous day"
+            else:
+                line = "no deliveries recorded yet"
+            print(line + f"  ({trend['captured_days']} day(s) stored)")
+    return 0
+
+
+def _cmd_backup(args):
+    """A consistent copy of the hub database (safe while the worker runs)."""
+    import json as _json
+
+    from . import ops
+
+    try:
+        result = ops.backup_database(args.out, keep=args.keep)
+    except Exception as exc:
+        print(f"backup failed: {exc}")
+        return 1
+    if args.json:
+        print(_json.dumps(result, indent=2))
+    else:
+        counts = ", ".join(f"{name} {value}" for name, value in result["counts"].items())
+        print(f"backup: {result['path']} ({result['size_bytes'] // 1024} KB)")
+        if counts:
+            print(f"contents: {counts}")
+        print(f"sidecar: {result['sidecar']}")
+        print(f"kept {len(result['kept'])} file(s)"
+              + (f" · pruned {', '.join(result['pruned'])}" if result["pruned"] else ""))
+        print("note: .env secrets are NOT in a backup — the copy is safe to move.")
+    return 0
+
+
+def _cmd_restore(args):
+    """Put a backup back, keeping the current file aside as *.pre-restore-*."""
+    import json as _json
+
+    from . import ops
+
+    check = ops.inspect_backup(args.file)
+    if not check["ok"]:
+        print(f"not a hub database: {check['reason']}")
+        return 1
+    if not args.yes and not args.dry_run:
+        print(f"would restore {args.file} ({check.get('counts', {})}) over {config.DB_PATH}.")
+        print("run again with --yes to do it (the current file is kept as *.pre-restore-*).")
+        return 2
+    try:
+        result = ops.restore_database(args.file, dry_run=args.dry_run)
+    except Exception as exc:
+        print(f"restore failed: {exc}")
+        return 1
+    if args.json:
+        print(_json.dumps({"check": check, "result": result}, indent=2))
+    else:
+        verb = "checked" if result["dry_run"] else "restored"
+        print(f"{verb}: {result['restored_from']}")
+        if result["previous_saved_as"]:
+            lead = "previous file would be kept as" if result["dry_run"] else "previous file kept as"
+            print(f"{lead}: {result['previous_saved_as']}")
+        print(f"contents: {result['counts']}")
+    return 0
 
 
 def _cmd_amazon_items(args):  # pragma: no cover - requires configured Amazon credentials
@@ -658,6 +753,26 @@ def build_parser() -> argparse.ArgumentParser:
     dg.add_argument("--send", action="store_true", help="post the card to OPS_TELEGRAM_CHANNEL")
     dg.add_argument("--json", action="store_true", help="machine-readable output")
     dg.set_defaults(func=_cmd_digest)
+
+    sn = sub.add_parser("snapshot", help="store today's numbers in the history (trends)")
+    sn.add_argument("--hours", type=int, default=24, help="window to summarise (default 24)")
+    sn.add_argument("--days", type=int, default=7, help="history to show back (default 7)")
+    sn.add_argument("--note", default="", help="a short note to keep with the row")
+    sn.add_argument("--json", action="store_true", help="machine-readable output")
+    sn.set_defaults(func=_cmd_snapshot)
+
+    bk = sub.add_parser("backup", help="copy the hub database (safe while the worker runs)")
+    bk.add_argument("--out", default="backups", help="directory for the copies (default ./backups)")
+    bk.add_argument("--keep", type=int, default=7, help="how many copies to keep (default 7)")
+    bk.add_argument("--json", action="store_true", help="machine-readable output")
+    bk.set_defaults(func=_cmd_backup)
+
+    rs = sub.add_parser("restore", help="put a backup back (keeps the current file aside)")
+    rs.add_argument("file", help="the backup file to restore")
+    rs.add_argument("--yes", action="store_true", help="actually do it")
+    rs.add_argument("--dry-run", action="store_true", help="only check the file")
+    rs.add_argument("--json", action="store_true", help="machine-readable output")
+    rs.set_defaults(func=_cmd_restore)
 
     r = sub.add_parser("render-demo", help="show how a sample deal renders for an influencer")
     r.add_argument("id", type=int)
