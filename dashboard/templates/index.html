@@ -253,6 +253,54 @@
 </section>
 {% endif %}
 
+{% if report %}
+<section class="card selfcheck" id="self-check" style="margin-top:18px; border-color:{{ '#166534' if report.verdict == 'ready' else ('#7c2d12' if report.verdict == 'fail' else '#78350f') }};"
+         data-live-src="{{ url_for('api_self_check') }}?live=1">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div>
+      <h2>🧪 Self-check — does everything really work?</h2>
+      <p class="hint">Read-only checks on this VM: database, Telegram, dashboard, worker, sources, Amazon tag, central EarnKaro/HYPD, creators, mirror and the WhatsApp hub. No key or token is ever shown.</p>
+    </div>
+    <span class="selfcheck-verdict is-{{ report.verdict }}" data-live-verdict>
+      {% if report.verdict == 'ready' %}✅ READY{% elif report.verdict == 'fail' %}⛔ PROBLEMS{% else %}⚠️ ATTENTION{% endif %}
+    </span>
+  </div>
+
+  <div class="selfcheck-grid" data-live-checks>
+    {% for check in report.checks %}
+      <div class="selfcheck-item is-{{ check.state }}" data-check="{{ check.id }}" title="{{ check.detail }}{% if check.fix %} — fix: {{ check.fix }}{% endif %}">
+        <span class="selfcheck-mark">
+          {% if check.state == 'ok' %}✅{% elif check.state == 'warn' %}⚠️{% elif check.state == 'fail' %}⛔{% else %}·{% endif %}
+        </span>
+        <span class="selfcheck-body">
+          <strong>{{ check.label }}</strong>
+          <small>{{ check.detail }}</small>
+        </span>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if report.next %}
+    <h3 class="command-subhead">🔧 What to fix, in order</h3>
+    <ul class="selfcheck-fixes" data-live-fixes>
+      {% for check in report.next %}
+        <li class="is-{{ check.state }}">
+          <strong>{{ check.label }}:</strong> {{ check.detail }}
+          {% if check.fix %}<span class="routing-note">{{ check.fix }}</span>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="routing-note" data-live-fixes>✅ Nothing to fix — every check passed.</p>
+  {% endif %}
+  <p class="hint" style="margin-top:10px;">
+    Last full check: {{ report.generated_at }} · re-runs every 30 seconds (the WhatsApp hub ping stays on the read-only
+    <code>/api/self-check?live=1</code>) · one creator at a time: <code>/api/self-check?inf_id=&lt;id&gt;</code>.
+    VM runbook with the same checks: <code>VERIFICATION.md</code>.
+  </p>
+</section>
+{% endif %}
+
 <section class="card" style="margin-top:18px;">
   <div class="setup-section-title" style="margin-top:0;">
     <div><h2>🧭 Routing summary</h2><p class="hint">Network settings live in Setup. Selected matching routes can operate together.</p></div>

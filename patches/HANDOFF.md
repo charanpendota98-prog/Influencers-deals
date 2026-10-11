@@ -588,3 +588,34 @@ paged/filtered dashboard + API, pill paging/search, bulk create/update/report,
 CSV upload, invalid rows, 1000-line import with a page-speed check, and the
 "no screen renders the whole hub" rule. Full suite: 424 passed; wa_hub `node
 --test` 8/8.
+
+---
+
+## 9. This session, part 4: the self-check
+
+`influencer_hub/selfcheck.py` runs ten read-only checks and returns
+`{ok, verdict, checks, summary, next}` where verdict ∈ `ready|attention|fail`:
+
+`schema` (columns + the mirror-count index), `telegram` (credentials **and** a
+session file), `dashboard` (admin password + production cookie flags), `worker`
+(heartbeat state, last poll, last error code), `sources` (at least one active),
+`amazon` (fallback tag set and how many creators are still on the shared id),
+`central` (EarnKaro key/publisher + HYPD store), `creators` (ready/blocked from
+the readiness engine), `mirror` (global switch + how many creators actually
+mirror) and `whatsapp` (the only network call, `live=True`, a loopback GET to
+the hub `/health`).
+
+Design rules worth keeping: every non-green check carries the fix text; results
+are JSON-serialisable and contain **no credential values** (tests assert a
+stored key never appears in the report or the page); the checks never write —
+one test snapshots the database before/after; and `live=False` (the default for
+the page) makes exactly zero network calls, so a slow hub cannot hold up the
+dashboard.
+
+Surfaces: `GET /api/self-check` (`?live=1`, `?inf_id=<id>`) and the dashboard's
+🧪 Self-check panel, refreshed by `app.js` every 30 s. `VERIFICATION.md` is the
+VM runbook built from the same checks.
+
+Tests: `tests/test_self_check.py` (9 tests) — honesty (empty hub ≠ ready, dead
+worker and shared tag are amber), secret non-leakage, live-only hub failure,
+read-only guarantee, API shape/404, and the rendered panel naming the fix.

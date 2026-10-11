@@ -95,6 +95,23 @@ schedule runs in the background.
    destination; after that, deals post there — including mirrored
    main-channel deals.
 
+### ✅ Proving it works: the self-check panel
+
+The dashboard's **🧪 Self-check** card (and the read-only
+`GET /api/self-check?live=1`, per creator `?inf_id=<id>`) answers one question
+plainly: *does everything really work right now?* Ten checks — database &
+schema, Telegram session, dashboard access, worker heartbeat, deal sources,
+Amazon attribution (including "nobody is still on the shared tag"), central
+EarnKaro/HYPD accounts, creator readiness, the main → WhatsApp mirror, and a
+live ping to the WhatsApp hub — each with a ✅ / ⚠️ / ⛔ state and, when
+something is off, the exact command or screen that fixes it. It is read-only and
+prints booleans, counts and short messages only: never a key, token or session
+string. The panel re-runs itself every 30 seconds.
+
+The same checks, in VM order, live in **[VERIFICATION.md](VERIFICATION.md)** —
+the copy-paste runbook (blanked-credential test run, schema, stack, per-creator
+proof, worker start, and what each red check means).
+
 ### 🚀 Dashboard: the setup command center
 
 The dashboard home (`/`) is not just counters. Above the metrics it renders a

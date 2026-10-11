@@ -1,0 +1,108 @@
+# VERIFICATION — what to run, and what “working perfectly” looks like
+
+Short, exact, copy-paste. Every command below is **read-only** with respect to
+production content: it uses a temporary database, blanked credentials and never
+edits `.env`. Do the steps in order on the VM and the result is known before a
+single real deal is posted.
+
+```bash
+cd /home/ubuntu/Influencers-deals
+git fetch origin arena/3496cf5b-influencers-deals
+git checkout -B arena/3496cf5b-influencers-deals FETCH_HEAD
+```
+
+## 1. Code tests (services stopped, credentials blanked)
+
+```bash
+TEST_DB="$(mktemp /tmp/influencer-hub-deploy-test.XXXXXX.sqlite3)"
+HUB_ENV=development HUB_DB_PATH="$TEST_DB" \
+TELEGRAM_API_ID="" TELEGRAM_API_HASH="" TELEGRAM_SESSION="" \
+EARNKARO_API_KEY="" BITLY_API_KEY="" AMAZON_CREATORS_API_CLIENT_SECRET="" \
+WA_HUB_TOKEN="" PYTHONPATH=. .venv/bin/python -m pytest -q
+RC=$?; rm -f "$TEST_DB"; echo "pytest exit code: $RC"
+
+cd wa_hub && node --test
+```
+
+**Expected:** `424 passed` and `# pass 8 / # fail 0`. Nothing in `.env` is read
+for these runs, so no real post, no Telegram login and no affiliate call happens.
+
+## 2. Schema (additive, safe on the live DB)
+
+```bash
+PYTHONPATH=. .venv/bin/python -c "from influencer_hub import db; db.init(); print('schema ok')"
+```
+
+Adds, if missing: `channels.mirror_whatsapp`, `posts.mirror_source_id`,
+`wa_sessions.pairing_phone/pairing_code/pairing_error`, and the index
+`idx_posts_channel_status`. Re-running is a no-op.
+
+## 3. Start the stack, then read the self-check
+
+```bash
+sudo systemctl start influencer-wa-hub          # WhatsApp hub (loopback only)
+sudo systemctl start influencer-dashboard       # Flask dashboard on :5000
+# leave the worker stopped for now
+curl -s -H "Authorization: Bearer $WA_HUB_TOKEN" http://127.0.0.1:8088/health
+```
+
+Open the dashboard → **🧪 Self-check — does everything really work?** (or
+`/api/self-check?live=1`). It prints one line per subsystem and, for anything
+not green, the exact fix:
+
+| Check | Green means |
+|---|---|
+| Database & schema | every column/index this build needs exists |
+| Telegram account | API id/hash set **and** an authorized session file |
+| Dashboard access | admin password set, production cookie flags |
+| Background worker | a heartbeat exists and is not degraded |
+| Deal sources | at least one source is switched on |
+| Amazon attribution | fallback tag set and **no creator on the shared id** |
+| Central EarnKaro / HYPD | our key, publisher id and store are configured |
+| Creator readiness | every creator has tag/main/WhatsApp/phone/live |
+| Main → WhatsApp mirror | at least one creator is mirroring |
+| WhatsApp hub | the hub answered on the loopback port |
+
+The worker check is expected to be red until step 5 — that is the point of the
+check, not a failure of the deploy.
+
+## 4. Per-creator proof (no real deal needed)
+
+For each creator that must post:
+
+1. **Own tag** — creator page → *Influencer Profile Settings* → their Associate
+   tag (e.g. `ravi-21`). The dashboard's `🏷️ Shared Amazon tag` filter must be
+   empty when you are done: nobody may still post under the shared fallback.
+2. **Phone** — creator page → *💬 Dedicated WhatsApp Account & Channel Linker* →
+   scan the QR **or** type the number and get the 8-character login code. Status
+   turns green (read-only polling; the browser never creates a session).
+3. **WhatsApp destination** — paste the Channel link → saved **Pending**.
+4. **Test** — press *🚀 Send Test Alert* once. Only a visible success flips it to
+   **ready**; then the mirror badge shows **ACTIVE**.
+5. **Dry run first** — Setup Center → *Live Deal Conversion Simulator* shows the
+   exact text and the tagged link for a pasted deal, and sends nothing.
+
+## 5. Start posting
+
+```bash
+sudo systemctl start influencer-deal-worker
+sudo journalctl -u influencer-deal-worker -n 50 --no-pager
+```
+
+Watch the dashboard: `/api/flow` (worker, sources, channels), the command
+center (per-creator state), and Money Radar (every posted link carries the
+expected attribution). Then treat the self-check as the daily glance: all ten
+checks green is the definition of "everything works".
+
+## 6. If a check is not green
+
+The panel names the fix. The short versions:
+
+* **Telegram** red → `python -m influencer_hub.cli doctor` (and `authorize` once).
+* **Worker** red → `sudo systemctl status influencer-deal-worker` +
+  `journalctl -u influencer-deal-worker -n 50`.
+* **Amazon** amber → that creator still uses the shared tag; save their own.
+* **Creators** amber → dashboard → filter `⚠️ Blocked` → do the listed action.
+* **Mirror** amber → the destination has to pass one visible Test post first
+  (by design: nothing half-configured goes live).
+* **WhatsApp hub** red → hub service, `WA_HUB_TOKEN` match, then retry.

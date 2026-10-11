@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
     amazon_shortlinks, config, db, hypd_shortlinks, lehlah_shortlinks, link_router, polls,
-    pipeline, puller, readiness, telegram_ops, whatsapp_client,
+    pipeline, puller, readiness, selfcheck, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
 def _running_under_pytest() -> bool:
@@ -1120,6 +1120,16 @@ def index():
     except Exception as exc:  # pragma: no cover - the dashboard must still render
         app.logger.warning("readiness overview failed: %s", exc)
         plan = None
+    # The self-check panel: same checks the API returns, minus the one network
+    # call (the browser asks /api/self-check?live=1 for that).
+    try:
+        report = selfcheck.run_checks(
+            live=False, influencers=influencers, sources=sources,
+            heartbeat=db.get_worker_heartbeat(), plan=plan,
+        )
+    except Exception as exc:  # pragma: no cover - the dashboard must still render
+        app.logger.warning("self-check failed: %s", exc)
+        report = None
     paging = {"offset": offset, "page_size": page_size, "prev": max(0, offset - page_size),
               "next": offset + page_size}
     if plan:
@@ -1137,6 +1147,7 @@ def index():
         source_count=len(sources),
         active_source_count=active_sources,
         plan=plan,
+        report=report,
         query=query,
         state=state,
         paging=paging,
@@ -1187,6 +1198,29 @@ def api_readiness():
     payload["live"] = live
     payload["live_error"] = live_error
     return jsonify(payload)
+
+
+@app.route("/api/self-check")
+def api_self_check():
+    """Read-only "does the hub work?" report; ``?live=1`` also pings the hub.
+
+    Contains booleans, counts and short messages only — never a key, token or
+    session string.
+    """
+    live = str(request.args.get("live", "")).strip() in {"1", "true", "yes"}
+    inf_id = request.args.get("inf_id", type=int)
+    try:
+        if inf_id:
+            inf = db.get_influencer(inf_id)
+            if not inf:
+                return jsonify({"ok": False, "error": "unknown creator"}), 404
+            report = selfcheck.run_checks(live=live, influencers=[inf])
+        else:
+            report = selfcheck.run_checks(live=live)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+    report["ok"] = bool(report.get("ok"))
+    return jsonify(report)
 
 
 @app.route("/setup")

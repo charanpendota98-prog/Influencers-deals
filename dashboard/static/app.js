@@ -650,3 +650,63 @@
   }
   tick();
 })();
+
+/* --- Self-check panel: re-run the read-only checks, including the hub ping -- */
+(() => {
+  const panel = document.getElementById('self-check');
+  if (!panel) return;
+  const src = panel.dataset.liveSrc;
+  if (!src) return;
+  const marquee = { ok: '✅', warn: '⚠️', fail: '⛔', skip: '·' };
+  const verdictText = { ready: '✅ READY', attention: '⚠️ ATTENTION', fail: '⛔ PROBLEMS' };
+  let failures = 0;
+
+  function paint(payload) {
+    const verdict = panel.querySelector('[data-live-verdict]');
+    if (verdict) {
+      verdict.textContent = verdictText[payload.verdict] || '⚠️ ATTENTION';
+      verdict.className = `selfcheck-verdict is-${payload.verdict}`;
+    }
+    (payload.checks || []).forEach((check) => {
+      const item = panel.querySelector(`.selfcheck-item[data-check="${check.id}"]`);
+      if (!item) return;
+      item.className = `selfcheck-item is-${check.state}`;
+      item.title = `${check.detail}${check.fix ? ` — fix: ${check.fix}` : ''}`;
+      const mark = item.querySelector('.selfcheck-mark');
+      if (mark) mark.textContent = marquee[check.state] || '·';
+      const small = item.querySelector('.selfcheck-body small');
+      if (small) small.textContent = check.detail;
+    });
+    const fixes = panel.querySelector('[data-live-fixes]');
+    if (fixes && Array.isArray(payload.next)) {
+      fixes.replaceChildren(...payload.next.map((check) => {
+        const li = document.createElement('li');
+        li.className = `is-${check.state}`;
+        const strong = document.createElement('strong');
+        strong.textContent = `${check.label}: `;
+        li.append(strong, document.createTextNode(check.detail));
+        if (check.fix) {
+          const span = document.createElement('span');
+          span.className = 'routing-note';
+          span.textContent = check.fix;
+          li.appendChild(span);
+        }
+        return li;
+      }));
+    }
+  }
+
+  async function tick() {
+    try {
+      const response = await fetch(src, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if (response.status === 401) return;
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok && payload.checks) { failures = 0; paint(payload); }
+      else failures += 1;
+    } catch (error) {
+      failures += 1;
+    }
+    window.setTimeout(tick, failures ? Math.min(180000, 30000 * failures) : 30000);
+  }
+  window.setTimeout(tick, 3000);
+})();
