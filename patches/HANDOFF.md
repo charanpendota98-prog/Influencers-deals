@@ -792,3 +792,77 @@ eight hand-crafted edit posts refused, admin pages/APIs refused for the team,
 paste-many, quota, admin edit + audit, "stopped request logs nothing", 2FA
 sign-in (wrong and right code), TOTP clock/drift, the CLI, the self-check item and
 the setup card. Full suite: 500 passed.
+
+## 14. This session, part 9: the creator inventory (export everything, paste it back)
+
+The owner asked for the whole hub as a spreadsheet — every creator with the date
+they were created, who added them, their channels and ids — and for the edited
+file to come back in safely. That is `influencer_hub/inventory.py` (stdlib only):
+
+* `COLUMNS` (29) — `creator_id, name, added_by, created_date, created_at, active,
+  ready, amazon_tag, tag_source, approval_channel, main_channel, whatsapp_channel,
+  wa_status, phone_number, mirror_whatsapp, allow_amazon, allow_earnkaro,
+  allow_hypd, only_amazon, hypd_store_id, categories, posting_schedule,
+  price_filter, notes, next_step, next_action, posts_24h, mirrored_24h,
+  last_post_at`. `EDITABLE` is the subset an import may change.
+* `rows(member=, query=, limit=)` / `csv_text()` — bulk queries only (channels,
+  sessions, mirror counts, post activity and the hub-wide mirror default are read
+  once for the whole hub), `member=` narrows to one team member's additions.
+* `plan_import(text, create=)` — pure: matches by `creator_id` then name, validates
+  each Amazon tag with `link_router.amazon_tag_is_usable`, and returns
+  `{operations, changed, unchanged, created, issues, ok}` where every operation
+  carries `changes` + `before` and `channels` + `channels_before`, so the UI can
+  show `field: old → new`. `edits(operation)` renders that list for the CLI and
+  the dashboard from one place.
+* `apply_import(plan, actor=, ip=)` — the only writer; audits `creator_updated` /
+  `creator_created` per row and returns a per-row report.
+* `stash_write` / `stash_read` / `stash_prune` — the pasted file lives in a
+  private server-side stash (0600, 3 h TTL); only a random token is in the
+  cookie.
+
+Datetime columns were widened earlier in the round: `readiness.creator_readiness`
+returns `added_by`, `created_at`, `created_date`, and `ops.READINESS_COLUMNS`
+(the checklist CSV) carries them too.
+
+Safety rules an operator can rely on: an **empty cell never writes** (so a
+half-filled spreadsheet cannot wipe a hub), a single `-` clears exactly that
+field, a name that is not in the hub is only created when "add missing rows"
+(`--create`) is on, an unusable tag or an unmatched row is reported with its line
+number while the rest of the batch still applies, and a preview never writes.
+
+Surfaces: `/setup` → **📦 Creator inventory** card (`id="inventory"`) with the
+export buttons, the paste/file form, the preview table (`field: old → new`),
+"✅ Apply the changes", the issues list and the last-import report; the console
+button **⬇️ Full inventory (CSV)**; team page "Added on"; the setup directory
+shows "Added <date> by <member>". Routes: `GET /api/inventory.csv`
+(admin-only, `?member=`, audits `inventory_exported`),
+`POST /setup/inventory/import` (preview → stash → apply; audits
+`inventory_imported`). CLI: `export-inventory --out/--member`,
+`import-inventory --file/--apply/--create/--actor/--json`.
+
+Two bugs this round found and fixed (both in the round's own code):
+
+1. `db.channel_post_activity()` was called inside the per-creator loop — the
+   1001-creator export took **18 s**. One query for the hub, plus the
+   hub-wide mirror default and the channel map read once (`plan_import` opened
+   two connections per row): export **0.18 s**, full-file preview **0.06 s**.
+2. The pasted file was kept in the Flask session cookie. A 256 KB paste produced
+   a **23 349-byte cookie** (Werkzeug: *"the cookie is too large … browsers may
+   silently ignore cookies larger than this (4093)"*) — a real browser would drop
+   it, lose the preview and sign the owner out. The file now lives in the stash
+   and the cookie is **558 bytes**; an expired stash says so instead of applying
+   nothing. A regression test asserts the cookie stays under 4 KB and that the
+   stashed file is mode 0600.
+
+Tests: `tests/test_inventory.py` (25) — every column present with the date and
+the member, `?member=` narrowing, Excel-safety (no secrets/BOM), a "no edit
+changes nothing" round trip, exact `old → new` reporting, empty-vs-`-`, mirrors,
+switch flip, bad rows with line numbers, unknown ids, missing name/id header,
+`/api/inventory.csv` admin-only (+ team 403), the setup preview → apply flow,
+`/setup` card, the checklist CSV columns, the CLI, failures not stopping the
+batch, the team page "Added on", the 300-creator query-count gate and the stash
+(cookie size, TTL, 0600, size limit). Suite: **526 passed** (see VERIFICATION §1;
+`HUB_SKIP_DOTENV=1` makes the documented run ignore the VM `.env` completely,
+which is what the old "blank every credential" form did not achieve: blanking
+`TELEGRAM_API_ID` also disabled the documented default and broke three tests on
+the VM).

@@ -327,6 +327,11 @@ def creator_readiness(inf: dict, *, channels: list[dict] | None = None,
             "whatsapp": _identifiers(wa_channels),
         },
         "wa_status": session_statuses[0] if session_statuses else "not_paired",
+        # When and by whom: the team's work is stamped, so the admin can see it
+        # in the same tables (and in the exports) without another query.
+        "added_by": str(inf.get("added_by") or ""),
+        "created_at": str(inf.get("created_at") or ""),
+        "created_date": str(inf.get("created_at") or "")[:10],
     }
 
 

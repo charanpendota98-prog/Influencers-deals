@@ -272,6 +272,68 @@ in a backup, so a copy is safe to move to another machine.
   with three example rows (the template is parsed by the same code that imports
   it, so a filled-in spreadsheet always loads).
 
+### 📦 Creator inventory: export EVERYTHING, edit in Excel, paste it back
+
+The owner can take the whole hub out in one click and put it back — with the
+safety of seeing exactly what would change **before** anything is written.
+
+**Export** (one row per creator, 29 columns): `creator_id`, `name`, `added_by`,
+`created_date`, `created_at`, `active`, `ready`, `amazon_tag` + `tag_source`
+(creator / admin / none), the approval / main / WhatsApp channel identifiers,
+`wa_status`, `phone_number`, `mirror_whatsapp` (`yes`/`no`/`inherit`), the four
+money switches (`allow_amazon`, `allow_earnkaro`, `allow_hypd`, `only_amazon`),
+`hypd_store_id`, `categories`, `posting_schedule`, `price_filter`, `notes`,
+`next_step`, `next_action`, the 24h counters (`posts_24h`, `mirrored_24h`,
+`last_post_at`). Every value comes from the same tables the worker posts from,
+so the file and the hub cannot disagree.
+
+```bash
+# the button on /setup (📦 card) and on the console (⬇️ Full inventory (CSV))
+python -m influencer_hub.cli export-inventory --out inventory.csv
+python -m influencer_hub.cli export-inventory --member Ravi --out ravi.csv
+curl -s "http://localhost:5000/api/inventory.csv" -o inventory.csv   # admin only
+```
+
+**Import** — same file, edited in Excel/LibreOffice/Sheets, pasted into the 📦
+card (or uploaded): the hub plans first and shows **line, creator, and
+`field: old → new` for every row**, lists the rows it cannot use with the line
+number and the reason, and only the “✅ Apply the changes” button writes.
+Nothing is ever written from a preview.
+
+```bash
+python -m influencer_hub.cli import-inventory --file inventory.csv            # preview
+python -m influencer_hub.cli import-inventory --file inventory.csv --apply    # write
+python -m influencer_hub.cli import-inventory --file new.csv --create --apply # + new creators
+python -m influencer_hub.cli import-inventory --file inventory.csv --json     # for scripts
+```
+
+A 1001-creator hub exports in ~0.2 s and previews a full edited file in ~0.1 s
+(the hub-wide values — channels, sessions, mirror counts, post activity, the
+mirror default — are read once, not once per creator). The pasted file is kept
+in a **private server-side stash** (mode 0600, three-hour TTL) and only a random
+token travels in the browser session, so a 250 KB spreadsheet cannot bloat or
+break the sign-in cookie; if a preview expires the card says so instead of
+applying nothing.
+
+The rules that make a spreadsheet safe to hand back:
+
+| You write | What happens |
+|---|---|
+| a new value | that one field is updated (validated first) |
+| an **empty** cell | the value is left exactly as it is — an empty spreadsheet column can never wipe data |
+| a single `-` | that field (or channel) is cleared on purpose |
+| `yes` / `no` | the money switches, `active`, mirroring |
+| a name that is not in the hub | reported, and only created when “Add rows whose name is not in the hub yet” (`--create`) is ticked |
+| an unusable Amazon tag | reported with its line number, skipped — a creator is never re-pointed at somebody else's tag |
+| a row it cannot match | reported with its line number, the rest of the batch still applies |
+
+Creators are matched by `creator_id` first (safe when two people share a name),
+then by name. Channels are matched by role, so pasting a channel identifier in
+`whatsapp_channel` pairs that WhatsApp destination exactly where the worker
+looks for it. Every applied row is written to the audit log
+(`creator_updated` / `creator_created` / `inventory_imported` with counts), and
+the result table stays on `/setup` as “Result of the last import”.
+
 ### 🚀 Dashboard: the setup command center
 
 The dashboard home (`/`) is not just counters. Above the metrics it renders a
@@ -425,8 +487,13 @@ PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 \
   python -m influencer_hub.cli add-influencer "Ravi" --tag ravi099-21 --handle @ravi --dummy
 PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 \
   python -m influencer_hub.cli render-demo 1      # shows routing for this profile's saved settings
-PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
+HUB_SKIP_DOTENV=1 PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
 ```
+
+`HUB_SKIP_DOTENV=1` makes the run ignore any provisioned `.env` completely, so
+the suite always exercises plain code defaults — no real Telegram session,
+affiliate key, shortener token or bot credential is touched (the whole suite is
+green this way; see VERIFICATION §1).
 
 ## Production integrations and defaults
 

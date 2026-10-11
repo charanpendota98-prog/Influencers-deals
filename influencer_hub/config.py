@@ -10,16 +10,30 @@ import os
 from pathlib import Path
 
 
-def _load_dotenv() -> None:
+def _dotenv_is_skipped() -> bool:
+    """``HUB_SKIP_DOTENV=1`` means "do not read .env at all".
+
+    Test and audit runs use it so a machine with a provisioned .env still runs
+    with plain code defaults: no real Telegram session, affiliate key,
+    shortener token or bot credential is ever touched.
+    """
+    return os.getenv("HUB_SKIP_DOTENV", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_dotenv(path: "Path | None" = None) -> dict[str, str]:
     """Minimal .env loader (no python-dotenv dependency).
 
     Reads <repo>/.env so `python -m influencer_hub.cli` and the dashboard pick
-    up secrets without manual `export`. Already-set env vars win. Kept out of
-    git via .gitignore.
+    up secrets without manual `export`. Already-set env vars win, and
+    ``HUB_SKIP_DOTENV=1`` skips the file entirely. Kept out of git via
+    .gitignore. Returns the values it actually applied.
     """
-    p = Path(__file__).resolve().parent.parent / ".env"
+    if _dotenv_is_skipped():
+        return {}
+    p = path or Path(__file__).resolve().parent.parent / ".env"
     if not p.exists():
-        return
+        return {}
+    applied: dict[str, str] = {}
     for line in p.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -28,6 +42,8 @@ def _load_dotenv() -> None:
         key, val = key.strip(), val.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = val
+            applied[key] = val
+    return applied
 
 
 _load_dotenv()

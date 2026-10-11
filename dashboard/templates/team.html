@@ -106,13 +106,14 @@
   {% if plan and plan.creators %}
     <table class="table">
       <thead>
-        <tr><th>Creator</th><th>Own Amazon tag</th><th>Ready?</th><th>Next step</th><th>Channels</th></tr>
+        <tr><th>Creator</th><th>Own Amazon tag</th><th>Added on</th><th>Ready?</th><th>Next step</th><th>Channels</th></tr>
       </thead>
       <tbody>
         {% for creator in plan.creators %}
           <tr>
             <td>{{ creator.name }}</td>
             <td><code>{{ creator.amazon_tag }}</code></td>
+            <td class="hint">{{ creator.created_date or '—' }} <span class="hint">{{ creator.created_at[11:16] }}</span></td>
             <td>{{ '✅ ready' if creator.ready else '⏳ not yet' }}</td>
             <td class="hint">{{ creator.next_step.action if creator.next_step else '—' }}</td>
             <td class="hint">

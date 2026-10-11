@@ -1026,3 +1026,6 @@ button[aria-disabled="true"] {
 .ops-bar.is-warn { background: #d97706; }
 .ops-bar.is-bad { background: #dc2626; }
 .ops-chart-key { margin-top: 4px; font-size: .82rem; }
+
+/* Creator directory: when (and by whom) a creator was added. */
+.creator-added { color: #6b7280; font-size: .78rem; }

@@ -11,21 +11,25 @@ git fetch origin arena/3496cf5b-influencers-deals
 git checkout -B arena/3496cf5b-influencers-deals FETCH_HEAD
 ```
 
-## 1. Code tests (services stopped, credentials blanked)
+## 1. Code tests (services stopped, no credential read at all)
 
 ```bash
 TEST_DB="$(mktemp /tmp/influencer-hub-deploy-test.XXXXXX.sqlite3)"
-HUB_ENV=development HUB_DB_PATH="$TEST_DB" \
-TELEGRAM_API_ID="" TELEGRAM_API_HASH="" TELEGRAM_SESSION="" \
-EARNKARO_API_KEY="" BITLY_API_KEY="" AMAZON_CREATORS_API_CLIENT_SECRET="" \
-WA_HUB_TOKEN="" PYTHONPATH=. .venv/bin/python -m pytest -q
+HUB_ENV=development HUB_DB_PATH="$TEST_DB" HUB_SKIP_DOTENV=1 \
+PYTHONPATH=. .venv/bin/python -m pytest -q
 RC=$?; rm -f "$TEST_DB"; echo "pytest exit code: $RC"
 
 cd wa_hub && node --test
 ```
 
-**Expected:** `424 passed` and `# pass 8 / # fail 0`. Nothing in `.env` is read
-for these runs, so no real post, no Telegram login and no affiliate call happens.
+**Expected:** `526 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
+the run ignore the VM's private `.env` entirely (`config._load_dotenv` returns
+before reading the file), so no real Telegram session, affiliate key, shortener
+token or bot credential exists for the duration of the run: no real post, no
+Telegram login and no affiliate call can happen. The alternative “blank every
+credential” form works too, but blanking variables that carry a documented
+default (`TELEGRAM_API_ID`, `AMAZON_CREATORS_API_CLIENT_ID`) also disables those
+defaults, so tests that assert them would fail for the wrong reason.
 
 ## 2. Schema (additive, safe on the live DB)
 
@@ -180,6 +184,43 @@ PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp          # prints the c
    creator, their tag and the channels; `change:<route>` lines name every admin
    edit. If a member cannot sign in, five wrong tries block their IP for 15
    minutes by design — wait, or clear it with the audit card's next attempt.
+
+## 5e. Creator inventory: export everything, edit it, paste it back
+
+```bash
+# 1. one click: every creator as one Excel-ready row (admin only)
+curl -s -b cookies "http://127.0.0.1:5000/api/inventory.csv" -o inventory.csv
+head -1 inventory.csv | tr ',' '\n' | head -8
+#   creator_id name added_by created_date created_at active ready amazon_tag
+
+# 2. the same file on the command line, and a preview of a changed file
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli export-inventory --out inventory.csv
+$EDITOR inventory.csv                     # change one amazon_tag or one notes cell
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli import-inventory --file inventory.csv
+#   rows read: 1001 · would change: 1 · unchanged: 1000 · would create: 0 · cannot apply: 0
+#     line   501 Sneha Loots 50:
+#             amazon_tag: creator0503-21 → brand-new-21
+
+# 3. in the browser: /setup → 📦 Creator inventory → paste/upload → “Preview the
+#    changes” (nothing is written) → “✅ Apply the changes” (writes, audits, and
+#    leaves the per-row result table on the page)
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli import-inventory --file inventory.csv --apply
+```
+
+**Observed on a 1001-creator hub** (branch code, gunicorn on :5000):
+
+| Step | Result |
+|---|---|
+| `GET /api/inventory.csv` | `200`, 258 649 bytes, **0.23 s** (was 18 s before the batch fix) |
+| paste of the edited 256 KB file | preview rendered in **0.15 s**; session cookie **558 bytes** |
+| the same paste before the stash fix | cookie **23 349 bytes** — Werkzeug: *“the cookie is too large … browsers may silently ignore cookies larger than this (4093)”* |
+| “✅ Apply the changes” | `inventory_imported: 1 updated, 0 created, 0 failed, 1000 unchanged` + `creator_updated: inventory import: notes` |
+| a cell set to `-` | clears that field only (`notes` back to empty) |
+| team member on `/api/inventory.csv` | `403 admin_only` (export is the owner's door) |
+
+Nothing in this flow sends a message, touches a channel or changes a tag
+without the owner pressing Apply: the preview is a pure plan
+(`inventory.plan_import` writes nothing).
 
 ## 6. If a check is not green
 

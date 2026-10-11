@@ -600,6 +600,7 @@ def maybe_alert(report: dict | None, *, send: Callable[[str], Any] | None = None
 # --------------------------------------------------------------------------
 READINESS_COLUMNS = [
     "creator_id", "creator", "active", "ready", "amazon_tag", "tag_source",
+    "added_by", "created_date", "created_at",
     "approval_channel", "main_channel", "whatsapp_channel", "wa_status",
     "next_step", "next_action", "mirror_active", "mirrored_posts_24h",
     "warnings", "setup_step",
@@ -622,6 +623,9 @@ def readiness_csv(plan: dict) -> str:
             "yes" if creator.get("ready") else "no",
             creator.get("amazon_tag"),
             creator.get("tag_source"),
+            creator.get("added_by", ""),
+            creator.get("created_date", ""),
+            creator.get("created_at", ""),
             channels.get("approval", ""),
             channels.get("main", ""),
             channels.get("whatsapp", ""),

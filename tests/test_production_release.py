@@ -2,12 +2,36 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sqlite3
 from unittest.mock import AsyncMock
 
 
 from influencer_hub import config, db, link_router, pipeline, puller, telegram_ops, worker
+
+
+def test_the_test_run_can_skip_the_dotenv_entirely(tmp_path, monkeypatch):
+    """The documented sanitized command reads no secret at all.
+
+    With ``HUB_SKIP_DOTENV=1`` a provisioned machine runs the suite on plain
+    code defaults, so the blanked-credential form is not the only safe option.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("HUB_TEST_SKIPPED_KEY=from-file\nHUB_TEST_KEPT_KEY=from-file\n")
+    monkeypatch.delenv("HUB_TEST_SKIPPED_KEY", raising=False)
+    monkeypatch.setenv("HUB_TEST_KEPT_KEY", "already-here")
+
+    monkeypatch.setenv("HUB_SKIP_DOTENV", "1")
+    assert config._load_dotenv(env_file) == {}
+    assert "HUB_TEST_SKIPPED_KEY" not in os.environ           # nothing was read
+    assert os.environ["HUB_TEST_KEPT_KEY"] == "already-here"
+
+    monkeypatch.delenv("HUB_SKIP_DOTENV")
+    applied = config._load_dotenv(env_file)
+    assert applied == {"HUB_TEST_SKIPPED_KEY": "from-file"}   # the file is read again
+    assert os.environ["HUB_TEST_KEPT_KEY"] == "already-here"  # a real value still wins
+    monkeypatch.delenv("HUB_TEST_SKIPPED_KEY", raising=False)
 
 
 def test_official_defaults_and_compact_amazon_link():

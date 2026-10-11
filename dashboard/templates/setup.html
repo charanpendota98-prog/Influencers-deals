@@ -456,6 +456,9 @@
         <span class="creator-directory-info">
           <strong>{{ creator.name }}</strong>
           <small>{{ creator.amazon_tag or 'Amazon tag not set' }}{% if entry and entry.tag_is_shared_default %} ⚠ shared default tag{% endif %}</small>
+          <small class="creator-added">
+            Added {{ (creator.created_at or '')[:10] or 'unknown date' }}{% if creator.added_by %} by {{ creator.added_by }}{% endif %}
+          </small>
           {% if entry %}
             <small class="creator-next">
               {% if entry.ready %}✅ ready · {{ entry.done_count }}/{{ entry.total_count }} steps{% if entry.mirror_active %} · 🔁 mirror on{% endif %}
@@ -491,6 +494,127 @@
 </section>
 
 <!-- 🧪 REAL-TIME INTERACTIVE DEAL CONVERSION SIMULATOR & TESTER -->
+{% if inventory_card %}
+<section class="card" style="border: 2px solid #7c3aed; padding: 18px 20px; border-radius: 12px; margin-top: 24px;"
+         id="inventory">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div>
+      <h2 style="margin:0;">📦 Creator inventory — export everything, edit in Excel, paste back</h2>
+      <p class="hint">
+        One row per creator with <strong>everything</strong>: when they were added and by whom, their
+        own Amazon tag (and where it came from), the approval / main / WhatsApp destinations with ids
+        and status, the phone, the money switches, filters, schedule and how each one is doing.
+        Edit the file and paste it back below — the hub shows exactly what would change before anything is written.
+      </p>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <a class="btn btn-primary" href="{{ url_for('api_inventory_csv') }}">⬇️ Export everything (CSV)</a>
+      <a class="btn btn-secondary" href="{{ url_for('api_readiness_csv') }}">⬇️ Checklist only</a>
+    </div>
+  </div>
+
+  <p class="hint">
+    {{ inventory_card.total }} creator(s) ·
+    {% if inventory_card.team_added %}{{ inventory_card.team_added }} added by the team
+      ({% for member, count in inventory_card.team_counts.items() %}{{ member }}: {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}) ·
+    {% endif %}
+    {{ inventory_card.columns|length }} columns ·
+    editable: {{ inventory_card.editable|join(', ') }}.
+    <br>Empty cell = “leave it alone”. A single <code>-</code> = “clear this” (so a network can be
+    switched off or a channel removed). Rows are matched by <code>creator_id</code> first, name second.
+  </p>
+
+  {% if inventory_card.preview and inventory_card.preview.expired %}
+    <div class="alert alert-warning" role="status" style="margin:8px 0;">
+      ⏳ That preview expired — paste the file again and press “Preview the changes”.
+    </div>
+  {% elif inventory_card.preview %}
+    <h3 style="margin-bottom:6px;">🔎 Preview of the file you pasted</h3>
+    {% if inventory_card.preview.error %}
+      <div class="alert alert-error">That file could not be read: {{ inventory_card.preview.error }}</div>
+    {% else %}
+      <p class="hint">
+        {{ inventory_card.preview.changed }} row(s) would change ·
+        {{ inventory_card.preview.unchanged }} already match
+        {% if inventory_card.preview.created %} · {{ inventory_card.preview.created }} would be created{% endif %}
+        {% if inventory_card.preview.issues %} · ⚠ {{ inventory_card.preview.issues|length }} row(s) cannot be applied{% endif %}.
+      </p>
+      {% if inventory_card.preview.operations %}
+        <table class="table">
+          <thead><tr><th>Line</th><th>Creator</th><th>Change</th></tr></thead>
+          <tbody>
+            {% for op in inventory_card.preview.operations %}
+              <tr>
+                <td class="hint">{{ op.line }}</td>
+                <td>{{ op.name }}{% if op.create %} <span class="pill">new</span>{% endif %}</td>
+                <td class="hint">
+                  {% if op.edits %}
+                    {% for edit in op.edits %}
+                      <div><code>{{ edit.field }}</code>:
+                        {% if edit.from %}<s>{{ edit.from }}</s> → {% endif %}{{ edit.to }}</div>
+                    {% endfor %}
+                  {% else %}{{ op.detail or '—' }}{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+      {% if inventory_card.preview.issues %}
+        <details class="easy-advanced" open>
+          <summary>Rows that cannot be applied ({{ inventory_card.preview.issues|length }})</summary>
+          <ul class="hint">
+            {% for issue in inventory_card.preview.issues %}
+              <li>line {{ issue.line }} · {{ issue.name }}: {{ issue.detail }}</li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
+      <form method="post" action="{{ url_for('setup_inventory_import') }}" style="margin:10px 0;">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+        <input type="hidden" name="apply" value="1" />
+        <input type="hidden" name="create_missing" value="{{ '1' if session.get('inventory_plan_create') else '' }}" />
+        <button type="submit" class="button-primary">✅ Apply the changes</button>
+      </form>
+    {% endif %}
+  {% endif %}
+
+  {% if inventory_card.last_report %}
+    <details class="easy-advanced" open>
+      <summary>Result of the last import ({{ inventory_card.last_report|length }} row(s))</summary>
+      <table class="table">
+        <thead><tr><th>Creator</th><th>Status</th><th>Change</th></tr></thead>
+        <tbody>
+          {% for row in inventory_card.last_report %}
+            <tr>
+              <td>{{ row.name }}</td>
+              <td>{{ {'updated': '✏️ updated', 'created': '➕ created', 'unchanged': '↺ unchanged', 'failed': '⛔ failed'}.get(row.status, row.status) }}</td>
+              <td class="hint">{{ row.detail or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('setup_inventory_import') }}" enctype="multipart/form-data" class="auth-form" style="margin-top:10px;">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+    <label for="inventory_lines">Paste the edited inventory (or choose the CSV file)</label>
+    <textarea id="inventory_lines" name="inventory_lines" rows="5"
+              placeholder="creator_id,name,added_by,created_date,…  ← paste the exported file here (with its header row)"></textarea>
+    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:6px;">
+      <input type="file" name="inventory_file" accept=".csv,text/csv" />
+      <label style="display:flex; gap:6px; align-items:center;">
+        <input type="checkbox" name="create_missing" value="1" />
+        Add rows whose name is not in the hub yet
+      </label>
+      <button type="submit" class="btn btn-secondary">🔎 Preview the changes</button>
+    </div>
+    <p class="hint" style="margin-top:4px;">Preview first: nothing is written until you press “Apply the changes”.</p>
+  </form>
+</section>
+{% endif %}
+
 {% if team_access %}
 <section class="card" style="border: 2px solid #0f766e; padding: 18px 20px; border-radius: 12px; margin-top: 24px;"
          id="team-access">

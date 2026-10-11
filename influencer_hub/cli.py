@@ -17,6 +17,8 @@ Examples
   python -m influencer_hub.cli digest --send
   python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --fleet   # every creator, own tag
   python -m influencer_hub.cli amazon-scan --report --check               # what we really sent
+  python -m influencer_hub.cli export-inventory --out /tmp/hub-creators.csv
+  python -m influencer_hub.cli import-inventory --file /tmp/hub-creators.csv --apply
   python -m influencer_hub.cli totp --new        # admin two-factor secret for the authenticator app
   python -m influencer_hub.cli snapshot          # one row of history per day
   python -m influencer_hub.cli backup --out /var/backups/hub --keep 14
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -561,6 +564,68 @@ def _cmd_digest(args):
     return 0 if not error else 1
 
 
+def _cmd_export_inventory(args):
+    """Write the whole creator inventory (with dates and channels) to a file."""
+    from . import inventory
+
+    text = inventory.csv_text(member=args.member or "")
+    if args.out:
+        Path(args.out).expanduser().write_text(text, encoding="utf-8")
+        rows = len(text.strip().splitlines()) - 1
+        print(f"wrote {rows} creator(s) to {args.out}")
+        print("columns: " + ", ".join(inventory.COLUMNS))
+    else:
+        print(text, end="")
+    return 0
+
+
+def _cmd_import_inventory(args):
+    """Preview an edited inventory file, or apply it with --apply."""
+    from . import inventory
+
+    try:
+        text = Path(args.file).expanduser().read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"could not read {args.file}: {exc}")
+        return 1
+    try:
+        plan = inventory.plan_import(text, create=args.create)
+    except Exception as exc:
+        print(f"that file could not be read: {exc}")
+        return 1
+    if args.json:
+        payload = {key: plan[key] for key in
+                   ("records", "changed", "created", "unchanged", "issues")}
+        payload["edits"] = [{"line": op["line"], "name": op["name"], "create": op["create"],
+                             "edits": inventory.edits(op)}
+                            for op in plan["operations"]
+                            if op["changes"] or op["channels"] or op["create"]]
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"rows read: {plan['records']} · would change: {plan['changed']} "
+              f"· unchanged: {plan['unchanged']} · would create: {plan['created']} "
+              f"· cannot apply: {len(plan['issues'])}")
+        for op in plan["operations"]:
+            if op["changes"] or op["channels"] or op["create"]:
+                print(f"  line {op['line']:>5} {op['name']}"
+                      + (" [new]" if op["create"] else "") + ":")
+                for edit in inventory.edits(op):
+                    was = f"{edit['from']} → " if edit["from"] else ""
+                    print(f"          {edit['field']}: {was}{edit['to']}")
+        for issue in plan["issues"][:20]:
+            print(f"  ! line {issue['line']} {issue['name']}: {issue['detail']}")
+    if not args.apply:
+        if not args.json:
+            print("preview only — run again with --apply to write the changes.")
+        return 0
+    report = inventory.apply_import(plan, actor=args.actor or "admin")
+    print("applied: " + inventory.render_report(report))
+    for row in report["results"]:
+        if row["status"] == "failed":
+            print(f"  ⛔ {row['name']}: {row['detail']}")
+    return 0 if not report["failed"] else 1
+
+
 def _cmd_totp(args):
     """Create or verify the admin two-factor secret (RFC 6238 TOTP)."""
     import time as _time
@@ -920,6 +985,21 @@ def build_parser() -> argparse.ArgumentParser:
     dg.add_argument("--send", action="store_true", help="post the card to OPS_TELEGRAM_CHANNEL")
     dg.add_argument("--json", action="store_true", help="machine-readable output")
     dg.set_defaults(func=_cmd_digest)
+
+    ex = sub.add_parser("export-inventory",
+                        help="write every creator (date added, channels, ids, settings) as CSV")
+    ex.add_argument("--out", default="", help="file to write (default: print to stdout)")
+    ex.add_argument("--member", default="", help="only the creators one team member added")
+    ex.set_defaults(func=_cmd_export_inventory)
+
+    im = sub.add_parser("import-inventory",
+                        help="apply an edited inventory file (preview by default)")
+    im.add_argument("--file", required=True, help="the edited CSV")
+    im.add_argument("--apply", action="store_true", help="write the changes (default: preview)")
+    im.add_argument("--create", action="store_true", help="also create rows not in the hub yet")
+    im.add_argument("--actor", default="admin", help="name recorded in the audit log")
+    im.add_argument("--json", action="store_true", help="machine-readable preview")
+    im.set_defaults(func=_cmd_import_inventory)
 
     tp = sub.add_parser(
         "totp",

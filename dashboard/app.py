@@ -37,8 +37,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
-    amazon_shortlinks, amazon_watch, config, db, hypd_shortlinks, lehlah_shortlinks,
-    link_router, ops, security,
+    amazon_shortlinks, amazon_watch, config, db, hypd_shortlinks, inventory,
+    lehlah_shortlinks, link_router, ops, security,
     polls, pipeline, puller, readiness, selfcheck, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
@@ -1602,6 +1602,107 @@ def api_digest():
     return jsonify(data)
 
 
+@app.route("/api/inventory.csv")
+def api_inventory_csv():
+    """Everything about every creator — one click, one spreadsheets.
+
+    Admin-only by the same route guard as the rest of the console: this file has
+    phone numbers, tags and settings, so it is never something the add-only team
+    session can pull.
+    """
+    member = (request.args.get("member") or "").strip()
+    try:
+        body = inventory.csv_text(member=member)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+    filename = "creator-inventory.csv" if not member else "creator-inventory-team.csv"
+    security.audit(_session_actor(), _session_role(), "inventory_exported",
+                   target=member or "all", detail=f"{len(body.splitlines()) - 1} row(s)",
+                   ip=_client_ip())
+    return Response(
+        body,
+        content_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.route("/setup/inventory/import", methods=["POST"])
+def setup_inventory_import():
+    """Apply an edited inventory file: preview first, then one click to apply."""
+    actor = _session_actor()
+    raw = request.form.get("inventory_lines", "")
+    upload = request.files.get("inventory_file")
+    if upload and upload.filename:
+        try:
+            raw = upload.stream.read().decode("utf-8", errors="ignore")
+        except Exception as exc:  # pragma: no cover - unreadable upload
+            flash(f"⚠ Could not read the uploaded file: {exc}", "error")
+            return redirect(url_for("setup") + "#inventory")
+    apply_now = str(request.form.get("apply", "")).strip().lower() in {"1", "on", "yes"}
+    if not str(raw or "").strip() and apply_now:
+        # "Apply the changes" only sends the button: the file being applied is
+        # the one the preview above was built from, read back from its stash.
+        raw = inventory.stash_read(str(session.get("inventory_plan_token") or ""))
+        if not str(raw or "").strip():
+            flash("That preview has expired — paste the file again and press Preview.",
+                  "warning")
+            return redirect(url_for("setup") + "#inventory")
+    if not str(raw or "").strip():
+        flash("Paste the inventory file (or choose a CSV) and try again.", "warning")
+        return redirect(url_for("setup") + "#inventory")
+
+    marked = str(request.form.get("create_missing", "")).strip().lower() in {"1", "on", "yes"}
+    create_missing = marked or (apply_now and bool(session.get("inventory_plan_create")))
+    try:
+        plan = inventory.plan_import(raw, create=create_missing)
+    except Exception as exc:
+        flash(f"⚠ That file could not be read: {exc}", "error")
+        return redirect(url_for("setup") + "#inventory")
+
+    if not apply_now:
+        # A 1000-creator file is ~250 KB: far past what a browser keeps in a
+        # cookie, so the file itself stays in a private server-side stash and
+        # only its token travels in the session.
+        token = inventory.stash_write(str(raw))
+        if not token:
+            flash("⚠ That file is too large to preview (limit 8 MB). Split it and try again.",
+                  "error")
+            return redirect(url_for("setup") + "#inventory")
+        session["inventory_plan_token"] = token
+        session["inventory_plan_create"] = bool(create_missing)
+        session["inventory_plan_preview"] = {
+            "changed": plan["changed"], "created": plan["created"],
+            "unchanged": plan["unchanged"], "issues": plan["issues"][:20],
+        }
+        flash(f"🔎 Preview only — {plan['changed']} row(s) would change"
+              + (f", {plan['created']} would be created" if plan["created"] else "")
+              + (f", {len(plan['issues'])} row(s) cannot be applied" if plan["issues"] else "")
+              + ". Press “Apply the changes” to write them.", "success")
+        return redirect(url_for("setup") + "#inventory")
+
+    if not plan["changed"]:
+        flash("Nothing to do: the file matches the hub exactly (no row changed).", "success")
+        return redirect(url_for("setup") + "#inventory")
+
+    report = inventory.apply_import(plan, actor=actor, ip=_client_ip())
+    # The rows that really happened first: a 1000-row file must never bury the
+    # one edit the owner made under sixty "unchanged" lines.
+    interesting = [row for row in report["results"] if row["status"] != "unchanged"]
+    session["inventory_last_report"] = (interesting
+                                       + [row for row in report["results"]
+                                          if row["status"] == "unchanged"])[:60]
+    session.pop("inventory_plan_token", None)
+    session.pop("inventory_plan_preview", None)
+    security.audit(actor, _session_role(), "inventory_imported",
+                   detail=f"{report['updated']} updated, {report['created']} created, "
+                          f"{report['failed']} failed, {report['unchanged']} unchanged",
+                   ip=_client_ip())
+    flash("✅ " + inventory.render_report(report)
+          + (f" · {len(plan['issues'])} row(s) skipped" if plan["issues"] else ""),
+          "success" if not report["failed"] else "warning")
+    return redirect(url_for("setup") + "#inventory")
+
+
 @app.route("/api/amazon-report")
 def api_amazon_report():
     """Amazon attribution in the posts we really sent (read-only)."""
@@ -1712,7 +1813,51 @@ def setup():
         imported=request.args.get("imported", type=int),
         import_error=request.args.get("import_error", ""),
         team_access=_team_access_snapshot(),
+        inventory_card=_inventory_snapshot(),
     )
+
+
+def _inventory_snapshot() -> dict:
+    """The export/import card on /setup: what would change, and the last report."""
+    preview = None
+    plan_text = inventory.stash_read(str(session.get("inventory_plan_token") or ""))
+    if session.get("inventory_plan_token") and not plan_text:
+        preview = {"expired": True}
+    if plan_text:
+        try:
+            plan = inventory.plan_import(plan_text,
+                                         create=bool(session.get("inventory_plan_create")))
+            preview = {
+                "changed": plan["changed"], "unchanged": plan["unchanged"],
+                "created": plan["created"], "issues": plan["issues"][:20],
+                "operations": [{
+                    "line": op["line"], "name": op["name"],
+                    "detail": ", ".join(sorted(list(op["changes"]) + list(op["channels"]))),
+                    "create": op["create"],
+                    "edits": inventory.edits(op),
+                } for op in plan["operations"] if op["changes"] or op["channels"] or op["create"]][:40],
+            }
+        except Exception as exc:  # pragma: no cover - display only
+            preview = {"error": str(exc)[:200]}
+    try:
+        team_counts = {
+            member: len(db.list_influencers(added_by=member))
+            for member in {str(row.get("actor") or "") for row in db.list_audit(limit=200)
+                           if row.get("role") == security.TEAM and row.get("action") == "creator_added"}
+            if member
+        }
+        total = len(db.list_influencers())
+    except Exception:  # pragma: no cover - display only
+        team_counts, total = {}, 0
+    return {
+        "columns": inventory.COLUMNS,
+        "editable": sorted(inventory.EDITABLE),
+        "preview": preview,
+        "last_report": session.get("inventory_last_report"),
+        "total": total,
+        "team_counts": dict(sorted(team_counts.items())),
+        "team_added": sum(team_counts.values()),
+    }
 
 
 def _team_access_snapshot() -> dict:
