@@ -69,7 +69,7 @@ def _parse_iso(value: str) -> datetime | None:
 # --------------------------------------------------------------------------
 # Digest
 # --------------------------------------------------------------------------
-def digest(*, hours: int = 24, plan: dict | None = None,
+def digest(*, hours: int = 24, plan: dict | None = None, influencers: list[dict] | None = None,
            report: dict | None = None, insights: dict | None = None,
            sources: list[dict] | None = None,
            heartbeat: dict | None = None,
@@ -175,6 +175,15 @@ def digest(*, hours: int = 24, plan: dict | None = None,
     except Exception:  # pragma: no cover - display only
         top_creators = []
 
+    # Whose Amazon tag is on the posts we really sent? This is the promise to
+    # every creator, so the ops card carries the proof, not just the counts.
+    try:
+        from . import amazon_watch
+
+        amazon = amazon_watch.attribution_report(hours=hours, limit=300, influencers=influencers)
+    except Exception:  # pragma: no cover - display only
+        amazon = None
+
     return {
         "generated_at": now.isoformat(timespec="seconds"),
         "hours": hours,
@@ -211,6 +220,7 @@ def digest(*, hours: int = 24, plan: dict | None = None,
             "summary": (report or {}).get("summary", {}),
         },
         "delivery_rate_pct": (insights or {}).get("delivery_rate_pct"),
+        "amazon": amazon,
         "trend": trend(days=7, now=now),
     }
 
@@ -248,6 +258,14 @@ def render_digest(data: dict) -> str:
     top = creators.get("top") or []
     if top and top[0].get("posted"):
         lines.append(f"Top creator: {top[0]['name']} ({top[0]['posted']} posted)")
+
+    amazon = data.get("amazon") or {}
+    if amazon.get("links"):
+        amazon_line = (f"Amazon: {amazon.get('own_tag', 0)} link(s) with the creator's own tag"
+                       f" in {amazon.get('posts_with_amazon', 0)} post(s)")
+        if amazon.get("foreign_tag"):
+            amazon_line += f" · ⛔ {amazon['foreign_tag']} foreign"
+        lines.append(amazon_line)
 
     failures = posts.get("top_failures") or []
     if failures:

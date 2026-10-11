@@ -129,6 +129,33 @@ PYTHONPATH=. .venv/bin/python -m influencer_hub.cli restore /var/backups/hub/hub
 PYTHONPATH=. .venv/bin/python -m influencer_hub.cli restore /var/backups/hub/hub-20261011-023000.sqlite3 --yes    # keeps the old file as *.pre-restore-*
 ```
 
+## 5c. Prove each creator's Amazon tag (the promise to them)
+
+```bash
+# 1. what the sources carry: paste/point at a real source post
+cat > /tmp/post.txt <<'EOF'
+boAt Airdopes 141 at ₹999
+Buy: https://www.amazon.in/dp/B09N3ZNHTY/ref=x?tag=someoneelse-21
+Short: https://amzn.to/3xYzAbC
+EOF
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli amazon-scan --file /tmp/post.txt
+
+# 2. every creator, in one pass: the fleet must be ALL own tags (exit 1 otherwise)
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --fleet --check
+
+# 3. one creator, exactly what their channel would receive
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --creator 1
+
+# 4. after the worker has posted: read the messages we really sent
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli amazon-scan --report --hours 48 --check
+```
+
+Step 4 must print every Amazon link with its creator's own tag, and `--check`
+must exit 0. A link carrying someone else's tag fails the check *and* the
+dashboard self-check ("Amazon links in real posts"), naming the creator, the
+tag found and the tag expected. The same numbers are at `GET /api/amazon-report`
+and on the 📈 Ops digest card.
+
 ## 6. If a check is not green
 
 The panel names the fix. The short versions:

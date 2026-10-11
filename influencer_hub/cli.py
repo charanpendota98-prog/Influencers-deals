@@ -15,6 +15,8 @@ Examples
   python -m influencer_hub.cli self-check --live
   python -m influencer_hub.cli self-check --alert        # only when it got worse
   python -m influencer_hub.cli digest --send
+  python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --fleet   # every creator, own tag
+  python -m influencer_hub.cli amazon-scan --report --check               # what we really sent
   python -m influencer_hub.cli snapshot          # one row of history per day
   python -m influencer_hub.cli backup --out /var/backups/hub --keep 14
   python -m influencer_hub.cli restore /var/backups/hub/hub-20261011-0900.sqlite3 --yes
@@ -24,6 +26,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 
 from . import db, link_router, vm_watch
 from . import config
@@ -640,6 +643,105 @@ def _cmd_restore(args):
     return 0
 
 
+def _cmd_amazon_scan(args):
+    """What Amazon links a source carries, and whose tag each creator's post gets."""
+    import json as _json
+
+    from . import amazon_watch, db, link_router
+
+    text = args.text or ""
+    if args.file:
+        try:
+            text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"could not read {args.file}: {exc}")
+            return 1
+    payload: dict = {}
+
+    if args.report:
+        payload["report"] = amazon_watch.attribution_report(hours=args.hours,
+                                                            limit=args.limit or 500)
+    if text:
+        payload["scan"] = amazon_watch.scan(text)
+        if args.creator:
+            inf = db.get_influencer(args.creator)
+            if not inf:
+                print(f"unknown creator id {args.creator}")
+                return 1
+            payload["plan"] = amazon_watch.plan(text, tag=inf.get("amazon_tag") or "", role=args.role)
+            payload["plan"]["creator"] = inf.get("name")
+        elif args.fleet or args.check:
+            payload["fleet"] = amazon_watch.fleet_plan(
+                text, db.list_influencers(), role=args.role, limit=args.limit or 1000,
+            )
+    if not payload:
+        print("nothing to do: pass --text/--file (what the source carries), --report (what we sent), or both")
+        return 2
+
+    check_failures: list[str] = []
+    if args.check:
+        if "report" in payload and not payload["report"]["ok"]:
+            check_failures.append("a post carried someone else's tag")
+        if "fleet" in payload and not payload["fleet"]["all_own_tags"]:
+            check_failures.append("a creator would post with a tag that is not their own")
+        if "plan" in payload and not payload["plan"]["ok"]:
+            check_failures.append("the rendered post has an Amazon link problem")
+        payload["check"] = {
+            "ok": not check_failures,
+            "problems": check_failures,
+            "message": ("check passed: every Amazon link is signed with the creator's own tag."
+                        if not check_failures else "check failed: " + "; ".join(check_failures)),
+        }
+
+    if args.json:
+        print(_json.dumps(payload, indent=2))
+    else:
+        if "scan" in payload:
+            scan = payload["scan"]
+            if not scan["has_amazon"]:
+                print("Amazon links in this source post: none.")
+            else:
+                print(f"Amazon links in this source post: {len(scan['links'])} "
+                      f"({', '.join(f'{count} {kind}' for kind, count in sorted(scan['counts'].items()))})")
+                for link in scan["links"]:
+                    whose = f"  [source tag: {link['source_tag']}]" if link["source_tag"] else ""
+                    asin = f" ASIN {link['asin']}" if link["asin"] else ""
+                    print(f"  • {link['kind']:7}{asin} → {link['action']}{whose}")
+                    print(f"      {link['url']}")
+                    print(f"      {link['action_text']}")
+        if "plan" in payload:
+            plan = payload["plan"]
+            print(f"\n{plan['creator']} → tag {plan['effective_tag']}"
+                  + ("" if plan.get("usable_tag") else " (fallback: their tag is not usable)"))
+            print(plan["rendered"])
+            if plan["issues"]:
+                print("\nnotes:")
+                for issue in plan["issues"]:
+                    print(f"  ! {issue}")
+        if "fleet" in payload:
+            fleet = payload["fleet"]
+            verdict = "every creator gets their OWN tag" if fleet["all_own_tags"] else "PROBLEMS"
+            print(f"\nfleet: {fleet['creators']} creator(s), {fleet['own_tag']} with their own tag "
+                  f"· {fleet['fallback_or_missing']} fallback/missing · {fleet['ms']}ms — {verdict}")
+            for detail in fleet["details"]:
+                print(f"  ! {detail['creator']} ({detail['tag'] or 'no tag'}) → "
+                      f"effective {detail['effective_tag']}, tags found {detail['tags_found']}")
+        if "report" in payload:
+            report = payload["report"]
+            print("\n" + amazon_watch.render_report(report))
+            for problem in report["problems"]:
+                print(f"  ⛔ {problem['creator']}: {problem['url']} carries "
+                      f"{problem['found_tag']!r}, expected {problem['expected_tag']!r}")
+            for example in report["examples"][:3]:
+                print(f"  · {example['creator']}: {', '.join(example['links'])[:120]}")
+
+    if args.check:
+        if not args.json:
+            print(payload["check"]["message"])
+        return 0 if payload["check"]["ok"] else 1
+    return 0
+
+
 def _cmd_amazon_items(args):  # pragma: no cover - requires configured Amazon credentials
     """Fetch product details from the official Amazon Creators API."""
     import json
@@ -713,6 +815,25 @@ def build_parser() -> argparse.ArgumentParser:
     ve = sub.add_parser("verify-earnkaro", help="live test conversion against EarnKaro API")
     ve.add_argument("--url", default="https://www.flipkart.com/p/itmEXAMPLE12345")
     ve.set_defaults(func=_cmd_verify_earnkaro)
+
+    aw = sub.add_parser(
+        "amazon-scan",
+        help="what Amazon links a source carries, whose tag each creator's post gets (read-only)",
+    )
+    aw.add_argument("--text", default="", help="the source post text")
+    aw.add_argument("--file", default="", help="read the source post from a file instead")
+    aw.add_argument("--creator", type=int, default=0, help="show the rendered post for one creator")
+    aw.add_argument("--fleet", action="store_true", help="check every creator gets their own tag")
+    aw.add_argument("--report", action="store_true",
+                    help="audit the posts we really sent in the last --hours")
+    aw.add_argument("--hours", type=int, default=24, help="window for --report (default 24)")
+    aw.add_argument("--limit", type=int, default=0, help="cap creators/posts inspected")
+    aw.add_argument("--role", default="broadcast", choices=["broadcast", "whatsapp", "approval"],
+                    help="render as this kind of channel (default broadcast)")
+    aw.add_argument("--check", action="store_true",
+                    help="exit 1 when any Amazon link would go out without the creator's own tag")
+    aw.add_argument("--json", action="store_true", help="machine-readable output")
+    aw.set_defaults(func=_cmd_amazon_scan)
 
     amz = sub.add_parser("amazon-items", help="look up ASINs with Amazon Creators API")
     amz.add_argument("asins", nargs="+", help="one to ten Amazon ASINs")

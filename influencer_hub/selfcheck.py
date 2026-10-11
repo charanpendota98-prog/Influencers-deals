@@ -11,6 +11,8 @@ trusting a hub with a creator's money:
 * is the WhatsApp hub reachable, and how many creators still need a phone?
 * is the daily history being written (that is what the trend line and the
   7-day view read)?
+* do the posts we really sent carry each creator's own Amazon tag (a link with
+  someone else's tag pays the wrong person)?
 * which creators are ready to post, which are blocked, and is anything still
   signed with the shared Amazon tag?
 
@@ -306,6 +308,49 @@ def _dashboard_check() -> dict:
                   "Admin password is set and the session cookie is production-grade.")
 
 
+def _amazon_links_check() -> dict:
+    """The promise to every creator: their own Associates tag on every link."""
+    from . import amazon_watch
+
+    report = amazon_watch.attribution_report(hours=48, limit=300)
+    if not report["posts_with_amazon"]:
+        return _check(
+            "amazon_links", "Amazon links in real posts", SKIP,
+            f"No Amazon post in the last 48h to check ({report['posts_scanned']} post(s) read).",
+            "Nothing to fix — this check reads the deals that were actually sent.",
+        )
+    if report["foreign_tag"]:
+        first = report["problems"][0]
+        return _check(
+            "amazon_links", "Amazon links in real posts", FAIL,
+            f"{report['foreign_tag']} of {report['links']} Amazon link(s) carried a tag that "
+            f"is not the creator's — e.g. {first['creator']} got '{first['found_tag']}' "
+            f"instead of '{first['expected_tag']}'.",
+            "That link pays someone else for this creator's subscribers. Check where it came "
+            "from: a long Amazon link is retagged automatically, but an opaque amzn.to/a.co "
+            "short code is only re-signed at send time — resolve it or ask the source to post "
+            "the long product link.",
+        )
+    detail = (f"{report['own_tag']} of {report['links']} Amazon link(s) in "
+              f"{report['posts_with_amazon']} post(s) carry the creator's own tag.")
+    if report["untagged"]:
+        return _check(
+            "amazon_links", "Amazon links in real posts", WARN,
+            detail + f" {report['untagged']} link(s) carry no tag at all.",
+            "An untagged Amazon link pays nobody. If the source wrote it that way, the hub "
+            "adds the creator's tag when it lands on a /dp/ product page — check those posts.",
+        )
+    if report["short_links"]:
+        return _check(
+            "amazon_links", "Amazon links in real posts", WARN,
+            detail + f" {report['short_links']} were short codes (amzn.to/a.co).",
+            "A short code decides its own attribution. The hub tries to resolve it before "
+            "sending; where it could not, prefer sources that post the long link.",
+        )
+    return _check("amazon_links", "Amazon links in real posts", OK,
+                  detail + " Every one is signed with its creator's own tag.")
+
+
 def _history_check() -> dict:
     """The daily snapshot is what turns "how is it now" into a trend."""
     if not db.snapshot_table_exists():
@@ -414,6 +459,7 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
         _guard("creators", "Creator readiness", lambda: _creators_check(plan)),
         _guard("mirror", "Main → WhatsApp mirror", lambda: _mirror_check(plan)),
         _guard("history", "Ops history", _history_check),
+        _guard("amazon_links", "Amazon links in real posts", _amazon_links_check),
         _guard("whatsapp", "WhatsApp hub", lambda: _whatsapp_check(live)),
     ]
     worst = max((_STATE_ORDER.get(check["state"], 0) for check in checks), default=0)

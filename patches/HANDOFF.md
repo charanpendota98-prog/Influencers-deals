@@ -706,3 +706,35 @@ quiet reasons ("not green yet — the next message is held for 2h 21m").
 
 Tests: `tests/test_ops_advanced.py` (17) + the updated `tests/test_ops_digest.py`
 (12) and `tests/test_self_check.py` (10). Full suite: 463 passed.
+
+---
+
+## 12. This session, part 7: the Amazon watcher
+
+`influencer_hub/amazon_watch.py` (read-only, no network, no writes):
+
+* `scan(text)` — every Amazon link in a source post with its shape
+  (`product` / `short` / `search` / `store`), ASIN, marketplace, the tag already
+  on it (the *source's* tag) and the planned action (`retag`, `resolve`,
+  `carry`). Scheme-less links are promoted first, exactly like the pipeline
+  does, so they are never missed.
+* `plan(text, tag, role)` — one creator's rendered post plus per-link checks;
+  `fleet_plan(text, influencers)` — the same for every creator in one pass
+  (pure text, ~0.8 s for 1000 creators, zero writes) and `all_own_tags`.
+* `attribution_report(hours)` — reads `posts.deal_text` for the posts that were
+  really sent and counts links by whose tag they carry: `own_tag`,
+  `foreign_tag` (a leak, with creator/tag/URL named), `untagged`, `short_links`.
+* `render_report(data)` — one plain line for the ops card.
+
+Surfaces: `cli amazon-scan` (`--text/--file`, `--creator`, `--fleet`,
+`--report`, `--hours`, `--role`, `--check`, `--json`; exit 1 when `--check`
+fails), `GET /api/amazon-report?hours=`, `GET /api/amazon-scan?text=&creator=`
+`&fleet=`, a live line + a paste-and-scan block on the ops card, the digest's
+`amazon` section (with a card line) and the twelfth self-check
+("Amazon links in real posts": FAIL on a foreign tag, WARN on untagged links or
+short codes, SKIP when nothing was sent yet).
+
+Two CLI bugs found while testing: `--limit 0` read zero posts (0 now means the
+default cap), and `--json --check` mixed the verdict line into the JSON.
+
+Tests: `tests/test_amazon_watch.py` (15). Full suite: 478 passed.

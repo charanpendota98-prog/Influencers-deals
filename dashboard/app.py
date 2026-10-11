@@ -37,7 +37,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
-    amazon_shortlinks, config, db, hypd_shortlinks, lehlah_shortlinks, link_router, ops,
+    amazon_shortlinks, amazon_watch, config, db, hypd_shortlinks, lehlah_shortlinks,
+    link_router, ops,
     polls, pipeline, puller, readiness, selfcheck, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
@@ -1138,7 +1139,7 @@ def index():
     # Ops digest: the same numbers the ops-channel card and `cli digest` print.
     digest = None
     try:
-        digest = ops.digest(hours=24, plan=plan, sources=sources,
+        digest = ops.digest(hours=24, plan=plan, sources=sources, influencers=influencers,
                             heartbeat=heartbeat, report=report, insights=insights)
     except Exception as exc:  # pragma: no cover - the dashboard must still render
         app.logger.warning("ops digest failed: %s", exc)
@@ -1295,6 +1296,54 @@ def api_digest():
     data["ok"] = True
     data["card"] = ops.render_digest(data)
     return jsonify(data)
+
+
+@app.route("/api/amazon-report")
+def api_amazon_report():
+    """Amazon attribution in the posts we really sent (read-only)."""
+    try:
+        hours = max(1, min(24 * 30, request.args.get("hours", 24, type=int) or 24))
+    except (TypeError, ValueError):
+        hours = 24
+    try:
+        data = amazon_watch.attribution_report(hours=hours)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+    data["ok"] = bool(data.get("ok"))
+    data["card"] = amazon_watch.render_report(data)
+    return jsonify(data)
+
+
+@app.route("/api/amazon-scan")
+def api_amazon_scan():
+    """What a source post carries and what each creator would post (read-only).
+
+    ``?text=`` scans the source post, ``?tag=`` renders one creator's version,
+    ``?fleet=1`` checks every creator; nothing is written and no message is sent.
+    """
+    text = (request.args.get("text") or "")[:4000]
+    if not text:
+        return jsonify({"ok": False, "error": "pass ?text=<source post>"}), 400
+    try:
+        payload = {"ok": True, "scan": amazon_watch.scan(text)}
+        tag = (request.args.get("tag") or "").strip()
+        creator_id = request.args.get("creator", type=int)
+        if creator_id:
+            inf = db.get_influencer(creator_id)
+            if not inf:
+                return jsonify({"ok": False, "error": "unknown creator"}), 404
+            tag = inf.get("amazon_tag") or ""
+            payload["creator"] = inf.get("name")
+        if tag:
+            payload["plan"] = amazon_watch.plan(text, tag=tag)
+        if str(request.args.get("fleet", "")).strip() in {"1", "true", "yes"}:
+            payload["fleet"] = amazon_watch.fleet_plan(
+                text, db.list_influencers(),
+                limit=min(2000, max(1, request.args.get("limit", 1000, type=int) or 1000)),
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+    return jsonify(payload)
 
 
 @app.route("/api/posts.csv")

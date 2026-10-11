@@ -775,6 +775,15 @@
               + `style="height: ${Math.max(6, point.delivery_pct || 0)}%" title="${note}"></span>`;
           }).join('');
         }
+                const amazonRow = card.querySelector('[data-live-ops="amazon"]');
+        const amazon = data.amazon || {};
+        if (amazonRow && amazon.links) {
+          amazonRow.innerHTML = amazon.foreign_tag
+            ? `<strong class="is-bad">\u26d4 ${amazon.foreign_tag} Amazon link(s) carried someone else's tag.</strong>`
+            : `\u2705 Amazon: ${amazon.own_tag} link(s) in ${amazon.posts_with_amazon} post(s) carry the creator's <strong>own tag</strong>`
+              + (amazon.short_links ? ` \u00b7 ${amazon.short_links} short code(s) resolved before sending` : '')
+              + ` <small>\u00b7 read from the posts we really sent</small>`;
+        }
                 const blockerRow = card.querySelector('[data-live-ops="blocker"]');
         const blocker = (data.creators || {}).biggest_blocker;
         if (blockerRow && blocker) {
@@ -818,4 +827,47 @@
       loaded = false;
     }
   });
+})();
+
+/* --- Amazon scan: paste a source deal, see every link and each creator's tag -- */
+(() => {
+  const textarea = document.getElementById('amazon-scan-text');
+  const out = document.querySelector('[data-live-ops="amazon-scan"]');
+  if (!textarea || !out) return;
+  const buttons = Array.from(document.querySelectorAll('[data-amazon-scan]'));
+  async function run(mode) {
+    const text = (textarea.value || '').trim();
+    if (!text) { out.textContent = 'Paste a source deal first.'; return; }
+    out.textContent = 'Scanning\u2026';
+    try {
+      const query = new URLSearchParams({ text, tag: '' });
+      const fleet = mode === 'fleet' ? '&fleet=1' : '';
+      const response = await fetch(`/api/amazon-scan?${query.toString()}${fleet}`,
+        { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      const lines = [];
+      const scan = payload.scan || {};
+      lines.push(`Amazon links found: ${(scan.links || []).length}`);
+      (scan.links || []).forEach(link => {
+        lines.push(`  \u2022 ${link.kind}${link.asin ? ' ASIN ' + link.asin : ''} \u2192 ${link.action}`
+          + (link.source_tag ? `  [source tag: ${link.source_tag}]` : ''));
+        lines.push(`      ${link.url}`);
+      });
+      if (payload.fleet) {
+        const fleetData = payload.fleet;
+        lines.push('');
+        lines.push(`Fleet: ${fleetData.creators} creator(s), ${fleetData.own_tag} with their own tag`
+          + ` \u00b7 ${fleetData.ms}ms \u2014 ${fleetData.all_own_tags ? 'every creator gets their OWN tag' : 'PROBLEMS'}`);
+      } else if (payload.plan) {
+        lines.push('');
+        lines.push('Rendered post (first creator):');
+        lines.push(payload.plan.rendered);
+      }
+      out.textContent = lines.join('\n');
+    } catch (error) {
+      out.textContent = `Could not scan: ${error.message}`;
+    }
+  }
+  buttons.forEach(button => button.addEventListener('click', () => run(button.dataset.amazonScan)));
 })();

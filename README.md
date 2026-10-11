@@ -112,6 +112,47 @@ The same checks, in VM order, live in **[VERIFICATION.md](VERIFICATION.md)** —
 the copy-paste runbook (blanked-credential test run, schema, stack, per-creator
 proof, worker start, and what each red check means).
 
+### 🅰️ Amazon deals from our sources: detected, re-signed, posted
+
+When a source post carries an Amazon link, the hub finds it, works out which
+Amazon page it really is, and re-signs it with **that creator's own Associates
+tag** before the post goes to their channel. Nothing else is invented: a link
+the hub cannot vouch for is reported, never faked.
+
+| What the source wrote | What the creator's channel receives |
+|---|---|
+| `https://www.amazon.in/dp/B09N3ZNHTY/ref=sr_1_3?tag=someoneelse-21&th=1` | `https://www.amazon.in/dp/B09N3ZNHTY?th=1&tag=ravi-21` |
+| `amazon.in/dp/B0BDHWDR12` (no `https://`) | `https://www.amazon.in/dp/B0BDHWDR12?tag=ravi-21` |
+| `https://amzn.to/3xYzAbC` (opaque short code) | resolved to the product page, then `/dp/<ASIN>?tag=ravi-21` |
+| `https://www.amazon.in/s?k=earbuds` (search page) | route kept, `tag=ravi-21` added |
+
+Read it before it goes out, and audit it after:
+
+```bash
+# what does this source post carry, and what will the hub do with each link?
+python -m influencer_hub.cli amazon-scan --file /tmp/post.txt
+
+# one creator's exact post (any role: broadcast / whatsapp / approval)
+python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --creator 7
+
+# all 1000+ creators in one pass: does each one get their OWN tag?
+python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --fleet --check   # exit 1 on any problem
+
+# the posts we really sent: whose tag is on them? (cron-safe, read-only)
+python -m influencer_hub.cli amazon-scan --report --hours 48 --check
+```
+
+`--fleet` is pure text work (about 0.8 s for a thousand creators on the demo
+hub) and writes nothing, so it is safe as a preflight before a big paste is
+switched on. `--report` reads `posts.deal_text` — the message the subscriber
+actually received — and names any link that carried **someone else's** tag, so
+the mistake is impossible to miss instead of hidden in a log line. The
+dashboard's 📈 Ops digest card shows the same proof live
+(`GET /api/amazon-report`), the 🔎 block under it lets you paste a source post
+and scan it in place (`GET /api/amazon-scan?text=…&fleet=1`), and the self-check
+has a twelfth check — **Amazon links in real posts** — that fails loudly when a
+post went out paying the wrong person.
+
 ### 📈 Ops: the digest, the alerts, and the exports
 
 Three things make a 1000-creator hub something you *operate* rather than watch.
