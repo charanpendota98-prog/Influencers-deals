@@ -722,6 +722,10 @@
     const node = card.querySelector(`[data-live-ops="${key}"]`);
     if (node && value !== undefined && value !== null) node.textContent = value;
   };
+  const note = (key, value) => {
+    const node = card.querySelector(`[data-live-ops-note="${key}"]`);
+    if (node && value !== undefined && value !== null) node.textContent = value;
+  };
   async function tick() {
     try {
       const response = await fetch(src, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
@@ -737,6 +741,15 @@
         set('percent', `${data.creators.setup_percent}%`);
         const bad = card.querySelector('[data-live-ops="failed"]');
         if (bad) bad.className = data.posts.failed ? 'is-bad' : '';
+        const rate = data.delivery_rate_pct === null || data.delivery_rate_pct === undefined ? '\u2014' : data.delivery_rate_pct;
+        note('posted', `delivery ${rate}% \u00b7 ${data.posts.mirrored} mirrored`);
+        note('failed', `${data.posts.skipped} skipped \u00b7 ${data.posts.attempts} attempts`);
+        note('worker', `sources ${data.sources.active}/${data.sources.total} active`);
+        note('ready', `${data.creators.blocked} blocked \u00b7 ${data.creators.mirroring} mirroring`);
+        const failures = (data.posts.top_failures || []).map(f => `${f.count}\u00d7 ${f.reason}`).join(' \u00b7 ');
+        note('failures', failures);
+        const failuresRow = card.querySelector('[data-live-ops="failures"]');
+        if (failuresRow) failuresRow.style.display = failures ? '' : 'none';
       } else failures += 1;
     } catch (error) {
       failures += 1;

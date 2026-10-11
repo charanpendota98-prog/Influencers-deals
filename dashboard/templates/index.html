@@ -307,7 +307,7 @@
   <div class="setup-section-title" style="margin-top:0;">
     <div>
       <h2>📈 Ops digest — last {{ digest.hours }}h</h2>
-      <p class="hint">The same card `python -m influencer_hub.cli digest --send` posts to the ops Telegram channel, plus the two spreadsheets you can plan offline with.</p>
+      <p class="hint">The same card <code>python -m influencer_hub.cli digest --send</code> posts to the ops Telegram channel — with the two spreadsheets below for planning offline.</p>
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <a class="btn btn-secondary" href="{{ url_for('api_readiness_csv') }}">⬇️ Creator checklist (CSV)</a>
@@ -316,21 +316,18 @@
   </div>
 
   <div class="ops-grid">
-    <div class="ops-metric"><span>Delivered</span><strong data-live-ops="posted">{{ digest.posts.posted }}</strong><small>{{ digest.posts.mirrored }} mirrored to WhatsApp</small></div>
-    <div class="ops-metric"><span>Failed</span><strong class="{{ 'is-bad' if digest.posts.failed else '' }}" data-live-ops="failed">{{ digest.posts.failed }}</strong><small>{{ digest.posts.skipped }} skipped · {{ digest.posts.attempts }} attempts</small></div>
+    <div class="ops-metric"><span>Delivered</span><strong data-live-ops="posted">{{ digest.posts.posted }}</strong><small data-live-ops-note="posted">delivery {{ digest.delivery_rate_pct if digest.delivery_rate_pct is not none else '—' }}% · {{ digest.posts.mirrored }} mirrored</small></div>
+    <div class="ops-metric"><span>Failed</span><strong class="{{ 'is-bad' if digest.posts.failed else '' }}" data-live-ops="failed">{{ digest.posts.failed }}</strong><small data-live-ops-note="failed">{{ digest.posts.skipped }} skipped · {{ digest.posts.attempts }} attempts</small></div>
     <div class="ops-metric"><span>Retry queue</span><strong data-live-ops="retry">{{ digest.retry_queue }}</strong><small>deals parked for a conversion retry</small></div>
-    <div class="ops-metric"><span>Worker</span><strong data-live-ops="worker">{{ '🟢' if digest.worker.state in ['running', 'idle', 'polling', 'healthy'] else '🔴' }} {{ digest.worker.state }}</strong><small>sources {{ digest.sources.active }}/{{ digest.sources.total }} active</small></div>
-    <div class="ops-metric"><span>Creators</span><strong data-live-ops="ready">{{ digest.creators.ready }} / {{ digest.creators.total }}</strong><small>{{ digest.creators.blocked }} blocked · {{ digest.creators.mirroring }} mirroring</small></div>
-    <div class="ops-metric"><span>Setup</span><strong data-live-ops="percent">{{ digest.creators.setup_percent }}%</strong><small>delivery {{ digest.delivery_rate_pct if digest.delivery_rate_pct is not none else '—' }}% in 24h</small></div>
+    <div class="ops-metric"><span>Worker</span><strong data-live-ops="worker">{{ '🟢' if digest.worker.state in ['running', 'idle', 'polling', 'healthy'] else '🔴' }} {{ digest.worker.state }}</strong><small data-live-ops-note="worker">sources {{ digest.sources.active }}/{{ digest.sources.total }} active</small></div>
+    <div class="ops-metric"><span>Creators</span><strong data-live-ops="ready">{{ digest.creators.ready }} / {{ digest.creators.total }}</strong><small data-live-ops-note="ready">{{ digest.creators.blocked }} blocked · {{ digest.creators.mirroring }} mirroring</small></div>
+    <div class="ops-metric"><span>Setup</span><strong data-live-ops="percent">{{ digest.creators.setup_percent }}%</strong><small>of all setup steps done</small></div>
   </div>
 
-  {% if digest.posts.top_failures %}
-    <p class="hint" style="margin-top:10px;">
-      Top failures:
-      {% for failure in digest.posts.top_failures %}{{ failure.count }}× {{ failure.reason }}{% if not loop.last %} · {% endif %}{% endfor %}
-      — the reasons name the fix (credentials, permissions, pacing).
-    </p>
-  {% endif %}
+  <p class="hint" style="margin-top:10px;{{ '' if digest.posts.top_failures else ' display:none;' }}" data-live-ops="failures">
+    Top failures: <span data-live-ops-note="failures">{% for failure in digest.posts.top_failures %}{{ failure.count }}× {{ failure.reason }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
+    — the reasons name the fix (credentials, permissions, pacing).
+  </p>
 
   <details class="easy-advanced">
     <summary>Run it yourself, on the VM</summary>
