@@ -217,6 +217,10 @@ CREATE TABLE IF NOT EXISTS poll_deliveries (
 CREATE INDEX IF NOT EXISTS idx_channels_influencer ON channels(influencer_id);
 CREATE INDEX IF NOT EXISTS idx_posts_sig ON posts(deal_sig, influencer_id);
 CREATE INDEX IF NOT EXISTS idx_wa_influencer ON wa_sessions(influencer_id);
+-- The dashboard reads mirror counts per channel for every creator; without
+-- this, a hub with a few hundred channels scans the whole posts table each
+-- time the command center refreshes.
+CREATE INDEX IF NOT EXISTS idx_posts_channel_status ON posts(channel_id, status, posted_at);
 CREATE INDEX IF NOT EXISTS idx_polls_creator_created ON polls(created_by_influencer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_poll_deliveries_poll ON poll_deliveries(poll_id);
 """
@@ -251,8 +255,31 @@ def _connect() -> sqlite3.Connection:
     return con
 
 
+# Path of the database whose schema this process has already ensured. Keyed by
+# path (not just a flag) because the tests - and a fresh deploy - point
+# config.DB_PATH at a different file within the same process.
+_SCHEMA_READY_PATH: str | None = None
+
+
+def ensure_schema() -> None:
+    """Run :func:`init` once per database file, not once per insert.
+
+    Importing an existing hub is a write-heavy path: without this, every
+    ``add_influencer``/``add_channel`` replayed the full schema script and the
+    whole migration list, which is the difference between a thousand-creator
+    paste taking seconds and taking half a minute.
+    """
+    global _SCHEMA_READY_PATH
+    resolved = str(config.DB_PATH)
+    if _SCHEMA_READY_PATH == resolved:
+        return
+    init()
+    _SCHEMA_READY_PATH = resolved
+
+
 def init() -> None:
     """Create the schema (idempotent). Call once at startup."""
+    global _SCHEMA_READY_PATH
     con = _connect()
     try:
         # WAL permits readers in the Flask UI while the worker records posts.
@@ -263,6 +290,7 @@ def init() -> None:
     finally:
         con.close()
     migrate()
+    _SCHEMA_READY_PATH = str(config.DB_PATH)
 
 
 def migrate() -> None:
@@ -364,6 +392,16 @@ def migrate() -> None:
                 if "duplicate column name" not in str(exc).lower():
                     raise
 
+        # Same index for databases created before it existed in the schema.
+        try:
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_posts_channel_status "
+                "ON posts(channel_id, status, posted_at)"
+            )
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).lower():
+                raise
+
         con.commit()
     finally:
         con.close()
@@ -409,7 +447,7 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
                    min_deal_tier: str = "") -> int:
     # Ensure schema exists for fresh DBs (pytest tmp_path without explicit init)
     try:
-        init()
+        ensure_schema()
     except Exception:
         pass
     con = _connect()
@@ -1156,7 +1194,7 @@ def add_bulk_influencers(records: list[dict]) -> int:
     """
     # Ensure schema exists for fresh DBs
     try:
-        init()
+        ensure_schema()
     except Exception:
         pass
     con = _connect()
@@ -1958,6 +1996,34 @@ def mirrored_post_count(channel_id: int, hours: int = 24) -> int:
             "AND COALESCE(mirror_source_id,0) <> 0 AND posted_at >= ?",
             (channel_id, cutoff)).fetchone()
         return int(row["n"] if row else 0)
+    finally:
+        con.close()
+
+
+def mirrored_post_counts(hours: int = 24) -> dict[int, int]:
+    """Posted mirror counts for *every* channel, in one query.
+
+    The dashboard needs this for a hub with thousands of creators, so it must
+    not become one query per channel (see :func:`mirrored_post_count` for the
+    single-channel version used on a creator page).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        window = max(1, int(hours))
+    except (TypeError, ValueError):
+        window = 24
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=window)
+    ).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT channel_id, COUNT(*) AS n FROM posts "
+            "WHERE status='posted' AND COALESCE(mirror_source_id,0) <> 0 "
+            "AND posted_at >= ? GROUP BY channel_id",
+            (cutoff,)).fetchall()
+        return {int(row["channel_id"]): int(row["n"]) for row in rows}
     finally:
         con.close()
 

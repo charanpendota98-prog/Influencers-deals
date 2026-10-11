@@ -341,14 +341,21 @@ def mirror_main_to_whatsapp_enabled() -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _channel_mirror_enabled(inf: dict, ch: dict) -> bool:
-    """'' inherits the global setting; '1'/'0' decide for this channel only."""
+def _channel_mirror_enabled(inf: dict, ch: dict,
+                           global_default: bool | None = None) -> bool:
+    """'' inherits the global setting; '1'/'0' decide for this channel only.
+
+    ``global_default`` lets a hub-wide caller (the dashboard, thousands of
+    creators) read the setting once instead of once per channel.
+    """
     raw = str(ch.get("mirror_whatsapp") or "").strip().lower()
     if raw in {"1", "true", "yes", "on", "enabled"}:
         return True
     if raw in {"0", "false", "no", "off", "disabled", "none"}:
         return False
-    return mirror_main_to_whatsapp_enabled()
+    if global_default is None:
+        return mirror_main_to_whatsapp_enabled()
+    return bool(global_default)
 
 
 MIRROR_SOURCE_ROLES = {"broadcast"}
@@ -885,15 +892,24 @@ async def _mirror_main_posts_to_whatsapp(
     return mirrored
 
 
-def mirror_plan(inf: dict) -> dict:
+def mirror_plan(inf: dict, *, channels: list[dict] | None = None,
+                mirrored_counts: dict[int, int] | None = None,
+                global_default: bool | None = None) -> dict:
     """Describe, without sending anything, what the mirror does for a creator.
 
     Used by the dashboard so the operator sees "main channel -> WhatsApp" as a
     live fact (which channels mirror, which destinations receive) instead of
     trusting a toggle nobody can verify.
+
+    ``channels`` and ``mirrored_counts`` let a hub-wide caller (the dashboard
+    command center, thousands of creators) pass values it already fetched in
+    bulk, so this never turns into one query per creator.
     """
     try:
-        channels = db.list_channels(inf["id"])
+        if channels is None:
+            channels = db.list_channels(inf["id"])
+        else:
+            channels = list(channels)
     except Exception:  # pragma: no cover - the creator page must still render
         channels = []
     ready = [
@@ -904,7 +920,7 @@ def mirror_plan(inf: dict) -> dict:
         ch for ch in ready
         if str(ch.get("platform") or "").strip().lower() == "telegram"
         and str(ch.get("role") or "broadcast").strip().lower() in MIRROR_SOURCE_ROLES
-        and _channel_mirror_enabled(inf, ch)
+        and _channel_mirror_enabled(inf, ch, global_default)
     ]
     targets = [
         ch for ch in ready
@@ -919,12 +935,17 @@ def mirror_plan(inf: dict) -> dict:
     ]
     mirrored_posts = 0
     try:
-        mirrored_posts = sum(db.mirrored_post_count(ch["id"], hours=24) for ch in targets)
+        if mirrored_counts is not None:
+            mirrored_posts = sum(int(mirrored_counts.get(ch["id"], 0)) for ch in targets)
+        else:
+            mirrored_posts = sum(db.mirrored_post_count(ch["id"], hours=24) for ch in targets)
     except Exception:  # pragma: no cover - display only
         mirrored_posts = 0
+    if global_default is None:
+        global_default = mirror_main_to_whatsapp_enabled()
     return {
         "enabled": bool(sources),
-        "global_default": mirror_main_to_whatsapp_enabled(),
+        "global_default": bool(global_default),
         "active": bool(sources and targets),
         "sources": [
             {"id": ch["id"], "identifier": ch.get("identifier"), "role": ch.get("role")}

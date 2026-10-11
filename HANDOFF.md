@@ -538,3 +538,53 @@ New file: `tests/test_setup_readiness.py` (16 tests) — the engine, the
 command center, the JSON API (narrowing, live overlay, hub failure, read-only
 guarantee), Easy Setup (pill strip, prefill, inline tools gated on the phone
 link, off-site `next` rejected) and the Setup Center cards.
+
+---
+
+## 8. This session, part 3: 1000+ creators (scale) and bulk paste
+
+Everything below was verified in the sandbox against a hub with **1000 creators
+and 3000 channels** (seeded through the real code path).
+
+**Bulk paste (`POST /easy-setup/bulk`).** `parse_bulk_creators()` accepts one
+creator per line — `name, tag, main, approval, whatsapp` — separated by comma,
+tab, `|` or `;`, skipping blanks/`#` comments, and understands either a short
+header row or the legacy CSV column names. An uploaded CSV/TXT file is parsed by
+the same function. `BULK_MAX_ROWS = 2000` per submit. Rows are applied through
+the *same* upsert the single form uses (`_apply_creator`), so re-pasting updates
+by name instead of duplicating. Per-line results are collected (`created`,
+`updated`, `failed: <reason>`) and shown on `/easy-setup?bulk=<token>`; the
+result list lives in the dashboard process (`BULK_RESULTS`, last 5, 200 rows
+kept) because a thousand rows do not belong in a session cookie. WhatsApp values
+that are already JIDs are saved Pending; invite links are reported as
+"paste it after pairing" so a bulk import never makes N hub calls.
+
+**Readiness at scale.** `readiness.overview()` now reads channels, sessions and
+mirror counts in one query each (`db.mirrored_post_counts()` is new; the mirror
+setting is read once and passed down, so a per-channel "inherit" no longer costs
+a query per channel), and it supports `query`, `state`
+(`ready|blocked|mirroring|paused|warning|no_phone|no_whatsapp|no_main|shared_tag`),
+`limit`/`offset`, `max_actions` and `max_warnings`. `summary`/`globals` always
+describe the whole hub; `creators` is the requested slice, with `total`,
+`matched`, `returned` and `warnings_total` alongside. A 400-creator overview
+issues 7 database reads (asserted in `tests/test_bulk_setup_scale.py`).
+
+**Screens:**
+* `/` command center gained a search + state filter form, honest counters
+  ("N of M creators match"), paging, and its live refresh now asks for exactly
+  the rows on screen.
+* `/easy-setup` gained the 📦 bulk paste card and a **paged** creator strip
+  (`pill_q`, `pill_offset`), with the focused creator always included even when
+  the current search would hide them.
+* `/setup` directory renders 60 cards per page (`dir_offset`), the simulator's
+  profile list is capped at 200, and Easy Setup's per-channel table shows 40
+  rows with a pointer to `/api/flow` for the rest.
+* `db.ensure_schema()` runs the schema/migration once per database file instead
+  of once per insert, and the bulk upsert reads the profile list once for the
+  whole paste: a 1000-line import takes ~13 s (was ~21 s) and is a one-off.
+
+**Tests:** `tests/test_bulk_setup_scale.py` (10 tests) — bounded query count,
+paged/filtered dashboard + API, pill paging/search, bulk create/update/report,
+CSV upload, invalid rows, 1000-line import with a page-speed check, and the
+"no screen renders the whole hub" rule. Full suite: 424 passed; wa_hub `node
+--test` 8/8.

@@ -960,3 +960,7 @@ button[aria-disabled="true"] {
 .command-warnings a { color: #fcd34d; }
 .creator-directory-card.is-needs-work { border-color: #78350f; }
 .creator-directory-info .creator-next { color: #fcd34d; font-size: 10.5px; line-height: 1.35; display: block; margin-top: 2px; }
+.command-filter { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 4px; }
+.command-filter input, .command-filter select { min-width: 200px; }
+.command-count { color: #64748b; font-size: 12px; }
+.command-paging { display: flex; align-items: center; gap: 12px; margin-top: 12px; }

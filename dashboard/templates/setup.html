@@ -437,8 +437,18 @@
   {% if creator_plan %}
     {% for entry in creator_plan.creators %}{% set _ = cards.update({entry.id: entry}) %}{% endfor %}
   {% endif %}
+  {% if creator_plan and creator_plan.matched > creator_plan.returned or directory_offset %}
+    <p class="hint">
+      Showing {{ creator_plan.offset + 1 }}–{{ creator_plan.offset + creator_plan.returned }}
+      of {{ creator_plan.matched }} match{{ '' if creator_plan.matched == 1 else 'es' }}
+      ({{ creator_plan.total }} in this hub).
+      {% if creator_plan.summary.blocked %}· {{ creator_plan.summary.blocked }} still blocked{% endif %}
+      {% if creator_plan.summary.mirroring %}· {{ creator_plan.summary.mirroring }} mirroring{% endif %}
+    </p>
+  {% endif %}
   <div class="creator-directory">
     {% for creator in influencers %}
+      {% if creator.id in directory_shown %}
       {% set entry = cards.get(creator.id) %}
       <a class="creator-directory-card {{ '' if not entry or entry.ready else 'is-needs-work' }}"
          href="{{ url_for('influencer_detail', inf_id=creator.id) }}">
@@ -456,8 +466,19 @@
         <span class="creator-state {{ 'is-active' if creator.active else 'is-paused' }}">{{ 'Active' if creator.active else 'Paused' }}</span>
         <span aria-hidden="true">›</span>
       </a>
+      {% endif %}
     {% endfor %}
   </div>
+  {% if creator_plan and creator_plan.matched > creator_plan.returned or directory_offset %}
+    <nav class="command-paging" aria-label="Creator pages" style="margin-top:12px;">
+      {% if directory_offset %}
+        <a class="btn btn-secondary" href="{{ url_for('setup', q=search_query or None, dir_offset=[0, directory_offset - directory_page_size]|max) }}#creator-directory">← Previous</a>
+      {% endif %}
+      {% if creator_plan and creator_plan.offset + creator_plan.returned < creator_plan.matched %}
+        <a class="btn btn-secondary" href="{{ url_for('setup', q=search_query or None, dir_offset=directory_offset + directory_page_size) }}#creator-directory">Next {{ directory_page_size }} →</a>
+      {% endif %}
+    </nav>
+  {% endif %}
   {% if creator_plan and creator_plan.actions %}
     <p class="hint" style="margin-top:10px;">
       🎯 {{ creator_plan.actions | length }} step(s) waiting across these creators —
@@ -492,7 +513,9 @@
       <label style="font-size:11px; color:#94a3b8; display:block; margin:8px 0 4px;">Preview using an influencer profile (profile defaults; channel overrides may differ):</label>
       <select id="sim-profile" onchange="loadSimulatorProfile()" style="width:100%; margin-bottom:8px;">
         <option value="" data-tag="{{ default_amazon_tag }}" data-hypd="{{ current_hypd_store }}" data-amazon="1" data-earnkaro="1" data-hypd-on="1" data-only-amazon="0">Hub defaults</option>
-        {% for preview_inf in influencers %}
+        {# First 200 profiles only: a thousand-option dropdown is a 200 KB page.
+           The directory above searches the whole hub. #}
+        {% for preview_inf in influencers[:200] %}
           <option value="{{ preview_inf.id }}"
                   data-tag="{{ preview_inf.amazon_tag }}"
                   data-hypd="{{ preview_inf.hypd_store_id or current_hypd_store }}"
@@ -501,6 +524,9 @@
                   data-hypd-on="{{ 1 if preview_inf.allow_hypd else 0 }}"
                   data-only-amazon="{{ 1 if preview_inf.only_amazon else 0 }}">#{{ preview_inf.id }} · {{ preview_inf.name }} · {{ preview_inf.amazon_tag }}</option>
         {% endfor %}
+        {% if influencers | length > 200 %}
+          <option value="" disabled>… {{ influencers | length - 200 }} more profiles — search in the creator directory above</option>
+        {% endif %}
       </select>
       <textarea id="sim-input" rows="7" style="width:100%; font-family:monospace; font-size:12px; padding:10px; background:#181829; border:1px solid #3b4261; color:#f8fafc; border-radius:8px;">🔥 Super Loot Deals Today!
 1. Meesho Saree at ₹199: https://hypd.store/88888/afflink/daol5bac45l0tc0oo5rg

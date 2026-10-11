@@ -132,6 +132,52 @@ Actions triggered there return to the same screen with their status, and the
 form prefills the creator's saved tag, channels and switches, so editing an
 existing creator is one screen too.
 
+### 1000+ creators: one paste, and a dashboard that stays fast
+
+Onboarding a hundred or a thousand creators is the same screen as one, and it is
+**one paste**:
+
+```
+Ravi Loots, ravi-21, @ravi_loots, @ravi_amazon_deals, 120363012345678901@newsletter
+Sita Deals, sita-21, @sita_loots, @sita_amazon_deals
+Kiran Deals, kiran-21, @kiran_loots
+```
+
+Columns are `name, amazon tag, main channel, approval channel, whatsapp id`.
+Comma, tab, `|` or `;` separators all work, `#` comments and blank lines are
+ignored, and a header row (`name,amazon_tag,broadcast_tg,approval_tg,whatsapp_id`)
+or a CSV/TXT upload is understood too. Up to **2000 lines per submit**.
+
+* Re-pasting the same list **updates** those creators (matched by name) instead
+  of duplicating them, so a corrected spreadsheet is simply pasted again.
+* Every line is validated on its own and reported line by line: unusable
+  Amazon tag, missing channels, approval == main, and so on. One bad line never
+  stops the batch.
+* A real WhatsApp channel id (`…@newsletter`, `…@g.us`) is saved as **Pending**
+  immediately. An invite *link* needs that creator's paired phone to resolve, so
+  it is reported as "paste it after pairing" rather than guessed at — a
+  1000-line import never fires a thousand hub calls.
+* The three network switches and the main → WhatsApp mirror switch apply to the
+  whole batch.
+
+Afterwards the 🚀 command center is the to-do list: filter by `⚠️ Blocked`, read
+the next action per creator, and clear them page by page.
+
+**What keeps it fast at that size** (verified with 1000 creators / 3000 channels):
+
+| Screen | Time | What is rendered |
+|---|---|---|
+| `/` command center | ~0.6 s, 65 KB | one page of rows (25), hub-wide chips and the priority list |
+| `/easy-setup` | ~0.1 s, 41 KB | 40 creator pills + paging + the bulk paste card |
+| `/setup` | ~0.15 s | 60 directory cards + a capped simulator list |
+| `/api/readiness?live=1&limit=25` | ~0.1 s | one page of creators, 50 warnings, 200 actions |
+
+The readiness engine reads each table **once** for the whole hub (channels,
+sessions, mirror counts, the mirror setting) — a 400-creator overview makes
+7 database reads, not 1200 — and the dashboard never ships a thousand rows to
+the browser. Search (`q`), state filters (`state=blocked|ready|mirroring|…`) and
+paging (`limit`/`offset`) work the same in the UI and in the JSON API.
+
 ### How to onboard unlimited influencers (1-Click Easy Setup)
 1. **Dashboard Self-Serve (/onboard):**
    Go to `/onboard`, enter the influencer's own Amazon Associate tag (the configured `mama086-21` value is only a fallback). Choose the supported affiliate-network and platform toggles, then click **"⚡ Save & Create Selected Destinations"**. When Telegram is enabled, the app attempts to create the Approval + Broadcast channels; when WhatsApp is enabled, it starts a QR session. Check the result messages, pair WhatsApp, and connect or create a group/channel afterward.

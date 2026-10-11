@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 import urllib.request
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -1099,15 +1099,34 @@ def index():
     # Read-only checklist for every creator: what is done and what the single
     # next action is. Database only — the live WhatsApp overlay is fetched by
     # /api/readiness?live=1 so a slow hub can never hold this page open.
+    #
+    # A hub with a thousand creators renders one page of the table, never the
+    # whole list: search, state filter and paging are server-side and the live
+    # refresh asks for exactly the rows on screen.
+    query = (request.args.get("q") or "").strip()
+    state = (request.args.get("state") or "").strip().lower()
+    offset = max(0, request.args.get("offset", 0, type=int) or 0)
+    page_size = max(5, min(200, request.args.get("page_size", 25, type=int) or 25))
     try:
         plan = readiness.overview(
             influencers=influencers,
             heartbeat=db.get_worker_heartbeat(),
             sources=sources,
+            query=query,
+            state=state,
+            limit=page_size,
+            offset=offset,
         )
     except Exception as exc:  # pragma: no cover - the dashboard must still render
         app.logger.warning("readiness overview failed: %s", exc)
         plan = None
+    paging = {"offset": offset, "page_size": page_size, "prev": max(0, offset - page_size),
+              "next": offset + page_size}
+    if plan:
+        paging["next"] = paging["next"] if paging["next"] < plan["matched"] else None
+        paging["prev"] = paging["prev"] if offset else None
+        paging["first_shown"] = offset + 1 if plan["returned"] else 0
+        paging["last_shown"] = offset + plan["returned"]
     return render_template(
         "index.html",
         creator_count=len(influencers),
@@ -1118,6 +1137,9 @@ def index():
         source_count=len(sources),
         active_source_count=active_sources,
         plan=plan,
+        query=query,
+        state=state,
+        paging=paging,
     )
 
 
@@ -1129,6 +1151,10 @@ def api_readiness():
     """
     inf_id = request.args.get("inf_id", type=int)
     live = str(request.args.get("live", "")).strip() in {"1", "true", "yes"}
+    query = (request.args.get("q") or "").strip()
+    state = (request.args.get("state") or "").strip().lower()
+    offset = max(0, request.args.get("offset", 0, type=int) or 0)
+    limit = max(0, request.args.get("limit", 0, type=int) or 0)
     live_wa: dict[str, str] = {}
     live_error = ""
     if live:
@@ -1146,9 +1172,15 @@ def api_readiness():
             inf = db.get_influencer(inf_id)
             if not inf:
                 return jsonify({"ok": False, "error": "unknown creator"}), 404
-            payload = readiness.overview(influencers=[inf], live_wa=live_wa or None)
+            payload = readiness.overview(
+                influencers=[inf], live_wa=live_wa or None,
+                query=query, state=state, limit=limit, offset=offset,
+            )
         else:
-            payload = readiness.overview(live_wa=live_wa or None)
+            payload = readiness.overview(
+                live_wa=live_wa or None,
+                query=query, state=state, limit=limit, offset=offset,
+            )
     except Exception as exc:  # pragma: no cover - defensive
         return jsonify({"ok": False, "error": str(exc)[:200]}), 500
     payload["ok"] = True
@@ -1161,6 +1193,7 @@ def api_readiness():
 def setup():
     """Dedicated protected setup center for profiles, routes, and operations."""
     q = request.args.get("q", "").strip()
+    dir_offset = max(0, request.args.get("dir_offset", 0, type=int) or 0)
     influencers = db.search_influencers(q) if q else db.list_influencers()
     settings = db.get_all_global_settings()
     sources = db.list_sources(active_only=False)
@@ -1173,7 +1206,12 @@ def setup():
         settings=settings,
         sources=sources,
         readiness=_setup_readiness_snapshot(),
-        creator_plan=_creators_plan(influencers),
+        creator_plan=_creators_plan(
+            influencers, query=q, limit=DIRECTORY_PAGE_SIZE, offset=dir_offset,
+        ),
+        directory_page_size=DIRECTORY_PAGE_SIZE,
+        directory_offset=dir_offset,
+        directory_shown=[inf["id"] for inf in influencers[dir_offset:dir_offset + DIRECTORY_PAGE_SIZE]],
         search_query=q,
         current_ek_key=current_ek_key,
         current_ek_pubid=current_ek_pubid,
@@ -1233,7 +1271,11 @@ def _money_summary() -> dict | None:
         return None
 
 
-def _creators_plan(influencers: list[dict]) -> dict | None:
+DIRECTORY_PAGE_SIZE = 60
+
+
+def _creators_plan(influencers: list[dict], *, query: str = "", state: str = "",
+                   limit: int = 0, offset: int = 0) -> dict | None:
     """Readiness for a listed set of creators (Setup Center directory).
 
     Never raises: a checklist is a convenience, and the Setup Center must keep
@@ -1242,7 +1284,10 @@ def _creators_plan(influencers: list[dict]) -> dict | None:
     if not influencers:
         return None
     try:
-        return readiness.overview(influencers=influencers)
+        return readiness.overview(
+            influencers=influencers, query=query, state=state,
+            limit=limit, offset=offset,
+        )
     except Exception as exc:  # pragma: no cover - defensive
         app.logger.warning("creator readiness failed: %s", exc)
         return None
@@ -2598,6 +2643,10 @@ def easy_setup():
     active_sources = sum(1 for source in sources if source.get("active"))
     values = _easy_setup_defaults()
     result: dict | None = session.pop("_easy_setup_result", None)
+    bulk_result: dict | None = None
+    bulk_token = (request.args.get("bulk") or "").strip()
+    if bulk_token:
+        bulk_result = BULK_RESULTS.pop(bulk_token, None) or BULK_RESULTS.get(bulk_token)
     errors: list[str] = []
 
     if request.method == "POST":
@@ -2695,12 +2744,25 @@ def easy_setup():
     wa_pairing = None
     wa_key = ""
     example_link = ""
+    # The creator picker is one page of pills, not the whole hub: with a
+    # thousand profiles the strip stays a strip (search + paging above it).
+    pill_q = (request.args.get("pill_q") or "").strip()
+    pill_offset = max(0, request.args.get("pill_offset", 0, type=int) or 0)
+    pill_size = max(6, min(120, request.args.get("pill_size", 40, type=int) or 40))
     if creators:
         try:
-            plan = readiness.overview(influencers=creators)
+            # The focused creator always has to be in the payload, even when the
+            # current search/page would filter it out.
+            plan = readiness.overview(
+                influencers=creators, query=pill_q, state="",
+                limit=pill_size, offset=pill_offset,
+            )
             creator_plan = next(
                 (c for c in plan["creators"] if c["id"] == focus_id), None
             )
+            if focus_id and creator_plan is None:
+                focused = readiness.creator_overview(focus_id)
+                creator_plan = (focused["creators"] or [None])[0]
         except Exception as exc:  # pragma: no cover - the form must still render
             app.logger.warning("easy-setup readiness failed: %s", exc)
     wa_channel_id = 0
@@ -2740,6 +2802,13 @@ def easy_setup():
         plan=plan,
         creator_plan=creator_plan,
         creators=creators,
+        bulk_result=bulk_result,
+        bulk_limit=BULK_MAX_ROWS,
+        pill_q=pill_q,
+        pill_offset=pill_offset,
+        pill_size=pill_size,
+        pill_prev=max(0, pill_offset - pill_size),
+        pill_next=pill_offset + pill_size,
         focus_id=focus_id,
         wa_key=wa_key,
         wa_pairing=wa_pairing,
@@ -2806,12 +2875,27 @@ def _main_mirror_flag(channels: list[dict]) -> bool:
 
 def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dict:
     """Create or update one creator with both channels and the chosen routes."""
+    return _apply_creator(values, approval_ident, main_ident)
+
+
+def _apply_creator(values: dict, approval_ident: str, main_ident: str,
+                   known_profiles: dict | None = None) -> dict:
+    """The single creator upsert used by Easy Setup (one row or a bulk paste).
+
+    ``known_profiles`` is the ``{lowercased name: profile}`` map a bulk caller
+    already read once, so importing a thousand creators does not re-read the
+    whole table a thousand times.
+    """
     name = values["name"]
-    existing = next(
-        (profile for profile in db.list_influencers()
-         if str(profile.get("name") or "").strip().lower() == name.lower()),
-        None,
-    )
+    key = name.strip().lower()
+    if known_profiles is not None:
+        existing = known_profiles.get(key)
+    else:
+        existing = next(
+            (profile for profile in db.list_influencers()
+             if str(profile.get("name") or "").strip().lower() == key),
+            None,
+        )
     settings = {
         "only_amazon": values["only_amazon"],
         "allow_amazon": values["allow_amazon"],
@@ -2831,6 +2915,8 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
             only_amazon=values["only_amazon"], hypd_store_id=values["hypd_store_id"],
         )
         action = "created"
+    if known_profiles is not None:
+        known_profiles[key] = db.get_influencer(inf_id) or {"id": inf_id, "name": name}
     db.set_influencer_active(inf_id, True)
 
     channels = db.list_channels(inf_id)
@@ -2844,8 +2930,10 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
         mirror_flag = (
             "1" if values.get("mirror_whatsapp", True) else "0"
         ) if role == "broadcast" else None
+        # Match against the list read once above, so creating both channels for
+        # one creator (or a thousand creators) does not re-read the table.
         match = next(
-            (channel for channel in db.list_channels(inf_id)
+            (channel for channel in channels
              if channel.get("platform") == "telegram"
              and str(channel.get("identifier") or "").strip().lower() == identifier.lower()),
             None,
@@ -2869,6 +2957,10 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
                 hypd_store_id=values["hypd_store_id"],
                 mirror_whatsapp=mirror_flag or "",
             )
+            channels.append({
+                "id": 0, "influencer_id": inf_id, "platform": "telegram",
+                "identifier": identifier, "role": role, "status": "ready",
+            })
             created.append(identifier)
 
     _upsert(approval_ident, "approval")
@@ -2902,6 +2994,227 @@ def _apply_easy_setup(values: dict, approval_ident: str, main_ident: str) -> dic
         "existing_channels": len(channels),
         "active_sources": sum(1 for source in sources if source.get("active")),
     }
+
+
+BULK_MAX_ROWS = 2000
+# The last few bulk imports, keyed by a short token and shown once via
+# ?bulk=<token>. A thousand lines must never be serialised into the session
+# cookie (browsers silently drop anything over ~4 KB).
+BULK_RESULT_ROWS = 200
+BULK_RESULTS: "OrderedDict[str, dict]" = OrderedDict()
+BULK_RESULTS_KEPT = 5
+
+
+def _remember_bulk_result(summary: dict) -> str:
+    token = secrets.token_urlsafe(8)
+    BULK_RESULTS[token] = summary
+    while len(BULK_RESULTS) > BULK_RESULTS_KEPT:
+        BULK_RESULTS.popitem(last=False)
+    return token
+# One line per creator. Positional order is the same order the single-screen
+# form asks for; a header row (or a CSV file with these column names) overrides
+# the order so a spreadsheet export works unchanged.
+BULK_COLUMNS = {
+    "name": "name", "creator": "name", "creator_name": "name",
+    "amazon_tag": "tag", "tag": "tag", "associate_tag": "tag",
+    "main_channel": "main", "main": "main", "broadcast_tg": "main",
+    "broadcast": "main", "main_tg": "main",
+    "approval_channel": "approval", "approval": "approval", "approval_tg": "approval",
+    "whatsapp_channel": "whatsapp", "whatsapp": "whatsapp", "whatsapp_id": "whatsapp",
+    "phone": "phone", "phone_number": "phone",
+}
+BULK_FIELDS = ("name", "tag", "main", "approval", "whatsapp", "phone")
+
+
+def parse_bulk_creators(text: str) -> list[dict]:
+    """Parse pasted lines or CSV into ``{line, name, tag, main, approval, whatsapp}``.
+
+    Accepts comma, tab, pipe or semicolon separators, ignores blank lines and
+    ``#`` comments, and understands a header row in either the short form
+    (``name, tag, main, approval, whatsapp``) or the CSV export column names.
+    """
+    rows: list[dict] = []
+    order = ["name", "tag", "main", "approval", "whatsapp", "phone"]
+    header_seen = False
+    for number, raw in enumerate(str(text or "").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [part.strip() for part in re.split(r"[,\t|;]", line)]
+        if not header_seen and rows == [] and parts:
+            first = parts[0].strip().lower().replace(" ", "_")
+            if first in BULK_COLUMNS:
+                header_seen = True
+                mapped = [BULK_COLUMNS.get(part.strip().lower().replace(" ", "_"))
+                          for part in parts]
+                if any(mapped):
+                    order = []
+                    for part in parts:
+                        key = BULK_COLUMNS.get(part.strip().lower().replace(" ", "_"))
+                        if key:
+                            order.append(key)
+                    if "name" not in order:
+                        order.insert(0, "name")
+                continue
+        row = {"line": number}
+        for index, key in enumerate(order):
+            row[key] = parts[index] if index < len(parts) else ""
+        row["raw"] = line
+        if any(str(row.get(key) or "").strip() for key in BULK_FIELDS):
+            rows.append(row)
+    return rows
+
+
+def _bulk_row_values(row: dict, defaults: dict) -> dict:
+    """Turn one parsed row into the values dict the creator upsert expects."""
+    values = dict(defaults)
+    values.update({
+        "name": str(row.get("name") or "").strip(),
+        "amazon_tag": str(row.get("tag") or "").strip() or config.AMAZON_ASSOCIATE_TAG,
+        "approval": str(row.get("approval") or "").strip(),
+        "main": str(row.get("main") or "").strip(),
+        "whatsapp": str(row.get("whatsapp") or "").strip(),
+    })
+    return values
+
+
+def _bulk_prepare_row(row: dict, defaults: dict) -> tuple[dict | None, str, str, str]:
+    """Validate one row. Returns (values, approval_ident, main_ident, error)."""
+    values = _bulk_row_values(row, defaults)
+    if not values["name"]:
+        return None, "", "", "name missing"
+    tag_value, tag_note, tag_blocked = _normalize_amazon_tag(values["amazon_tag"])
+    if tag_blocked:
+        return None, "", "", tag_note
+    values["amazon_tag"] = tag_value or config.AMAZON_ASSOCIATE_TAG
+    approval_ident = clean_identifier(values["approval"]) if values["approval"] else ""
+    main_ident = clean_identifier(values["main"]) if values["main"] else ""
+    if approval_ident:
+        ok, error = _valid_telegram_identifier(approval_ident)
+        if not ok:
+            return None, "", "", f"approval channel: {error}"
+    if main_ident:
+        ok, error = _valid_telegram_identifier(main_ident)
+        if not ok:
+            return None, "", "", f"main channel: {error}"
+    if not approval_ident and not main_ident:
+        return None, "", "", "no main or approval channel"
+    if approval_ident and main_ident and approval_ident == main_ident:
+        return None, "", "", "approval and main channels are the same"
+    return values, approval_ident, main_ident, ""
+
+
+def _looks_like_whatsapp_jid(value: str) -> bool:
+    return str(value or "").strip().lower().endswith(
+        ("@newsletter", "@g.us", "@s.whatsapp.net")
+    )
+
+
+def _bulk_whatsapp(values: dict, inf_id: int) -> tuple[list[str], str]:
+    """Save a WhatsApp destination when the row already has its real JID.
+
+    A pasted invite link needs the creator's paired phone to resolve, so a bulk
+    import of a thousand rows must not try a thousand hub calls: those rows are
+    reported as "paste the link after pairing" instead of being guessed at.
+    """
+    raw = str(values.get("whatsapp") or "").strip()
+    if not raw:
+        return [], ""
+    if not _looks_like_whatsapp_jid(raw):
+        return [], (
+            "WhatsApp link saved later: it needs the creator's paired phone to "
+            "resolve. Pair the phone, then paste it on the creator page."
+        )
+    platform = "whatsapp_group" if raw.lower().endswith("@g.us") else "whatsapp_channel"
+    destination = {"platform": platform, "identifier": raw, "invite_link": ""}
+    try:
+        _save_whatsapp_destination(
+            inf_id, destination, role="whatsapp", wa_session_key=WA_SESSION_KEY(inf_id),
+        )
+    except Exception as exc:  # pragma: no cover - one bad row must not stop the batch
+        return [], f"WhatsApp destination could not be saved: {exc}"
+    return [raw], ""
+
+
+@app.route("/easy-setup/bulk", methods=["POST"])
+def easy_setup_bulk():
+    """Create or update many creators from one paste (or a CSV upload).
+
+    Re-running the same paste updates the same profiles instead of duplicating
+    them, so a corrected spreadsheet can simply be pasted again.
+    """
+    raw_text = request.form.get("bulk_lines", "")
+    upload = request.files.get("bulk_file")
+    if upload and upload.filename:
+        try:
+            raw_text = upload.stream.read().decode("utf-8", errors="ignore")
+        except Exception as exc:  # pragma: no cover - unreadable upload
+            raw_text = ""
+            flash(f"⚠ Could not read the uploaded file: {exc}", "error")
+
+    defaults = _easy_setup_form_values()
+    defaults["whatsapp"] = ""   # per row
+    rows = parse_bulk_creators(raw_text)
+    results: list[dict] = []
+    if not rows:
+        flash(
+            "⚠ Nothing to import: paste one creator per line, for example "
+            "`Ravi Loots, ravi-21, @ravi_loots, @ravi_amazon_deals, 1203630…@newsletter`.",
+            "warning",
+        )
+        return redirect(url_for("easy_setup"))
+
+    # One read of the current profiles for the whole paste (a thousand-row
+    # import must not become a thousand full-table scans).
+    known_profiles = {
+        str(profile.get("name") or "").strip().lower(): profile
+        for profile in db.list_influencers()
+    }
+    for row in rows[:BULK_MAX_ROWS]:
+        values, approval_ident, main_ident, error = _bulk_prepare_row(row, defaults)
+        if error:
+            results.append({"line": row.get("line"), "name": str(row.get("name") or "?"),
+                            "status": "failed", "detail": error})
+            continue
+        try:
+            applied = _apply_creator(values, approval_ident, main_ident,
+                                     known_profiles=known_profiles)
+        except Exception as exc:  # pragma: no cover - keep the batch going
+            results.append({"line": row.get("line"), "name": values["name"],
+                            "status": "failed", "detail": str(exc)[:200]})
+            continue
+        whatsapp_saved, whatsapp_note = _bulk_whatsapp(
+            values, int(applied["inf_id"]))
+        channels = [name for name in (approval_ident, main_ident) if name]
+        detail = ", ".join(channels) or "no channels"
+        if whatsapp_saved:
+            detail += f" · WhatsApp {whatsapp_saved[0]} (Pending)"
+        if whatsapp_note:
+            detail += f" · ⚠ {whatsapp_note}"
+        results.append({"line": row.get("line"), "name": applied["name"],
+                        "status": applied["action"], "detail": detail})
+
+    summary = {
+        "token": "",
+        "total": len(results),
+        "created": sum(1 for r in results if r["status"] == "created"),
+        "updated": sum(1 for r in results if r["status"] == "updated"),
+        "failed": sum(1 for r in results if r["status"] == "failed"),
+        "skipped": max(0, len(rows) - len(results)),
+        "rows": results[:BULK_RESULT_ROWS],
+        "rows_total": len(results),
+        "limit": BULK_MAX_ROWS,
+    }
+    token = _remember_bulk_result(summary)
+    flash(
+        f"📦 Bulk setup: {summary['created']} created, {summary['updated']} updated, "
+        f"{summary['failed']} failed"
+        + (f", {summary['skipped']} skipped over the {BULK_MAX_ROWS}-row limit"
+           if summary["skipped"] else "")
+        + ". Open the dashboard command center to see each creator's next step.",
+        "success" if not summary["failed"] else "warning",
+    )
+    return redirect(url_for("easy_setup", bulk=token))
 
 
 @app.route("/api/flow")

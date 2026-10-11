@@ -87,7 +87,9 @@ def _step(step_id: str, done: bool, *, detail: str, action: str = "",
 
 def creator_readiness(inf: dict, *, channels: list[dict] | None = None,
                       wa_sessions: list[dict] | None = None,
-                      plan: dict | None = None) -> dict:
+                      plan: dict | None = None,
+                      mirrored_counts: dict[int, int] | None = None,
+                      mirror_global_default: bool | None = None) -> dict:
     """Steps for one creator, in onboarding order, with the next action named."""
     inf = dict(inf or {})
     inf_id = int(inf.get("id") or 0)
@@ -104,7 +106,10 @@ def creator_readiness(inf: dict, *, channels: list[dict] | None = None,
         wa_sessions = []
     if plan is None:
         try:
-            plan = pipeline.mirror_plan(inf)
+            plan = pipeline.mirror_plan(
+                inf, channels=channels, mirrored_counts=mirrored_counts,
+                global_default=mirror_global_default,
+            )
         except Exception:  # pragma: no cover - display only
             plan = {"active": False, "sources": [], "targets": [], "mirrored_posts_24h": 0}
 
@@ -364,34 +369,116 @@ def global_checks(*, heartbeat: dict | None = None,
     }
 
 
+FILTER_STATES = {
+    "", "all", "ready", "blocked", "mirroring", "paused", "warning",
+    "no_phone", "no_whatsapp", "no_main", "shared_tag",
+}
+
+
+def _matches(creator: dict, query: str, state: str) -> bool:
+    """Filter one creator for search (name/id/tag/channels) and a state chip."""
+    if query:
+        needle = query.lower()
+        haystack = " ".join([
+            str(creator.get("name") or ""),
+            f"#{creator.get('id')}",
+            str(creator.get("amazon_tag") or ""),
+            " ".join(str(v) for v in (creator.get("channels") or {}).values()),
+        ]).lower()
+        if needle not in haystack:
+            return False
+    state = (state or "").lower()
+    if state in {"", "all"}:
+        return True
+    steps = {step["id"]: step for step in creator.get("steps") or []}
+    if state == "ready":
+        return bool(creator.get("ready"))
+    if state == "blocked":
+        return bool(creator.get("active")) and not creator.get("ready")
+    if state == "paused":
+        return not bool(creator.get("active"))
+    if state == "mirroring":
+        return bool(creator.get("mirror_active"))
+    if state == "warning":
+        return bool(creator.get("warnings"))
+    if state == "shared_tag":
+        return bool(creator.get("tag_is_shared_default"))
+    if state == "no_phone":
+        return not bool((steps.get("phone") or {}).get("done"))
+    if state == "no_whatsapp":
+        return not bool((steps.get("whatsapp") or {}).get("done"))
+    if state == "no_main":
+        return not bool((steps.get("main") or {}).get("done"))
+    return True
+
+
+def _bulk_inputs() -> tuple[dict[int, list[dict]], dict[int, list[dict]], dict[int, int]]:
+    """One query each for channels, sessions and mirror counts.
+
+    A hub with a thousand creators must not pay three queries per creator every
+    time the command center refreshes.
+    """
+    channels_by_inf: dict[int, list[dict]] = {}
+    for channel in db.list_channels():
+        channels_by_inf.setdefault(int(channel.get("influencer_id") or 0), []).append(channel)
+    sessions_by_inf: dict[int, list[dict]] = {}
+    for row in db.list_wa_sessions():
+        sessions_by_inf.setdefault(int(row.get("influencer_id") or 0), []).append(row)
+    try:
+        counts = db.mirrored_post_counts(hours=24)
+    except Exception:  # pragma: no cover - counts are display only
+        counts = {}
+    return channels_by_inf, sessions_by_inf, counts
+
+
 def overview(*, live_wa: dict[str, str] | None = None,
              heartbeat: dict | None = None,
              influencers: list[dict] | None = None,
-             sources: list[dict] | None = None) -> dict:
-    """Readiness for every creator plus the two global checks, ready to JSON."""
+             sources: list[dict] | None = None,
+             query: str = "", state: str = "",
+             limit: int = 0, offset: int = 0,
+             max_actions: int = 200, max_warnings: int = 50) -> dict:
+    """Readiness for every creator plus the two global checks, ready to JSON.
+
+    ``summary`` and ``globals`` always describe the whole hub; ``creators`` is
+    the (optionally filtered, paginated) slice, so the dashboard can render a
+    thousand creators without shipping a thousand rows to the browser.
+    """
     influencers = db.list_influencers() if influencers is None else list(influencers)
+    channels_by_inf, sessions_by_inf, mirrored_counts = _bulk_inputs()
+    try:
+        # One read for the whole hub: the per-channel 'inherit' value must not
+        # cost one global-settings query per channel.
+        mirror_global_default = pipeline.mirror_main_to_whatsapp_enabled()
+    except Exception:  # pragma: no cover - display only
+        mirror_global_default = bool(config.MIRROR_MAIN_TO_WHATSAPP)
     creators: list[dict] = []
     for inf in influencers:
-        rows = None
+        # [] (not None) so a creator without a session never triggers the
+        # per-creator fallback query inside creator_readiness().
+        rows = sessions_by_inf.get(int(inf.get("id") or 0)) or []
         if live_wa:
             # The caller (dashboard /api/readiness?live=1) already talked to the
             # hub; overlay the live status on this creator's stored sessions.
-            rows = db.list_wa_sessions(inf["id"])
-            for row in rows:
-                live = live_wa.get(str(row.get("session_key") or ""))
+            rows = [dict(row) for row in (rows or [])]
+            for idx, existing in enumerate(rows):
+                live = live_wa.get(str(existing.get("session_key") or ""))
                 if live:
-                    row = dict(row)
-                    row["status"] = live
-                    if live in CONNECTED_STATUSES and rows is not None:
-                        # reflect the overlay in the list we hand to the checker
-                        for idx, existing in enumerate(rows):
-                            if existing.get("session_key") == row.get("session_key"):
-                                rows[idx] = row
-        creators.append(creator_readiness(inf, wa_sessions=rows))
+                    rows[idx] = {**existing, "status": live}
+        creators.append(creator_readiness(
+            inf,
+            channels=channels_by_inf.get(int(inf.get("id") or 0), []),
+            wa_sessions=rows,
+            mirrored_counts=mirrored_counts,
+            mirror_global_default=mirror_global_default,
+        ))
 
     globals_ = global_checks(heartbeat=heartbeat, sources=sources)
+    all_creators = creators
+    matched = [creator for creator in creators
+               if _matches(creator, query=query.strip(), state=state)]
     warnings: list[dict] = []
-    for creator in creators:
+    for creator in all_creators:
         for message in creator.get("warnings") or []:
             warnings.append({
                 "creator_id": creator["id"], "creator": creator["name"],
@@ -400,7 +487,7 @@ def overview(*, live_wa: dict[str, str] | None = None,
                 if creator.get("tag_is_shared_default") else f"/influencer/{creator['id']}",
             })
     actions: list[dict] = []
-    for creator in creators:
+    for creator in all_creators:
         if creator["active"] and creator["next_step"]:
             step = creator["next_step"]
             actions.append({
@@ -425,22 +512,41 @@ def overview(*, live_wa: dict[str, str] | None = None,
                 "state": check["state"],
             })
 
-    total_steps = sum(c["total_count"] for c in creators) + 2
-    done_steps = sum(c["done_count"] for c in creators) + sum(
+    total_steps = sum(c["total_count"] for c in all_creators) + 2
+    done_steps = sum(c["done_count"] for c in all_creators) + sum(
         1 for key in ("sources", "worker") if globals_[key]["done"]
     )
+    try:
+        offset = max(0, int(offset))
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        offset, limit = 0, 0
+    page = matched[offset:] if offset else matched
+    if limit:
+        page = page[:limit]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "creators": creators,
+        "creators": page,
         "globals": globals_,
-        "actions": actions,
-        "warnings": warnings,
+        "actions": actions[:max_actions],
+        "actions_total": len(actions),
+        # A thousand-creator hub can have a thousand warnings; the list is a
+        # preview, the count is the truth (the table shows the per-creator state).
+        "warnings": warnings[:max_warnings],
+        "warnings_total": len(warnings),
+        "query": query.strip(),
+        "state": state.strip().lower(),
+        "total": len(all_creators),
+        "matched": len(matched),
+        "returned": len(page),
+        "offset": offset,
+        "limit": limit,
         "summary": {
-            "creators": len(creators),
-            "ready": sum(1 for c in creators if c["ready"]),
-            "mirroring": sum(1 for c in creators if c["mirror_active"]),
-            "blocked": sum(1 for c in creators if c["active"] and not c["ready"]),
-            "shared_tag": sum(1 for c in creators if c.get("tag_is_shared_default")),
+            "creators": len(all_creators),
+            "ready": sum(1 for c in all_creators if c["ready"]),
+            "mirroring": sum(1 for c in all_creators if c["mirror_active"]),
+            "blocked": sum(1 for c in all_creators if c["active"] and not c["ready"]),
+            "shared_tag": sum(1 for c in all_creators if c.get("tag_is_shared_default")),
             "steps_done": done_steps,
             "steps_total": total_steps,
             "percent": round(100 * done_steps / total_steps) if total_steps else 0,
@@ -451,10 +557,11 @@ def overview(*, live_wa: dict[str, str] | None = None,
 def creator_overview(inf_id: int) -> dict:
     """Same structure as :func:`overview` narrowed to one creator (Easy Setup)."""
     inf = db.get_influencer(inf_id)
-    if not inf:
+    if not inf:  # pragma: no cover - an unknown id has nothing to report
+
         return {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "creators": [], "globals": global_checks(), "actions": [],
-                "warnings": [],
+                "warnings": [], "warnings_total": 0, "actions_total": 0,
                 "summary": {"creators": 0, "ready": 0, "mirroring": 0, "blocked": 0,
                             "shared_tag": 0, "steps_done": 0, "steps_total": 0,
                             "percent": 0}}
