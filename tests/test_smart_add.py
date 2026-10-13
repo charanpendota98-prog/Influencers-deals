@@ -120,6 +120,16 @@ def test_extra_columns_after_the_known_ones_become_settings_or_notes(hub):
     assert row["notes"] == "VIP creator"
 
 
+def test_a_leftover_word_is_a_note_and_never_a_setting(hub):
+    """A guess here could change which deals a creator sees — so it is a note."""
+    row = creators.parse("Ramesh Rao ramesh-21 @ramesh_loots @ramesh_amazon electronics")[0]
+
+    assert row["categories"] == ""
+    assert row["notes"] == "electronics"
+    explicit = creators.parse("Ramesh Rao ramesh-21 @ramesh_loots categories=electronics")[0]
+    assert explicit["categories"] == "electronics" and explicit["notes"] == ""
+
+
 def test_blank_lines_and_comments_are_skipped(hub):
     rows = creators.parse("# today's additions\n\nRavi, ravi-21, @ravi_main\n\n")
 

@@ -1033,6 +1033,14 @@ def team_add():
                 allow_amazon=values["allow_amazon"],
                 allow_earnkaro=values["allow_earnkaro"], allow_hypd=values["allow_hypd"],
                 only_amazon=values["only_amazon"], hypd_store_id=values["hypd_store_id"],
+                # Whatever the row carried beyond the channels (a phone, a niche,
+                # the hours they want) is saved too — never a guess, only values
+                # the parser actually recognised.
+                phone_number=str(values.get("phone_number") or "").strip(),
+                categories=str(values.get("categories") or "").strip(),
+                posting_schedule=str(values.get("posting_schedule") or "").strip(),
+                price_filter=str(values.get("price_filter") or "").strip() or "all",
+                notes=str(values.get("notes") or "").strip(),
             )
         except Exception as exc:  # pragma: no cover - keep the batch going
             results.append({"name": name, "status": "failed", "detail": str(exc)[:200]})

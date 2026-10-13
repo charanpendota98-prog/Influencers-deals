@@ -335,6 +335,28 @@ def test_a_clean_team_add_still_works_and_lands_in_the_money_map(hub, monkeypatc
     assert db.list_influencers(added_by="Mohan")[0]["amazon_tag"] == "fresh-21"
 
 
+def test_a_team_add_saves_the_extras_the_line_carried(hub, monkeypatch):
+    """A phone, a niche and the hours a creator asked for land on the profile."""
+    client = _client(monkeypatch)
+    _login(client, "/team/login", {"name": "Mohan", "password": TEAM_PASSWORD})
+
+    client.post("/team/add", data={
+        "_csrf_token": _csrf(client, "/team"),
+        "bulk_lines": "Ramesh Rao, ramesh-21, @ramesh_loots, @ramesh_amazon, "
+                      "120363012345678901@newsletter, 9876500000, electronics, 09-23, budget",
+    })
+
+    created = db.search_influencers("Ramesh Rao")[0]
+    assert created["phone_number"] == "9876500000"
+    assert created["categories"] == "electronics"
+    assert created["posting_schedule"] == "09-23"
+    assert created["price_filter"] == "budget"
+    assert created["added_by"] == "Mohan"
+    roles = {channel["role"]: channel for channel in db.list_channels(created["id"])}
+    assert roles["broadcast"]["mirror_whatsapp"] == "1"
+    assert roles["whatsapp"]["status"] == "pending"
+
+
 def test_the_check_button_answers_without_writing_anything(hub, monkeypatch):
     db.add_influencer("Ravi Loots", "ravi-21")
     client = _client(monkeypatch)

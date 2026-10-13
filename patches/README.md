@@ -334,7 +334,10 @@ column is moved and reported (`1203…@newsletter → WhatsApp, was in the main
 column`); a plainly wrong tag stays wrong, so the row is refused with the reason
 instead of being guessed at. After the six documented columns the order is
 `categories, posting hours, price filter, notes`, and a note typed into the price
-column is kept as a note.
+column is kept as a note. A leftover word in a line that has **no** separators
+also becomes a note rather than a guess: notes are internal, while a category
+decides which deals a creator sees — so settings there are written explicitly
+(`categories=electronics`) or in a comma/tab row.
 
 ### 👥 New-creator defaults: set once, every add inherits
 

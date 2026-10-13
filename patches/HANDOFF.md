@@ -944,7 +944,7 @@ when non-empty, so a channel-only paste never wipes a saved field).
 * `dashboard/templates/team.html`, `setup.html`; `dashboard/app.py` team +
   easy-setup add loops run the guard and audit `add_blocked_duplicate`.
 
-Tests: `tests/test_guard.py` (32) and `tests/test_smart_add.py` (25). Full suite
-**583 passed** (`HUB_SKIP_DOTENV=1`). Live-verified on a 60-creator demo hub: the
+Tests: `tests/test_guard.py` (33) and `tests/test_smart_add.py` (26). Full suite
+**585 passed** (`HUB_SKIP_DOTENV=1`). Live-verified on a 60-creator demo hub: the
 refusal, the preview JSON, the defaults save, the money-map API/CLI and the
 self-check item (VERIFICATION §0).
