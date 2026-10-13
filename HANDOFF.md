@@ -1218,9 +1218,16 @@ electronics. Two changes in `link_router`:
 
 ### Verified
 
-Full suite **695 passed** (`HUB_SKIP_DOTENV=1`), including
-`tests/test_text_fidelity.py` (19), `tests/test_sources.py` (21) and the new
-whole-journey test in `tests/test_guided_setup.py` (29). The journey itself, end
+Full suite **697 passed** (`HUB_SKIP_DOTENV=1`), including
+`tests/test_text_fidelity.py` (19), `tests/test_sources.py` (21), the
+whole-journey test in `tests/test_guided_setup.py` (29) and the routing matrix in
+`tests/test_network_routing_matrix.py` (2): one four-link deal through three
+switch configurations — everything-on keeps all four products monetised
+(own Amazon tag, ekaro.in conversions for Flipkart **and** Meesho, LehLah on its
+own attribution), Amazon-only keeps the Amazon and LehLah blocks and loses the
+other two *with their copy*, Amazon-off loses the Amazon block and keeps the
+rest converted, the fidelity verdict is `ok` against the source minus exactly
+those blocks, and the delivery note names the network that left. The journey itself, end
 to end on a copy of the demo hub with fake sends: wizard create (name, number,
 tag) → channels + WhatsApp link pasted → paired → nothing ticked for sources →
 `allowed_sources == LootZoneIndia11`; a deal from that source posted to approval,
