@@ -86,7 +86,11 @@ CREATE TABLE IF NOT EXISTS posts (
     created_at    TEXT NOT NULL DEFAULT '',
     -- 0 = posted by the normal deal flow; otherwise the id of the Telegram
     -- channel whose successful post this WhatsApp destination mirrored.
-    mirror_source_id INTEGER NOT NULL DEFAULT 0
+    mirror_source_id INTEGER NOT NULL DEFAULT 0,
+    -- Why this post differs from its source, when it does: the product blocks a
+    -- switched-off network removed, promo lines dropped, or a text-fidelity
+    -- warning. Empty for a clean copy, so an operator reads "unchanged".
+    note          TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS vm_stats (
@@ -415,6 +419,9 @@ def migrate() -> None:
             ("deal_text", "TEXT NOT NULL DEFAULT ''"),
             ("mirror_source_id", "INTEGER NOT NULL DEFAULT 0"),
             ("created_at", "TEXT NOT NULL DEFAULT ''"),
+            # Why a post differs from its source (dropped product blocks for a
+            # switched-off network, promo lines removed, a fidelity warning).
+            ("note", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in posts_cols:
                 try:
@@ -2054,7 +2061,7 @@ def get_lehlah_short_link(code: str) -> dict | None:
 
 def record_post(influencer_id: int, channel_id: int, deal_sig: str,
                 status: str = "queued", error: str = "", deal_text: str = "",
-                mirror_source_id: int = 0) -> int:
+                mirror_source_id: int = 0, note: str = "") -> int:
     """Record one delivery attempt.
 
     ``mirror_source_id`` is 0 for a normal deal post and otherwise the Telegram
@@ -2066,11 +2073,11 @@ def record_post(influencer_id: int, channel_id: int, deal_sig: str,
         now = _now()
         cur = con.execute(
             "INSERT INTO posts (influencer_id, channel_id, deal_sig, status, error, "
-            "posted_at, created_at, deal_text, mirror_source_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "posted_at, created_at, deal_text, mirror_source_id, note) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, channel_id, deal_sig, status, error,
              now if status == "posted" else None, now, deal_text,
-             int(mirror_source_id or 0)))
+             int(mirror_source_id or 0), str(note or "")[:400]))
         con.commit()
         return int(cur.lastrowid)
     finally:
@@ -2284,6 +2291,55 @@ def get_recent_post_count_for_identifier(platform: str, identifier: str, hours: 
             "SELECT COUNT(*) as c FROM posts p JOIN channels c2 ON p.channel_id=c2.id " "WHERE lower(trim(c2.platform))=? AND lower(trim(c2.identifier))=? AND p.status='posted' AND p.posted_at >= ?",
             (plat, ident, cutoff)).fetchone()
         return int(row["c"]) if row else 0
+    finally:
+        con.close()
+
+
+def skip_reasons(hours: int = 24, limit: int = 8) -> list[dict]:
+    """Why posts were skipped recently: ``[{status, count}]``, biggest first.
+
+    The duplicate guards report themselves here (``skipped``,
+    ``skipped:content_dedup_24h``, ``skipped:near_duplicate_12h``), so an
+    operator can see the "no duplicates" rule working instead of trusting it.
+    """
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(hours=max(1, int(hours)))).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT COALESCE(NULLIF(TRIM(error), ''), status) AS reason, "
+            "COUNT(*) AS n FROM posts "
+            "WHERE (status LIKE 'skipped%' OR status='skipped') "
+            "AND COALESCE(NULLIF(posted_at, ''), created_at, '') >= ? "
+            "GROUP BY reason ORDER BY n DESC LIMIT ?",
+            (cutoff, max(1, min(50, int(limit or 8)))),
+        ).fetchall()
+        return [{"status": str(row["reason"]), "count": int(row["n"])} for row in rows]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+
+
+def posts_with_fidelity_notes(hours: int = 24, limit: int = 10) -> list[dict]:
+    """Posts whose recorded note mentions text the hub changed or nearly lost."""
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(hours=max(1, int(hours)))).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT p.id AS id, i.name AS creator, c.identifier AS identifier, "
+            "COALESCE(p.note, '') AS note FROM posts p "
+            "LEFT JOIN influencers i ON i.id = p.influencer_id "
+            "LEFT JOIN channels c ON c.id = p.channel_id "
+            "WHERE COALESCE(p.note, '') <> '' "
+            "AND COALESCE(NULLIF(p.posted_at, ''), p.created_at, '') >= ? "
+            "ORDER BY p.id DESC LIMIT ?",
+            (cutoff, max(1, min(200, int(limit or 10)))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.OperationalError:
+        return []
     finally:
         con.close()
 
@@ -2595,6 +2651,7 @@ def list_recent_posts(hours: int = 24, limit: int = 2000) -> list[dict]:
             "SELECT p.id AS id, p.created_at AS created_at, p.posted_at AS posted_at, "
             "i.name AS creator, c.platform AS platform, c.identifier AS identifier, "
             "p.status AS status, p.deal_sig AS deal_sig, p.error AS error, "
+            "COALESCE(p.note, '') AS note, "
             "COALESCE(p.mirror_source_id, 0) AS mirror_source_id "
             "FROM posts p LEFT JOIN influencers i ON i.id = p.influencer_id "
             "LEFT JOIN channels c ON c.id = p.channel_id "

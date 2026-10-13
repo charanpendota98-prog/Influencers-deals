@@ -39,8 +39,8 @@ sys.path.insert(0, str(ROOT))
 from influencer_hub import (
     age, amazon_shortlinks, amazon_watch, config, creators, db, guard, hypd_shortlinks,
     inventory, lehlah_shortlinks, link_router, onboarding, ops, presets, security,
-    polls, pipeline, puller, readiness, selfcheck, tag_proof, telegram_ops,
-    whatsapp_client,
+    polls, pipeline, puller, readiness, selfcheck, sources, tag_proof,
+    telegram_ops, whatsapp_client,
 )  # noqa: E402
 
 def _running_under_pytest() -> bool:
@@ -1951,6 +1951,7 @@ def setup():
         inventory_card=_inventory_snapshot(),
         assignments=_assignments_snapshot(),
         tag_proof_card=_tag_proof_snapshot(),
+        source_default=_default_source_state(sources),
     )
 
 
@@ -1991,6 +1992,24 @@ def _sort_by_setup_age(influencers: list[dict], sort: str = "") -> list[dict]:
     if key == "oldest":
         return sorted(influencers, key=lambda inf: str(inf.get("created_at") or ""))
     return influencers
+
+
+def _default_source_state(configured: list[dict] | None = None) -> dict:
+    """The hub's default deal source, and whether the pool already has it."""
+    spec = sources.DEFAULT_SPEC
+    token = sources.default_token()
+    rows = configured if configured is not None else db.list_sources(active_only=False)
+    have = [row for row in (rows or [])
+            if str(row.get("spec") or "").strip() == spec]
+    return {
+        "name": sources.DEFAULT_NAME or token,
+        "label": sources.DEFAULT_NAME or token or spec,
+        "spec": spec,
+        "token": token,
+        "configured": bool(have),
+        "active": bool(have and have[0].get("active")),
+        "source_id": int(have[0]["id"]) if have else 0,
+    }
 
 
 def _tag_proof_snapshot() -> dict:
@@ -2444,6 +2463,23 @@ def seed_default_sources():
             existing_specs.add(spec)
             added += 1
     return redirect(url_for("setup", sources_added=added))
+
+
+@app.route("/sources/ensure-default", methods=["POST"])
+def ensure_default_source():
+    """Add the hub's default deal source (LootZoneIndia11) to the pool.
+
+    The default is what a creator falls back to when nothing was selected, so the
+    worker must actually be able to read it. Idempotent: pressing it twice changes
+    nothing.
+    """
+    result = sources.ensure_default()
+    security.audit(_session_actor(), _session_role(), "default_source_ensured",
+                   target=result.get("name") or "", detail=result.get("spec") or "",
+                   ip=_client_ip())
+    flash(f"{'✅ Added' if result['added'] else 'Already configured'}: "
+          f"{result['name']} ({result['spec']})", "success")
+    return redirect(url_for("setup", source_saved=1))
 
 
 @app.route("/sources/add", methods=["POST"])
@@ -3713,6 +3749,17 @@ def _guided_context(profile: dict | None) -> dict:
         "guided_tag_link": tag_proof.url_summary(tag_proof.tagged_link(profile)) if profile else "",
         "guided_steps": onboarding.STEPS,
         "guided_categories": onboarding.CATEGORY_CHOICES,
+        # Which deal sources this creator may post from: ticked boxes beside the
+        # channels that were just saved, defaulting to LootZoneIndia11.
+        "guided_sources": sources.choice_rows(),
+        "guided_source_picked": set(
+            token.lower() for token in
+            sources.selection_tokens((profile or {}).get("allowed_sources") or "")
+        ),
+        "guided_source_default": sources.default_token(),
+        "guided_source_line": sources.selection_line((profile or {}).get("allowed_sources") or ""),
+        "guided_source_all": not sources.selection_tokens(
+            (profile or {}).get("allowed_sources") or ""),
         "guided_picked": onboarding.selected_categories((profile or {}).get("categories")),
         "batch_defaults": presets.resolved(),
         "batch_defaults_line": presets.summary_line(),
@@ -3798,17 +3845,25 @@ def guided_creator_step():
         flash("⛔ " + index.explain(taken), "error")
         return redirect(url_for("guided_setup"))
     inf_id = db.add_influencer(name, tag, added_by=_session_actor() if _is_team() else "",
+                               allowed_sources=sources.default_token(),
                                **_add_defaults_kwargs())
     db.set_influencer_active(inf_id, True)
+    # A creator's posts need a source the hub can really read: make sure the
+    # default one (LootZoneIndia11) is in the pool as soon as it is needed.
+    default_source = sources.ensure_default()
     session["guided_creator"] = inf_id
     # For a team member this marks the creator as belonging to this run: they may
     # finish setting it up now, and never edit it later.
     session["guided_fresh"] = inf_id
     security.audit(_session_actor(), _session_role(), "guided_creator_created", target=name,
-                   detail=f"tag {tag}", ip=_client_ip())
+                   detail=f"tag {tag} · source {sources.selection_line(sources.default_token())}"
+                          + (" (default source added to the pool)"
+                             if default_source.get("added") else ""),
+                   ip=_client_ip())
     for warning in taken["warnings"]:
         flash("⚠ " + warning["detail"], "warning")
-    flash(f"✅ {name} created — now add the channels you were given.", "success")
+    flash(f"✅ {name} created — now add the channels you were given "
+          f"(posts from {sources.selection_line(sources.default_token())}).", "success")
     return redirect(url_for("guided_setup", creator=inf_id, step="channels"))
 
 
@@ -3889,6 +3944,26 @@ def guided_channels_step():
         main = db.get_channel(inf_id, "broadcast")
         if main:
             db.update_channel_details(int(main["id"]), mirror_whatsapp=mirror_pick)
+
+    # Which deal sources this creator posts from. Ticked boxes win; a creator with
+    # no selection falls back to the hub's default source (LootZoneIndia11) rather
+    # than to "every source", which is what the owner asked for.
+    source_tokens = [token for token in request.form.getlist("sources")
+                     if str(token or "").strip()]
+    source_specs = request.form.get("sources_text", "")
+    if source_tokens or source_specs:
+        selection = sources.normalize_selection(
+            ", ".join(source_tokens + ([source_specs] if source_specs else []))
+        )
+    elif request.form.get("sources_all"):
+        selection = ""
+    else:
+        selection = sources.default_token()
+    if request.form.get("sources_all"):
+        selection = ""
+    if selection != (profile.get("allowed_sources") or ""):
+        db.update_influencer(inf_id, allowed_sources=selection)
+        added.append(f"Sources {sources.selection_line(selection)}")
 
     if added:
         security.audit(_session_actor(), _session_role(), "guided_channels_saved", target=profile.get("name"),
@@ -5010,6 +5085,11 @@ def influencer_detail(inf_id):
     )
     return render_template(
         "influencer.html", inf=inf, channels=channels,
+        # Let the source fields suggest what exists: a creator's allowed_sources
+        # is a comma list of these tokens (any shape is normalized on save).
+        source_tokens=[row["token"] for row in sources.choice_rows()],
+        source_default=sources.default_token(),
+        source_line=sources.selection_line(inf.get("allowed_sources") or ""),
         wa_sessions=wa_sessions, stats=stats, wa_key=wa_key,
         wa_hub_url=config.WA_HUB_URL, wa_status_info=wa_status_info,
         wa_pairing=wa_pairing, mirror=mirror_info,

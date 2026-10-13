@@ -1,6 +1,9 @@
 {% extends "layout.html" %}
 {% block title %}{{ inf.name }} - Channels Control Center{% endblock %}
 {% block content %}
+<datalist id="source-tokens">
+  {% for token in source_tokens %}<option value="{{ token }}"></option>{% endfor %}
+</datalist>
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap:wrap; gap:12px;">
   <div>
     <h1 style="margin-bottom: 4px; display:flex; align-items:center; gap:8px;">
@@ -219,7 +222,10 @@
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#38bdf8;">📡 Allowed Deal Sources (Comma-Separated)</label>
-      <input name="allowed_sources" value="{{ inf.allowed_sources or '' }}" placeholder="powerloot,secret_loots (Empty = All Sources)" style="width: 100%; font-size: 12px;" />
+      <input name="allowed_sources" list="source-tokens" value="{{ inf.allowed_sources or '' }}"
+             placeholder="{{ source_default }}, powerloot (empty = all sources)"
+             style="width: 100%; font-size: 12px;" />
+      <small class="hint">Currently: {{ source_line }} · type or pick several, comma separated.</small>
       <span class="hint" style="font-size:10px;">Specific source channel nunchi mathrame deals raavalante ikkada rayandi</span>
     </div>
     <div>
@@ -414,7 +420,7 @@
           <td>
             <input form="channel-update-{{ c.id }}" name="categories" value="{{ c.categories or '' }}" placeholder="clothing,electronics (All)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Allowed categories" />
             <input form="channel-update-{{ c.id }}" name="posting_schedule" value="{{ c.posting_schedule or '' }}" placeholder="06:00-02:00 (24/7)" style="font-size: 11px; padding: 3px 5px; width: 110px; display:block; margin-bottom:3px;" title="Timing schedule" />
-            <input form="channel-update-{{ c.id }}" name="allowed_sources" value="{{ c.allowed_sources or '' }}" placeholder="powerloot (All Src)" style="font-size: 10px; padding: 2px 4px; width: 110px; font-family: monospace;" title="Specific deal source for this channel" />
+            <input form="channel-update-{{ c.id }}" name="allowed_sources" list="source-tokens" value="{{ c.allowed_sources or '' }}" placeholder="powerloot (All Src)" style="font-size: 10px; padding: 2px 4px; width: 110px; font-family: monospace;" title="Specific deal sources for this channel (empty = all sources)" />
             {% if c.platform == 'telegram' %}
               <select form="channel-update-{{ c.id }}" name="mirror_whatsapp" style="font-size: 10px; padding: 2px 4px; width: 110px; margin-top: 3px;" title="Copy this main channel's posts into the creator's WhatsApp destinations (inherit uses the global Mirror switch)">
                 <option value="" {{ 'selected' if not c.mirror_whatsapp else '' }}>🔁 Mirror: inherit</option>

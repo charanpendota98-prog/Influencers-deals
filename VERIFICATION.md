@@ -11,7 +11,7 @@ git fetch origin arena/3496cf5b-influencers-deals
 git checkout -B arena/3496cf5b-influencers-deals FETCH_HEAD
 ```
 
-## 0b. The guided flow and the setup age (previous round)
+## 0f. The guided flow and the setup age (previous round)
 
 ```bash
 # 1. the whole wizard, in four saves (admin or team session; CSRF from the page)
@@ -62,7 +62,7 @@ PYTHONPATH=. .venv/bin/python -c "from influencer_hub import age; print(age.huma
 | team member on `/setup` / `/api/inventory.csv` | `302` → `/team` and `403 admin_only` |
 | page timings (60 creators) | `/guided` **3 ms**, `/setup` 68 ms, `/easy-setup` 61 ms, `/` 126 ms, `/api/assignments` 4 ms |
 
-## 0c. The money map and one-line adds (round before that)
+## 0g. The money map and one-line adds (round before that)
 
 ```bash
 # 1. nobody's money is attached to somebody else (read-only, exit 1 when it is)
@@ -97,7 +97,7 @@ PYTHONPATH=. .venv/bin/python -m influencer_hub.cli add-defaults --show
 | money-map scan, 1000 creators + 1000 channels | **45 ms**; `GuardIndex.from_db` 15 ms; one preflight < 0.1 ms |
 | self-check | 14 items, `Money map (tags & channels)` amber while mixed, green after the fix |
 
-## 0. The own-tag proof (this round)
+## 0b. The own-tag proof (previous round)
 
 ```bash
 # 1. the fleet proof, in one command — read-only, no network, exit 1 if anything is held
@@ -138,6 +138,47 @@ the reason `no_own_amazon_tag` and posts (signed with their own tag) on the firs
 worker pass after the tag is saved. A creator *without* an Amazon link in a deal
 is unaffected, so EarnKaro/HYPD/Meesho posts keep flowing.
 
+## 0. Text fidelity, sources and duplicates (this round)
+
+```bash
+# 1. the text rules, and the network filter, as code
+HUB_ENV=development HUB_DB_PATH="$(mktemp /tmp/fidelity.XXXXXX.sqlite3)" HUB_SKIP_DOTENV=1 \
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_text_fidelity.py tests/test_sources.py
+#   33 passed: a missing price line and an invented line are caught, a rewritten
+#   link is not a loss, the conservative render wins when text would be lost, a
+#   switched-off network takes its product's copy with it, the default source is
+#   LootZoneIndia11, the picker saves several tokens, and duplicates are blocked
+
+# 2. see it in the delivery log (the note column says what changed)
+curl -s -b cookies "http://127.0.0.1:5000/api/posts.csv?hours=24" | cut -d, -f4,6,7,11 | tail -5
+#   creator,identifier,status,note
+#   Ravi Loots,@ravi_loots,posted,network merchant: NIRLON Shirt at ₹399 — Sizes: M, L, XL
+#   Sita Deals,@sita_loots,skipped:content_dedup_24h,…
+#   Ravi Loots,@ravi_loots,posted,            ← clean copy: nothing changed
+
+# 3. the self-check names the creator and counts the duplicates it stopped
+curl -s -b cookies http://127.0.0.1:5000/api/self-check | python -m json.tool | grep -A 4 '"id": "text"'
+#   state "ok" (or "warn" with the creator's name), detail:
+#   "Every post kept its source text (promotion lines aside); 2 duplicate(s) were blocked."
+
+# 4. the default source, and the picker
+curl -s -b cookies http://127.0.0.1:5000/setup | grep -o 'default: LootZoneIndia11' | head -1
+curl -s -b cookies -d "_csrf_token=$CSRF" http://127.0.0.1:5000/sources/ensure-default -o /dev/null -w "%{redirect_url}\n"
+#   http://127.0.0.1:5000/setup?source_saved=1   (idempotent: press twice, same result)
+python -m influencer_hub.cli status | head -5      # sources line: how many are active
+
+# 5. a creator with only Amazon on posts only the Amazon products
+#    (set the switches on the creator page, then post a mixed source deal)
+#    @both_on gets the Amazon product + the ekaro.in conversion; @amz_only gets
+#    the Amazon product only, and the Flipkart block is recorded as removed.
+```
+
+**What is expected:** no post ever loses a source line silently — a loss is
+caught before delivery, the conservative render is used when it keeps more, and
+either way the delivery row says what happened. A creator with nothing selected
+posts from `LootZoneIndia11`; ticking several sources stores those tokens; the
+same product is never posted twice to one channel (the reason is in the log).
+
 ## 1. Code tests (services stopped, no credential read at all)
 
 ```bash
@@ -149,7 +190,7 @@ RC=$?; rm -f "$TEST_DB"; echo "pytest exit code: $RC"
 cd wa_hub && node --test
 ```
 
-**Expected:** `652 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
+**Expected:** `685 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
 the run ignore the VM's private `.env` entirely (`config._load_dotenv` returns
 before reading the file), so no real Telegram session, affiliate key, shortener
 token or bot credential exists for the duration of the run: no real post, no

@@ -23,6 +23,7 @@ from . import (
     config,
     db,
     earnkaro,
+    fidelity,
     hypd_shortlinks,
     lehlah_shortlinks,
     link_router,
@@ -508,21 +509,41 @@ async def _render_and_deliver_destination(
             pass
     # Wrappers were already unwrapped above (step 3b), so filtering an
     # affiliate kind now drops links the channel really disabled —
-    # including the ones a wrapper was hiding.
-    render_text = link_router.filter_disallowed_affiliate_links(render_text, allowed_kinds)
+    # including the ones a wrapper was hiding. A product block whose only links
+    # belong to a switched-off network goes with its copy: a title and price with
+    # no link to buy them would be a dead deal, and half a product's text is
+    # exactly the "unwanted text / missing text" the owner refuses to see.
+    render_text, dropped_blocks = link_router.partition_disallowed_blocks(
+        render_text, allowed_kinds
+    )
+    if dropped_blocks:
+        logging.getLogger(__name__).info(
+            "NETWORK FILTER inf=%s ch=%s removed %s block(s) for switched-off network(s): %s",
+            inf.get("id"), ch.get("id"), len(dropped_blocks),
+            [block["kinds"] for block in dropped_blocks],
+        )
 
-    # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
+    # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel.
+    # A skip is written to the delivery log (status skipped + the reason), so
+    # "no duplicates" is something the owner can *see* rather than trust.
+    def _note_skip(reason: str) -> str:
+        try:
+            db.record_post(inf["id"], ch["id"], sig, status="skipped", error=reason)
+        except Exception:  # pragma: no cover - logging a skip must never break a run
+            pass
+        return reason
+
     if db.already_posted(inf["id"], ch["id"], sig):
-        return "skipped"
+        return _note_skip("skipped:duplicate_same_product")
     # 8b. GLOBAL physical channel dedup: same deal already posted to same Telegram/WhatsApp identifier by ANY influencer?
     # This stops duplicates when multiple influencers are configured to post to same @loots_channel (screenshot case).
     try:
         if db.already_posted_to_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), sig):
-            return "skipped:global_identifier_dedup"
+            return _note_skip("skipped:global_identifier_dedup")
         # In-memory cross-influencer dedup for this run (race-safe for same batch)
         phys_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), sig)
         if phys_key in seen_physical_in_this_run:
-            return "skipped:run_batch_dedup"
+            return _note_skip("skipped:run_batch_dedup")
     except Exception:
         pass
 
@@ -650,6 +671,54 @@ async def _render_and_deliver_destination(
         role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store,
         meesho_earnkaro_fallback=meesho_fallback,
     )
+    # === TEXT FIDELITY: the source's deal text is what goes out ===
+    # The renderer above is the rich one (it may drop a line it reads as a
+    # watermark). Before anything is published the post is compared with the text
+    # it came from: a product line that would go missing, or a line that would
+    # appear from nowhere, is caught here. If real text would be lost, the
+    # conservative renderer runs (URLs rewritten, every source line kept) and wins
+    # when it keeps more of the source. Either way the verdict is logged, and a
+    # recovery is audited — nothing is published that reads worse than the source.
+    def _conservative_render() -> str:
+        # The conservative renderer is the same canonical renderer with promo
+        # cleaning off: same links, same shortener, same policy — but every source
+        # line is kept, so nothing the rich pass read as a watermark can vanish.
+        return link_router.render_for_influencer(
+            render_text, effective_amz_tag, channel_ek_map, shortened_links=shortened_map,
+            role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store,
+            meesho_earnkaro_fallback=meesho_fallback,
+            clean_promos=False,
+        )
+
+    rendered, fidelity_report = fidelity.enforce(
+        render_text, rendered, fallback_render=_conservative_render
+    )
+    _fid_log = logging.getLogger(__name__)
+    if fidelity_report.get("recovered"):
+        _fid_log.warning(
+            "TEXT FIDELITY RECOVERED inf=%s ch=%s: the rich render would have lost %s — "
+            "posted the conservative render instead",
+            inf.get("id"), ch.get("id"),
+            (fidelity_report.get("previous") or {}).get("missing", [])[:3],
+        )
+        try:
+            from . import security
+
+            security.audit(
+                "pipeline", "system", "text_fidelity_recovered",
+                target=str(inf.get("name") or f"creator #{inf.get('id')}"),
+                detail=(f"ch {ch.get('identifier') or ch.get('id')}: kept every source "
+                        f"line; the rich render would have dropped "
+                        f"{(fidelity_report.get('previous') or {}).get('missing', [])[:2]}"),
+            )
+        except Exception:  # pragma: no cover - auditing is best-effort
+            pass
+    elif not fidelity_report.get("ok"):
+        _fid_log.warning(
+            "TEXT FIDELITY inf=%s ch=%s: %s | missing=%s added=%s",
+            inf.get("id"), ch.get("id"), fidelity_report["summary"],
+            fidelity.first_missing(fidelity_report), fidelity_report["added"][:3],
+        )
     # ADVANCED SHORTENER: ONLY OUR affiliate links are shortened
     # - HYPD links with OUR store ID (93944) -> first-party /m/<code> or Bitly fallback
     # - Amazon links with OUR tag (e.g. mytag-21) -> verified first-party /a/<code>?tag= or Bitly fallback
@@ -797,7 +866,7 @@ async def _render_and_deliver_destination(
         if phys_content_key in seen_content_in_this_run:
             return "skipped:content_dedup_in_run"
         if db.already_posted_content_hash(str(ch.get("platform","")), str(ch.get("identifier","")), content_hash, hours=24):
-            return "skipped:content_dedup_24h"
+            return _note_skip("skipped:content_dedup_24h")
     except Exception:
         content_hash = ""
         phys_content_key = None
@@ -805,7 +874,10 @@ async def _render_and_deliver_destination(
     # Uses 65% token overlap + same price, checks last 12h. This is the deep-think advanced fix for severe spam.
     try:
         if db.is_near_duplicate_in_window(str(ch.get("platform","")), str(ch.get("identifier","")), rendered, hours=12, threshold=0.60):
-            return "skipped:near_duplicate_12h"
+            # The owner's rule: the same product within the hour (or the day) is
+            # never posted twice to one channel. This is the fuzzy guard that
+            # catches the same product worded differently.
+            return _note_skip("skipped:near_duplicate_12h")
     except Exception:
         pass
     # 8e. RATE LIMITER — ultimate safety net against any bug causing 56 posts
@@ -813,10 +885,10 @@ async def _render_and_deliver_destination(
     try:
         # Check hourly limit
         if db.get_recent_post_count_for_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), hours=1) >= 20:
-            return "skipped:rate_limit_20_per_hour"
+            return _note_skip("skipped:rate_limit_20_per_hour")
         # Check 10-minute burst limit (0.17h ≈ 10min)
         if db.get_recent_post_count_for_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), hours=0.17) >= 5:
-            return "skipped:rate_limit_5_per_10min"
+            return _note_skip("skipped:rate_limit_5_per_10min")
     except Exception:
         pass
     status = await dispatch_to_channel(inf, ch, rendered)
@@ -828,10 +900,28 @@ async def _render_and_deliver_destination(
             seen_content_in_this_run.add(phys_content_key)
     except Exception:
         pass
+    _fil = fidelity_report or {}
+    _counts = _fil.get("counts") or {}
+    _note_bits: list[str] = []
+    for block in (dropped_blocks or []):
+        first = (block.get("lines") or [""])[0]
+        _note_bits.append(
+            f"network {','.join(block.get('kinds') or [])}: {first[:80]}"
+        )
+    if _counts.get("promo_dropped"):
+        _note_bits.append(f"{_counts['promo_dropped']} source promotion line(s) removed")
+    if _counts.get("missing") or _counts.get("added"):
+        _note_bits.append(
+            f"fidelity ⛔ missing={(_fil.get('missing') or [])[:2]} "
+            f"added={(_fil.get('added') or [])[:2]}"
+        )
+    elif _fil.get("recovered"):
+        _note_bits.append("fidelity: conservative render (kept every source line)")
     db.record_post(inf["id"], ch["id"], sig,
                    status="posted" if status == "posted" else "failed",
                    error="" if status == "posted" else status,
                    deal_text=rendered if status == "posted" else "",
+                   note=" · ".join(_note_bits)[:400],
                    mirror_source_id=mirror_source_id)
     return status
 

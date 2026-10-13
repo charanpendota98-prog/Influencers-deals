@@ -92,6 +92,15 @@ DEFAULT_AMAZON_TAG = AMAZON_ASSOCIATE_TAG
 # instead of paying the wrong account. Set REQUIRE_OWN_AMAZON_TAG=off only to run
 # one deliberately shared account for everybody.
 REQUIRE_OWN_AMAZON_TAG = _bool("REQUIRE_OWN_AMAZON_TAG", True)
+
+# ----- Deal sources -----
+# The source channel the owner named ("em select cheyakapothe defaults gaa
+# https://t.me/LootZoneIndia11"): when a creator (or a channel) is saved without
+# a source selection, this is the source their posts come from instead of
+# "every source in the hub". Configurable, and overridable per creator/channel
+# with the source picker on the creator page and in the guided wizard.
+DEFAULT_SOURCE_SPEC = _env("DEFAULT_SOURCE_SPEC", "https://t.me/LootZoneIndia11")
+DEFAULT_SOURCE_NAME = _env("DEFAULT_SOURCE_NAME", "LootZoneIndia11")
 AMAZON_CREATORS_API_CLIENT_ID = _env(
     "AMAZON_CREATORS_API_CLIENT_ID",
     "amzn1.application-oa2-client.83229d9d14664351be9fc2059038a4f2",

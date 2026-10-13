@@ -200,6 +200,44 @@ def _central_accounts_check() -> dict:
                   f"for central attribution.")
 
 
+def _text_check() -> dict:
+    """Did the posts we sent keep the source's words — and were duplicates stopped?
+
+    Two answers an operator wants before trusting a hub with a creator's channel:
+    nothing that was in a source post went missing or appeared from nowhere, and
+    the same product was not posted twice to the same channel. Both are read from
+    the delivery log (``posts.note`` and the skip statuses), never guessed.
+    """
+    try:
+        notes = db.posts_with_fidelity_notes(hours=24, limit=10)
+    except Exception:  # pragma: no cover - defensive
+        notes = []
+    try:
+        reasons = {row["status"]: row["count"] for row in db.skip_reasons(hours=24, limit=20)}
+    except Exception:  # pragma: no cover - defensive
+        reasons = {}
+    duplicates = sum(count for status, count in reasons.items()
+                     if "duplicat" in status or "dedup" in status)
+    warned = [row for row in notes
+              if "fidelity" in str(row.get("note") or "").lower()
+              or "network" in str(row.get("note") or "").lower()]
+    if warned:
+        first = warned[0]
+        return _check(
+            "text", "Source text & duplicates", WARN,
+            f"{len(warned)} post(s) in 24h changed their source text "
+            f"(last: {str(first.get('creator') or '?')} → {str(first.get('note'))[:120]}). "
+            f"{duplicates} duplicate(s) blocked.",
+            "Open the delivery log (/api/posts.csv) and read the note column: a switched-off "
+            "network's product block shows as \"network …\", a fidelity warning as \"fidelity\".",
+        )
+    return _check(
+        "text", "Source text & duplicates", OK,
+        f"Every post kept its source text (promotion lines aside); {duplicates} duplicate(s) "
+        "were blocked before posting.",
+    )
+
+
 def _worker_check(heartbeat: dict | None) -> dict:
     if not heartbeat:
         return _check("worker", "Background worker", FAIL,
@@ -220,15 +258,28 @@ def _worker_check(heartbeat: dict | None) -> dict:
                   "and restart the service.")
 
 
-def _sources_check(sources: list[dict]) -> dict:
+def _sources_check(sources: list[dict], influencers: list[dict] | None = None) -> dict:
     active = [row for row in sources if row.get("active")]
     if not active:
         return _check("sources", "Deal sources", WARN,
                       f"{len(sources)} source(s) configured, none switched on.",
                       "Open Vault & Sources and switch them on (or press “Add "
                       "recommended sources” in Easy Setup).")
-    return _check("sources", "Deal sources", OK,
-                  f"{len(active)} of {len(sources)} source(s) active.")
+    detail = f"{len(active)} of {len(sources)} source(s) active."
+    if influencers is not None:
+        from . import sources as _sources
+
+        default_token = _sources.default_token()
+        from_default = sum(
+            1 for row in influencers
+            if str(row.get("allowed_sources") or "").strip().lower() == default_token.lower()
+        )
+        every = sum(1 for row in influencers
+                    if not str(row.get("allowed_sources") or "").strip())
+        if default_token:
+            detail += (f" {from_default} creator(s) post from the default "
+                       f"{_sources.DEFAULT_NAME or default_token}; {every} from every source.")
+    return _check("sources", "Deal sources", OK, detail)
 
 
 def _creators_check(plan: dict | None) -> dict:
@@ -555,12 +606,13 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
         _guard("telegram", "Telegram account", _telegram_check),
         _guard("dashboard", "Dashboard access", _dashboard_check),
         _guard("worker", "Background worker", lambda: _worker_check(heartbeat)),
-        _guard("sources", "Deal sources", lambda: _sources_check(sources)),
+        _guard("sources", "Deal sources", lambda: _sources_check(sources, influencers)),
         _guard("amazon", "Amazon attribution", lambda: _amazon_check(plan, fleet)),
         _guard("central", "Central EarnKaro / HYPD", _central_accounts_check),
         _guard("creators", "Creator readiness", lambda: _creators_check(plan)),
         _guard("mirror", "Main → WhatsApp mirror", lambda: _mirror_check(plan)),
         _guard("history", "Ops history", _history_check),
+        _guard("text", "Source text & duplicates", _text_check),
         _guard("assignments", "Money map (tags & channels)", _assignments_check),
         _guard("amazon_links", "Amazon links in real posts", _amazon_links_check),
         _guard("access", "Admin & team access", _access_check),

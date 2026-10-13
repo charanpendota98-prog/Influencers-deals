@@ -688,7 +688,7 @@ def bulk_template_csv() -> str:
 
 POST_LOG_COLUMNS = [
     "id", "created_at", "posted_at", "creator", "platform", "identifier",
-    "status", "deal_sig", "mirrored_from", "error",
+    "status", "deal_sig", "mirrored_from", "error", "note",
 ]
 
 
@@ -709,6 +709,9 @@ def posts_csv(*, hours: int = 24, limit: int = 2000) -> str:
             row.get("deal_sig") or "",
             "yes" if int(row.get("mirror_source_id") or 0) else "",
             " ".join(str(row.get("error") or "").split())[:300],
+            # Why the post differs from its source, when it does: a switched-off
+            # network's product block, promo lines removed, a fidelity warning.
+            " ".join(str(row.get("note") or "").split())[:300],
         ])
     return buffer.getvalue()
 

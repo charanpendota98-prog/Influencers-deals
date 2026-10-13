@@ -1116,3 +1116,82 @@ the escape hatch, the worker's bounded retry and its first-of-many post after th
 tag is saved, the fleet pass, `describe_fix`, the self-check line, the CLI
 (exit codes 0/1/2), the dashboard API, the setup card, the home chip, the flow
 board reasons and the digest line.
+
+## 18. This session, part 13: text fidelity, sources and duplicates
+
+The operator's asks: "konni sarlu source lo unna text miss cheyatam and unwanted
+text add avvatam jaragakudadu … text miss cheyaku … aanni list of links vachina
+perfectga cheyu", "multiple posts same products asalu same channel lo cheyoddu
+duplicates asalu vundoddu … 1 hours lo same products vasthe skip cheyali", and
+for sources: "pakkana source channel kuda vundlai em select cheyakapothe
+defaults gaa https://t.me/LootZoneIndia11 … pakka manam set chesina source
+channels pakkana multiple ga select cheskunelaga vundlai". Plus: with only
+Amazon switched on, only Amazon products post; with EarnKaro/HYPD on too, those
+products post on their own routes.
+
+### Text fidelity (`influencer_hub/fidelity.py`, new)
+
+* `compare(source, rendered)` classifies every difference: `missing` (a product
+  line whose words **or numbers** vanished — "₹1299" going missing is a lost
+  sale), `added` (a line that was never in the source), `promo_dropped` (channel
+  promotion/watermarks, meant to go), `other_dropped`, and a **link budget**: a
+  post must not come out with fewer links than it went in with. A link the hub
+  rewrote (own tag, EarnKaro conversion, shortener) is reported as `rewritten`,
+  never as a loss — that distinction is why the check is usable in production.
+* `enforce(source, rendered, fallback_render=…)` runs before delivery: the
+  pipeline passes a conservative render (same links/shortener/policy, promo
+  cleaning off, every source line kept). If the normal render would lose real
+  text, the conservative one is posted instead, `text_fidelity_recovered` is
+  audited and both the warning and the note land in the log.
+* `link_router.partition_disallowed_blocks` (new) is the network filter: a block
+  (one product's copy, blank-line separated) whose only store links belong to a
+  switched-off network is removed **whole** — title, sizes and price included —
+  while a block with an allowed link keeps its copy and loses only the disabled
+  URLs and their dangling labels (`_only_labels_and_punctuation`). The approval
+  renderer uses the same label rule.
+* `posts.note` (new column + additive migration) records why a delivered post
+  differs from its source; `/api/posts.csv` carries it as the `note` column, and
+  the self-check item **Source text & duplicates** (new) turns amber with the
+  creator's name while any post in 24h changed its source text — and counts the
+  duplicate skips it blocked.
+
+### Duplicates
+
+The four guards were already in place (signature, identifier + in-run set,
+24h content hash, 12h near-duplicate at 60% word overlap, plus 20/h and 5/10min
+rate limits) — the change is that a skip is now **written to the delivery log**
+with its reason (`skipped:duplicate_same_product`, `…:content_dedup_24h`,
+`…:near_duplicate_12h`, the rate limits) via a small `_note_skip` helper, so "no
+duplicates" is visible (`db.skip_reasons`, the self-check line, `/api/posts.csv`)
+instead of only implied by the returned status.
+
+### Sources (`influencer_hub/sources.py`, new)
+
+* `DEFAULT_SOURCE_SPEC = https://t.me/LootZoneIndia11` (+ `DEFAULT_SOURCE_NAME`),
+  `token_for()` (t.me URL / @name / private invite → the token a Telegram dialog
+  name matches), `normalize_selection()` (case-insensitive, deduped, anything an
+  operator pastes), `choice_rows()`, `default_token()`, `ensure_default()` and
+  `selection_line()`.
+* The guided wizard's step 2 carries the picker ("📡 Deal sources") beside the
+  channels: tick many, or "post from every source" explicitly; nothing ticked
+  saves the default token, and creating a guided creator calls `ensure_default()`
+  so the worker can actually read it. `/setup → 📡 Source pool` shows the default
+  and adds it in one click (`POST /sources/ensure-default`, audited
+  `default_source_ensured`); the creator page's source inputs suggest the tokens
+  that exist via a `<datalist>`, per creator and per channel.
+* The self-check's **Deal sources** line now also says how many creators post
+  from the default and how many from every source.
+
+### Verified
+
+Full suite **685 passed** (`HUB_SKIP_DOTENV=1`), including the new
+`tests/test_text_fidelity.py` (19) and `tests/test_sources.py` (14). Live on the
+demo hub (62 creators, 186 channels): the wizard's picker rendered
+`LootZoneIndia11` as the default and saved `powerloot, HUga1JTHwhBmNDE1` when two
+were ticked; `api/self-check` showed `ok | Source text & duplicates | Every post
+kept its source text …; 0 duplicate(s) were blocked` and turned **warn** with the
+creator's name and "2 duplicate(s) blocked" after seeded rows; `/api/posts.csv`
+carried the `note` column (`network merchant: NIRLON Shirt at ₹399 — Sizes: M, L,
+XL`); and a mixed source deal posted correctly for two creators (@both_on: Amazon
+with `tag=bothon-21` **plus** the `ekaro.in` conversion of the Flipkart product;
+@amz_only: Amazon only, with the Flipkart block recorded as removed).

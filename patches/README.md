@@ -372,6 +372,87 @@ One switch, for a hub that really does run a single shared account:
 REQUIRE_OWN_AMAZON_TAG=off        # restores the old fallback signing (default: on)
 ```
 
+### 🧾 Text fidelity: nothing goes missing, nothing is invented
+
+Two failures a creator notices before the owner does: a line from the source
+post that never reached their channel (a title, a price, a size list — a lost
+sale), and a line that was **never** in the source appearing under their name
+("unwanted text"). The hub now checks every post against the text it came from
+before it is published.
+
+| What is compared | What it means | What happens |
+|---|---|---|
+| Product text | every deal line's words **and numbers** (a price going missing is a lost sale) | a line that would vanish is caught before the post goes out |
+| Inventions | output lines that are not derived from the source | anything the hub did not put there on purpose is reported |
+| Links | the **link budget** — a post must not come out with fewer links than it went in with | a rewritten link (own tag, EarnKaro, shortener) is fine; a link that vanished is not |
+
+The renderer runs twice when needed: the normal render first, and — if real text
+would be lost — a conservative render that keeps **every** source line and only
+rewrites links. The better one is posted; a recovery is logged and audited
+(`text_fidelity_recovered`). What a switched-off network removed is recorded on
+the delivery row, so "why is this post different from the source?" has an answer
+in the log itself:
+
+```
+$ curl -s -b cookies http://127.0.0.1:5000/api/posts.csv | tail -2
+…,posted,6d1f…,,,network merchant: NIRLON Shirt at ₹399 — Sizes: M, L, XL
+```
+
+The self-check has a **Source text & duplicates** item that turns amber with the
+creator's name the moment a post changed its source text.
+
+### 📡 Deal sources: the default channel, and picking several
+
+A creator's posts come from the sources **you** set beside their channels.
+
+* **Nothing selected** → the hub's default source, `https://t.me/LootZoneIndia11`
+  (`DEFAULT_SOURCE_SPEC`), is used — a creator never quietly posts from every
+  source in the hub. One click on `/setup → 📡 Source pool` adds it to the pool
+  (`/sources/ensure-default`), and the wizard does it automatically the first
+  time it is needed.
+* **Tick as many as you want** in the guided wizard (step 2) — "pakka manam set
+  chesina source channels pakkana multiple ga select cheskunelaga". What is
+  stored is the plain token list the pipeline filters on
+  (`allowed_sources`: `LootZoneIndia11, powerloot`); anything you paste —
+  `https://t.me/LootZoneIndia11`, `@LootZoneIndia11`, a private invite — is
+  normalized to its token, because that is what a Telegram dialog name matches.
+* **Every source** is still possible: tick *Post from every source in the hub*.
+* The creator page's source fields suggest the tokens that exist (a `<datalist>`),
+  per creator **and** per channel — one channel can read one source while the
+  creator's others read several.
+
+### 🔁 No duplicates — the same product never lands twice
+
+The operator's rule: "multiple posts same products asalu same channel lo
+cheyoddu … 1 hours lo same products vasthe skip cheyali". Four guards run on
+every destination, cheapest first, and each one writes its reason to the delivery
+log (so the self-check can report "N duplicates were blocked"):
+
+| Guard | Catches |
+|---|---|
+| deal signature (ASIN / HYPD token / Flipkart item / URL) | the exact same product, however it was worded |
+| identifier dedup + in-run set | two creators (or two passes) posting to one shared channel |
+| content hash, 24 h | identical title+price even when the signature differed slightly |
+| near-duplicate, 12 h, 60% word overlap + same price | the same product from another source, re-worded — **well past** the 1-hour rule |
+| 20/hour and 5/10 min per channel | a bug or a backlog turning into spam |
+
+### Per-creator networks: only Amazon on means only Amazon products post
+
+A creator's switches (Amazon / EarnKaro / HYPD, `only_amazon`) decide what their
+channels may post, and the **whole product block** follows the switch: a Flipkart
+product for a creator with EarnKaro off is removed with its title, sizes and
+price (a title with no link to buy it is a dead deal, not copy), and the delivery
+note says which network removed it. With EarnKaro on, the same block posts with
+the hub's converted `ekaro.in` link; Amazon blocks always post signed with that
+creator's own tag. Two creators, one source post, two correct channels:
+
+```
+@both_on:   🔥 BOAT AIRDOPES at ₹1299 → amazon.in/dp/…?tag=bothon-21
+            NIRLON Shirt at ₹399 Sizes M,L → ekaro.in/our-conversion
+@amz_only:  🔥 BOAT AIRDOPES at ₹1299 → amazon.in/dp/…?tag=amzonly-21
+            (the Flipkart block removed — EarnKaro is off for this creator)
+```
+
 ### ✍️ Adding creators the easy way: one line, anything you have
 
 Whoever is onboarding does not need a column order. This is all the same row:
