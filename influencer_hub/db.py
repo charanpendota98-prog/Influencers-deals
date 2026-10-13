@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS channels (
     categories    TEXT NOT NULL DEFAULT '',        -- e.g. 'clothing,electronics,home' (empty = all)
     posting_schedule TEXT NOT NULL DEFAULT '',     -- e.g. '06:00-09:00,18:00-23:00' (empty = 24/7)
     mirror_whatsapp TEXT NOT NULL DEFAULT '',      -- '' inherit | '1' mirror main posts to this creator's WhatsApp | '0' never
+    title         TEXT NOT NULL DEFAULT '',        -- the channel's own name, as WhatsApp/Telegram shows it
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -406,6 +407,10 @@ def migrate() -> None:
             # '' = inherit the global setting, '1' = mirror this channel's posts
             # into the creator's WhatsApp destinations, '0' = never mirror.
             ("mirror_whatsapp", "TEXT NOT NULL DEFAULT ''"),
+            # The channel's own name ("LootZone Deals", "Ravi Loot Channel") as
+            # WhatsApp/Telegram shows it. Stored when a chat is picked from the
+            # paired phone's list, so every screen can show a name, not a JID.
+            ("title", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
                 try:
@@ -774,7 +779,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 custom_button_text: str = "",
                 custom_button_url: str = "",
                 min_deal_tier: str = "",
-                mirror_whatsapp: str = "") -> int:
+                mirror_whatsapp: str = "",
+                title: str = "") -> int:
     con = _connect()
     try:
         profile = con.execute(
@@ -789,8 +795,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
             or config.HYPD_STORE_ID
         )
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url, min_deal_tier, mirror_whatsapp) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url, min_deal_tier, mirror_whatsapp, title) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
              amazon_override_tag.strip(), 1 if _as_bool(strip_amazon, unrestricted=False) else 0, price_filter.strip(), allowed_sources.strip(),
              wa_session_key.strip(), bitly_api_key.strip(), categories.strip(), posting_schedule.strip(),
@@ -800,7 +806,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
              1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
              effective_hypd_store_id,
              1 if _as_bool(custom_button_enabled) else 0, custom_button_text.strip(), custom_button_url.strip(),
-             _clean_deal_tier(min_deal_tier), _clean_mirror_flag(mirror_whatsapp)),
+             _clean_deal_tier(min_deal_tier), _clean_mirror_flag(mirror_whatsapp),
+             str(title or "").strip()[:120]),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -828,7 +835,8 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            custom_button_text: str | None = None,
                            custom_button_url: str | None = None,
                            min_deal_tier: str | None = None,
-                           mirror_whatsapp: str | None = None) -> None:
+                           mirror_whatsapp: str | None = None,
+                           title: str | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -896,6 +904,9 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if min_deal_tier is not None:
             updates.append("min_deal_tier=?")
             params.append(_clean_deal_tier(min_deal_tier))
+        if title is not None:
+            updates.append("title=?")
+            params.append(str(title).strip()[:120])
         if mirror_whatsapp is not None:
             updates.append("mirror_whatsapp=?")
             params.append(_clean_mirror_flag(mirror_whatsapp))

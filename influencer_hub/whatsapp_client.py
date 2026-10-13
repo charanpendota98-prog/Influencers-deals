@@ -56,6 +56,21 @@ async def list_chats(session_key: str) -> list[dict]:
     return res.get("chats", [])
 
 
+async def list_admin_chats(session_key: str) -> list[dict]:
+    """Groups/channels where this paired number is admin or owner.
+
+    This is what the dashboard's "pick your channel" dropdown shows, so the
+    operator chooses a name they recognise instead of pasting a JID. A chat whose
+    role cannot be read is simply left out (never guessed), and the call fails
+    soft: the picker keeps working with the plain chat list and invite links.
+    """
+    try:
+        res = await _request("GET", f"/sessions/{session_key}/admin-chats")
+    except Exception:
+        return []
+    return res.get("chats", [])
+
+
 async def resolve_invite(session_key: str, invite_url_or_code: str) -> dict:
     return await _request("POST", f"/sessions/{session_key}/resolve-invite", json={"invite": invite_url_or_code})
 

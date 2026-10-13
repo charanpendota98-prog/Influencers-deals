@@ -11,6 +11,58 @@ git fetch origin arena/3496cf5b-influencers-deals
 git checkout -B arena/3496cf5b-influencers-deals FETCH_HEAD
 ```
 
+## 0h. One-screen adds, the WhatsApp channel you are admin of (this round)
+
+Read-only first, always. Nothing below sends a message to a subscriber, joins a
+group or touches a live channel.
+
+```bash
+# 1. the interactive flow, with no phone and no risk (scratch database only)
+python3 tools/demo_wa_hub.py &                       # pretend paired number, 3 admin chats
+HUB_ENV=development HUB_DB_PATH=/tmp/demo.sqlite3 HUB_SKIP_DOTENV=1 \
+WA_HUB_URL=http://127.0.0.1:8088 WA_HUB_TOKEN=demo-token-not-real \
+DASHBOARD_ADMIN_PASSWORD='demo-admin-password-16chars' \
+  python -m influencer_hub.cli init
+#   then start the dashboard the same way and open a creator page:
+#   status "Connected: +919000011111" → ⭐ dropdown lists Ravi Loot Deals / Loot Zone
+#   Premium / Family Loot Group by NAME (never "Somebody Else's Channel", which the
+#   account only follows) → Connect → row reads Pending → Test → log line
+#   "[demo-wa] SEND to=120363002222222222@newsletter …" and the row turns ready.
+#   Stop the stand-in and reload: the page still renders, the picker is empty,
+#   a pasted whatsapp.com/channel link still works.
+
+# 2. the same DB rules the tests pin
+HUB_ENV=development HUB_DB_PATH="$(mktemp /tmp/onb.XXXXXX.sqlite3)" HUB_SKIP_DOTENV=1 \
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_creator_onboarding.py \
+                                                 tests/test_telegram_channel_names.py \
+                                                 tests/test_demo_wa_hub.py
+#   29 passed (of the full 739): the add form carries everything, names are shown and saved, the
+#   admin list is filtered, a down hub yields an empty picker (never an error),
+#   the gap is a random 60–80 s, and the Telegram peek is read-only.
+
+# 3. name the Telegram channels you already have (read-only; --apply to save)
+python -m influencer_hub.cli channel-names               # plan + "who can post where"
+python -m influencer_hub.cli channel-names --apply        # saves the names it found
+python -m influencer_hub.cli channel-names --id 62 --all --json
+#   without a Telegram session it exits 2 and says so; nothing is changed.
+
+# 4. the pacing, in one number
+python - <<'EOF'
+import random
+from influencer_hub import config, pipeline
+print([round(pipeline.whatsapp_gap_seconds(), 1) for _ in range(5)],
+      config.WA_SEND_GAP_MIN, config.WA_SEND_GAP_MAX)
+EOF
+#   five values, all inside [60, 80]
+```
+
+**What is expected:** every dropdown shows a **name** (WhatsApp: the chats where
+the paired number is admin; Telegram: what Telegram itself reports) and a JID is
+never the only thing on screen; a destination we cannot post to is saved *with*
+the warning, never silently; a hub that is down or a token that is wrong costs
+the picker, not the page; and WhatsApp sends stay 60–80 s apart, on top of the
+hourly rest.
+
 ## 0f. The guided flow and the setup age (previous round)
 
 ```bash

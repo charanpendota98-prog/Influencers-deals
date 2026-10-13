@@ -12,6 +12,8 @@
 //   POST /sessions/:key/send      { to, text }
 //   POST /sessions/:key/poll      { to, question, options, allow_multiple } (groups only)
 //   POST /sessions/:key/group     { subject, participant }
+//   GET  /sessions/:key/chats           — every chat the account knows
+//   GET  /sessions/:key/admin-chats     — groups/channels where this number is admin
 //   POST /sessions/:key/newsletter { name, description }
 //   POST /sessions/:key/resolve-newsletter { invite }
 //   POST /sessions/:key/stop
@@ -147,6 +149,15 @@ app.post('/sessions/:key/resolve-newsletter', async (req, res) => {
 app.get('/sessions/:key/chats', (req, res) => {
   try {
     const chats = hub.listChats(req.params.key)
+    res.json({ ok: true, chats })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+
+app.get('/sessions/:key/admin-chats', async (req, res) => {
+  try {
+    const chats = await hub.listAdminChats(req.params.key)
     res.json({ ok: true, chats })
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })

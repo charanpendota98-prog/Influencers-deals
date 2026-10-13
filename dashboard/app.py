@@ -384,6 +384,46 @@ def _classify_whatsapp_destination(raw: str) -> tuple[str, str] | None:
     return None
 
 
+def _telegram_destination_info(identifier: str) -> dict:
+    """Read-only Telegram peek: the destination's real name, and our rights there.
+
+    The operator's rule for both messengers is the same — "paste it, and the hub
+    should take it, name it and keep posting into it". A Telegram destination
+    therefore gets the same treatment as the WhatsApp picker: Telegram itself
+    reports the channel's title and whether this account may post there
+    (`telegram_ops.inspect_channel` is read-only — it never joins, never posts).
+
+    Never raises and never blocks an add: with no session on the box, or with
+    Telegram unreachable, the caller saves exactly what was pasted.
+    """
+    try:
+        if not telegram_ops.session_ready():
+            return {"ok": False, "error": "no Telegram session on this box yet"}
+        info = _run(telegram_ops.inspect_channel(identifier)) or {}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200]}
+    return info if isinstance(info, dict) else {"ok": False, "error": "unexpected reply"}
+
+
+def _telegram_name_note(info: dict, ident: str) -> tuple[str, str]:
+    """``(saved name, operator note)`` from a Telegram peek.
+
+    The name is what Telegram says the destination is called (kept only when it
+    really answered). The note warns when the account we would post with is not
+    an admin there — the one failure that otherwise shows up as a silent
+    "nothing happens" on delivery day.
+    """
+    if not info.get("ok"):
+        return "", ""
+    title = str(info.get("title") or "").strip()[:120]
+    if info.get("can_post") is False:
+        label = title or ident
+        return title, (f" Saved as “{label}”, but this account cannot post there yet: make one "
+                       "of our Telegram accounts an admin of it (or check the invite), or "
+                       "leave it as the approval-only destination.")
+    return title, ""
+
+
 def _resolve_whatsapp_destination(inf_id: int, raw: str) -> tuple[dict | None, str]:
     """Resolve an explicitly supplied channel/group link to its real WhatsApp JID.
 
@@ -424,6 +464,25 @@ def _resolve_whatsapp_destination(inf_id: int, raw: str) -> tuple[dict | None, s
     return {"platform": platform, "identifier": jid, "invite_link": value}, ""
 
 
+def _whatsapp_chat_title(inf_id: int, jid: str) -> str:
+    """The name WhatsApp shows for a destination, from the paired phone's list.
+
+    Used when a link is pasted instead of picked: the operator should still end
+    up with a readable name beside the JID. Best-effort — a hub that cannot be
+    reached leaves the title empty rather than failing the save.
+    """
+    key = WA_SESSION_KEY(inf_id)
+    for lister in ("list_admin_chats", "list_chats"):
+        try:
+            chats = _run(getattr(whatsapp_client, lister)(key))
+        except Exception:
+            continue
+        for chat in chats or []:
+            if str(chat.get("jid") or "") == jid:
+                return str(chat.get("name") or "").strip()[:120]
+    return ""
+
+
 def _save_whatsapp_destination(
     inf_id: int,
     destination: dict,
@@ -432,6 +491,7 @@ def _save_whatsapp_destination(
     allowed_sources: str = "",
     wa_session_key: str = "",
     channel_settings: dict | None = None,
+    title: str = "",
 ) -> int:
     """Save a new WhatsApp destination as pending, deduplicating the same JID.
 
@@ -460,6 +520,7 @@ def _save_whatsapp_destination(
             status="pending",
             allowed_sources=allowed_sources or existing.get("allowed_sources") or "",
             wa_session_key=session_key,
+            title=title or existing.get("title") or "",
             **settings,
         )
         return int(existing["id"])
@@ -473,6 +534,7 @@ def _save_whatsapp_destination(
         role=role,
         allowed_sources=allowed_sources,
         wa_session_key=session_key,
+        title=title,
         **settings,
     )
 
@@ -1953,6 +2015,7 @@ def setup():
         tag_proof_card=_tag_proof_snapshot(),
         source_default=_default_source_state(sources),
         source_usage=_source_usage(influencers),
+        source_rows=_source_rows(),
     )
 
 
@@ -2011,6 +2074,39 @@ def _default_source_state(configured: list[dict] | None = None) -> dict:
         "active": bool(have and have[0].get("active")),
         "source_id": int(have[0]["id"]) if have else 0,
     }
+
+
+def _source_rows() -> list[dict]:
+    """The picker rows: every configured source plus the tokens already in use.
+
+    Built at module level because inside ``setup()`` the name *sources* is the
+    configured pool, which would shadow the module that knows the names.
+    """
+    try:
+        return sources.choice_rows()
+    except Exception:  # pragma: no cover - display only
+        return []
+
+
+def _source_selection_from_form(*, use_default_when_empty: bool = False) -> str | None:
+    """Read the shared source picker: tick boxes, the paste box, or "every source".
+
+    Returns ``None`` when the form carried none of those fields at all, so a
+    partial form (a rename, a flag change) never rewrites a creator's sources.
+    """
+    present = {"sources", "sources_text", "sources_all", "allowed_sources"}.intersection(
+        request.form.keys())
+    if not present:
+        return None
+    if _form_flag("sources_all", default=False):
+        return ""      # the explicit "every source in the hub"
+    picked = [token.strip() for token in request.form.getlist("sources") if token.strip()]
+    typed = str(request.form.get("sources_text") or "").strip()
+    raw = ", ".join(picked + ([typed] if typed else [])) \
+        or str(request.form.get("allowed_sources") or "").strip()
+    if not raw:
+        return sources.default_token() if use_default_when_empty else ""
+    return sources.normalize_selection(raw)
 
 
 def _source_usage(profiles=None) -> dict:
@@ -2667,13 +2763,11 @@ def quick_add():
     # operator who really wants every source ticks the box (which stores the empty
     # value that has always meant "every source"). Callers that do not send the
     # field at all — scripts, older forms — keep that behaviour unchanged.
-    raw_src = request.form.get("allowed_sources")
-    if _form_flag("sources_all", default=False):
-        allowed_src = ""
-    elif raw_src is None:
+    picked = _source_selection_from_form(use_default_when_empty=True)
+    if picked is None:                      # a caller that sends no source field
         allowed_src = ""
     else:
-        allowed_src = sources.normalize_selection(raw_src) or sources.default_token()
+        allowed_src = picked
     bitly_key = request.form.get("bitly_api_key", "").strip()
     categories_list = request.form.getlist("categories")
     categories = ",".join(c.strip() for c in categories_list if c.strip())
@@ -2689,6 +2783,10 @@ def quick_add():
     approval_tg = request.form.get("approval_tg", "").strip()
     broadcast_tg = request.form.get("broadcast_tg", "").strip()
     whatsapp_id = request.form.get("whatsapp_id", "").strip()
+    whatsapp_name = request.form.get("whatsapp_name", "").strip()[:120]
+    # "Main Telegram channel lo vachinavi anni WhatsApp channel lo kuda" — the
+    # mirror is a first-class choice on the add form, not a hidden default.
+    mirror_main = db._clean_mirror_flag(request.form.get("mirror_whatsapp", "")) or "1"
     strip_amz_all = request.form.get("strip_amazon_broadcast") == "1"
 
     # Custom button fields on quick add
@@ -2714,25 +2812,35 @@ def quick_add():
         db.update_influencer(iid, custom_button_enabled=btn_enabled,
                              custom_button_text=btn_text, custom_button_url=btn_url)
 
-    # 1. Approval Channel
+    # 1. Approval Channel — Telegram names it for us (read-only peek; never joins)
+    add_notes: list[str] = []
     if approval_tg:
         ident = clean_identifier(approval_tg)
-        db.add_channel(iid, "telegram", ident, role="approval", status="ready",
+        info = _telegram_destination_info(ident)
+        title, rights_note = _telegram_name_note(info, ident)
+        db.add_channel(iid, "telegram", ident, role="approval", status="ready", title=title,
                        allowed_sources=allowed_src, categories=categories, posting_schedule=schedule,
                        only_amazon=True, allow_amazon=True, allow_earnkaro=False,
                        allow_hypd=False, hypd_store_id=hypd_store_id)
+        if rights_note:
+            add_notes.append(ident + ":" + rights_note)
 
-    # 2. Broadcast Channel
+    # 2. Broadcast Channel — same smart handling ("nakunna Telegram channel ki kuda")
     if broadcast_tg:
         ident = clean_identifier(broadcast_tg)
-        db.add_channel(iid, "telegram", ident, role="broadcast", status="ready",
+        info = _telegram_destination_info(ident)
+        title, rights_note = _telegram_name_note(info, ident)
+        if rights_note:
+            add_notes.append(ident + ":" + rights_note)
+        db.add_channel(iid, "telegram", ident, role="broadcast", status="ready", title=title,
                        strip_amazon=strip_amz_all,
                        price_filter=price_filt if price_filt != "all" else "",
                        allowed_sources=allowed_src, bitly_api_key=bitly_key,
                        categories=categories, posting_schedule=schedule,
                        only_amazon=only_amazon, allow_amazon=allow_amazon,
                        allow_earnkaro=allow_earnkaro, allow_hypd=allow_hypd,
-                       hypd_store_id=hypd_store_id)
+                       hypd_store_id=hypd_store_id,
+                       mirror_whatsapp=mirror_main)
 
     # 3. WhatsApp destinations are type-checked and staged Pending. Invite links
     # need the creator's paired account to resolve; direct groups/channels JIDs
@@ -2746,6 +2854,7 @@ def quick_add():
                 role="whatsapp",
                 allowed_sources=allowed_src,
                 wa_session_key=WA_SESSION_KEY(iid),
+                title=whatsapp_name or _whatsapp_chat_title(iid, destination["identifier"]),
                 channel_settings={
                     "strip_amazon": strip_amz_all,
                     "price_filter": price_filt if price_filt != "all" else "",
@@ -2765,6 +2874,9 @@ def quick_add():
                 wa_link_status="failed", wa_link_error=wa_error,
             ))
 
+    for note in add_notes:
+        flash("⚠️ Telegram: " + note, "warning")
+
     return redirect(url_for("influencer_detail", inf_id=iid))
 
 
@@ -2780,7 +2892,11 @@ def update_profile(inf_id):
     handle = request.form.get("handle", "").strip()
     insta = request.form.get("insta_id", "").strip()
     price_filt = request.form.get("price_filter", "").strip()
-    allowed_src = request.form.get("allowed_sources", "").strip()
+    # The source picker (tick boxes + paste box + "every source") when present,
+    # otherwise the plain field; a form that carries neither keeps the value.
+    picked_src = _source_selection_from_form()
+    allowed_src = (request.form.get("allowed_sources", "").strip()
+                   if picked_src is None else picked_src)
     bitly_key = request.form.get("bitly_api_key", "").strip()
     categories_list = request.form.getlist("categories")
     categories = ",".join(c.strip() for c in categories_list if c.strip()) if categories_list else request.form.get("categories", "").strip()
@@ -2879,6 +2995,11 @@ def update_channel_route(channel_id):
     channel_min_tier = request.form.get("min_deal_tier")
     channel_min_tier = channel_min_tier.strip() if channel_min_tier is not None else None
 
+    # The channel's own name, editable by hand and set automatically when the
+    # operator picks a chat from the paired phone's list.
+    channel_title = request.form.get("title")
+    channel_title = channel_title.strip() if channel_title is not None else None
+
     # Main-channel mirror switch ('' inherit the global setting, 1 on, 0 off).
     # Only the main Telegram channels show this control, so an absent field
     # means "this destination has no mirror switch to change".
@@ -2937,6 +3058,7 @@ def update_channel_route(channel_id):
         custom_button_url=btn_url,
         min_deal_tier=channel_min_tier,
         mirror_whatsapp=mirror_whatsapp,
+        title=channel_title,
     )
     if needs_test:
         return redirect(url_for(
@@ -3581,19 +3703,26 @@ def add_manual_channel(inf_id):
             None,
         )
         if duplicate:
+            dupe_info = _telegram_destination_info(ident)
+            dupe_title, dupe_note = _telegram_name_note(dupe_info, ident)
             db.update_channel_details(
                 duplicate["id"],
                 identifier=ident,
                 role=role,
                 allowed_sources=allowed_src or duplicate.get("allowed_sources") or "",
                 wa_session_key=wa_key or duplicate.get("wa_session_key") or "",
+                title=dupe_title or None,
                 **channel_settings,
             )
+            label = dupe_title or ident
             return _channel_feedback(
                 inf_id, "warning",
-                f"{ident} is already connected to {influencer['name']}. "
-                "Its settings were updated instead of adding a duplicate.",
+                f"{label} ({ident}) is already connected to {influencer['name']}. "
+                "Its settings were updated instead of adding a duplicate." + dupe_note,
             )
+        # Ask Telegram for the real name (and our rights there) — read-only.
+        info = _telegram_destination_info(ident)
+        title, rights_note = _telegram_name_note(info, ident)
         session.pop(UNDO_CHANNEL_KEY, None)
         db.add_channel(
             inf_id,
@@ -3604,12 +3733,19 @@ def add_manual_channel(inf_id):
             role=role,
             allowed_sources=allowed_src,
             wa_session_key=wa_key,
+            title=title,
             **channel_settings,
         )
+        message = _channel_ready_message(
+            inf_id, influencer, ident, role, override_tag, tag_note)
+        if title:
+            message = f"{message} Telegram reports this destination as “{title}”."
+        if rights_note:
+            message += rights_note
         return _channel_feedback(
             inf_id,
-            "warning" if tag_note else "success",
-            _channel_ready_message(inf_id, influencer, ident, role, override_tag, tag_note),
+            "warning" if (tag_note or rights_note) else "success",
+            message,
         )
     elif platform in {"whatsapp_group", "whatsapp_channel"}:
         destination, error = _resolve_whatsapp_destination(inf_id, raw_ident)
@@ -3945,18 +4081,25 @@ def guided_channels_step():
         existing = db.get_channel(inf_id, role)
         mirror = "1" if (role == "broadcast" and request.form.get("mirror_whatsapp")) else (
             "0" if role == "broadcast" and request.form.get("mirror_whatsapp_off") else None)
+        # Same smart handling as the creator page: Telegram tells us the real
+        # name of what was pasted (read-only), and warns if we cannot post there.
+        info = _telegram_destination_info(ident)
+        title, rights_note = _telegram_name_note(info, ident)
         if existing:
-            db.update_channel_details(int(existing["id"]), identifier=ident, status="ready")
+            db.update_channel_details(int(existing["id"]), identifier=ident, status="ready",
+                                      title=title or None)
             if mirror is not None:
                 db.update_channel_details(int(existing["id"]), mirror_whatsapp=mirror)
         else:
-            db.add_channel(inf_id, "telegram", ident, role=role, status="ready",
+            db.add_channel(inf_id, "telegram", ident, role=role, status="ready", title=title,
                            mirror_whatsapp=mirror if mirror is not None else
                            ("1" if role == "broadcast" and
                             presets.resolved().get("mirror_whatsapp", True) else ""))
         index.note(inf_id, "", name=profile.get("name") or "",
                    channels=[{"platform": "telegram", "identifier": ident, "role": role}])
-        added.append(f"{label} {ident}")
+        added.append(f"{label} {title} ({ident})" if title else f"{label} {ident}")
+        if rights_note:
+            problems.append(f"{label}:{rights_note}")
 
     whatsapp = request.form.get("whatsapp_channel", "").strip()
     if whatsapp:
@@ -5059,8 +5202,12 @@ def influencer_detail(inf_id):
     poll_history = db.list_recent_polls(inf_id)
     wa_key = WA_SESSION_KEY(inf_id)
 
-    # Check live WhatsApp session status & fetch groups/channels
-    wa_status_info = {"connected": False, "phone": "", "chats": []}
+    # Check live WhatsApp session status & fetch groups/channels. `admin_chats`
+    # is the operator's own ask — the channels this paired number is an admin of,
+    # by name, so a destination can be picked from a dropdown instead of pasted.
+    wa_status_info = {
+        "connected": False, "phone": "", "chats": [], "admin_chats": [], "admin_error": "",
+    }
     try:
         status_res = _run(whatsapp_client.session_status(wa_key))
         if status_res.get("status") == "connected":
@@ -5068,8 +5215,9 @@ def influencer_detail(inf_id):
             wa_status_info["phone"] = status_res.get("phone", "")
             chats = _run(whatsapp_client.list_chats(wa_key))
             wa_status_info["chats"] = [c for c in chats if c.get("isGroup") or c.get("isChannel")]
-    except Exception:
-        pass
+            wa_status_info["admin_chats"] = _run(whatsapp_client.list_admin_chats(wa_key))
+    except Exception as exc:
+        wa_status_info["admin_error"] = str(exc)[:160]
 
     # Phone-link (code) pairing: the live hub is the source of truth, the DB
     # copy keeps the code visible across a page reload.
@@ -5130,11 +5278,15 @@ def influencer_detail(inf_id):
         only_amazon=bool(inf.get("only_amazon", 0)),
         hypd_store_id=str(inf.get("hypd_store_id") or "").strip() or _effective_hypd_store_id(),
     )
+    source_rows = _source_rows()
     return render_template(
         "influencer.html", inf=inf, channels=channels,
         # Let the source fields suggest what exists: a creator's allowed_sources
         # is a comma list of these tokens (any shape is normalized on save).
-        source_tokens=[row["token"] for row in sources.choice_rows()],
+        source_tokens=[row["token"] for row in source_rows],
+        source_rows=source_rows,
+        source_picked=set(sources.selection_tokens(inf.get("allowed_sources") or "")),
+        source_is_every=sources.asks_for_everything(inf.get("allowed_sources") or ""),
         source_default=sources.default_token(),
         source_line=sources.selection_line(inf.get("allowed_sources") or ""),
         wa_sessions=wa_sessions, stats=stats, wa_key=wa_key,
@@ -5325,11 +5477,27 @@ def create_group(inf_id):
 
 @app.route("/influencer/<int:inf_id>/wa-connect-chat", methods=["POST"])
 def wa_connect_chat(inf_id):
-    """Resolve a WhatsApp group/channel link or save a detected JID as pending."""
+    """Resolve a WhatsApp group/channel link or save a detected JID as pending.
+
+    The operator picks the channel from the dropdown of chats where their paired
+    number is admin ("vallu admin ga vunna channel ni isthanu"), or pastes an
+    invite link. Either way the channel's **name** is saved with the JID, and the
+    main→WhatsApp mirror can be switched on in the same step, so "whatever comes
+    into their Telegram channel also goes to this WhatsApp channel".
+    """
     chat_jid = request.form.get("chat_jid", "").strip()
     invite_link = request.form.get("invite_link", "").strip()
+    # The dropdown submits "jid|name"; the name is what the operator recognises.
+    # Split first: the classifier must see a bare JID, never "…|Pick Loot Deals".
+    title = ""
+    if chat_jid and "|" in chat_jid:
+        chat_jid, _, title = chat_jid.partition("|")
+        chat_jid, title = chat_jid.strip(), title.strip()
     raw_destination = invite_link or chat_jid
-    allowed_src = request.form.get("allowed_sources", "").strip()
+    picked_src = _source_selection_from_form()
+    allowed_src = (request.form.get("allowed_sources", "").strip()
+                   if picked_src is None else picked_src)
+    mirror = request.form.get("mirror_whatsapp")
 
     destination, error = _resolve_whatsapp_destination(inf_id, raw_destination)
     if not destination:
@@ -5337,6 +5505,14 @@ def wa_connect_chat(inf_id):
             "influencer_detail", inf_id=inf_id,
             wa_link_status="failed", wa_link_error=error,
         ))
+    if not title:
+        # A pasted link resolved to a real destination: use the name the phone
+        # knows it by, when there is one.
+        title = _whatsapp_chat_title(inf_id, destination.get("identifier") or "")
+
+    channel_settings = {}
+    if mirror:
+        channel_settings["mirror_whatsapp"] = db._clean_mirror_flag(mirror)
 
     _save_whatsapp_destination(
         inf_id,
@@ -5344,6 +5520,8 @@ def wa_connect_chat(inf_id):
         role="whatsapp",
         allowed_sources=allowed_src,
         wa_session_key=WA_SESSION_KEY(inf_id),
+        title=title,
+        channel_settings=channel_settings or None,
     )
     return redirect(url_for(
         "influencer_detail", inf_id=inf_id, wa_link_status="pending"

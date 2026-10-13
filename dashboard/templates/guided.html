@@ -153,49 +153,12 @@
                {% if batch_defaults.mirror_whatsapp %}checked{% endif %} />
         Main channel deals also go to the creator's WhatsApp channel
       </label>
-      <fieldset style="margin-top:14px; border:1px solid #e2e8f0; border-radius:10px; padding:10px 12px;">
-        <legend style="font-size:13px; font-weight:600; padding:0 6px;">
-          📡 Deal sources — which channels these posts come from
-        </legend>
-        <p class="hint" style="margin-top:0;">
-          Tick one or many. Nothing ticked keeps the default
-          <strong>{{ guided_source_default }}</strong> — a creator never ends up posting from
-          every source in the hub by accident. The choice is saved on the creator, so the approval,
-          main and WhatsApp channels all use it.
-        </p>
-        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:6px 14px;">
-          {% for row in guided_sources %}
-            <label style="display:flex; gap:8px; align-items:center; font-size:12px;">
-              <input type="checkbox" name="sources" value="{{ row.token }}"
-                     {% if row.token.lower() in guided_source_picked %}checked{% endif %} />
-              <span>
-                {{ row.label }}
-                {% if row.is_default %}<span class="pill">default</span>{% endif %}
-                {% if row.used_by %}<span class="pill">{{ row.used_by }} creator(s)</span>{% endif %}
-                {% if not row.active %}<span class="pill">paused</span>{% endif %}
-                <div class="hint">{{ row.spec or row.token }}</div>
-              </span>
-            </label>
-          {% else %}
-            <p class="hint" style="margin:0;">
-              No source rows yet — the default <strong>{{ guided_source_default }}</strong> is used.
-            </p>
-          {% endfor %}
-        </div>
-        <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:8px;">
-          <label style="font-size:12px; display:flex; gap:6px; align-items:center;">
-            <input type="checkbox" name="sources_all" value="1"
-                   {% if guided_source_all %}checked{% endif %} />
-            Post from every source in the hub
-          </label>
-          <label style="font-size:12px; flex:1; min-width:220px;">
-            Or type / paste sources (comma separated)
-            <input name="sources_text" maxlength="400"
-                   placeholder="LootZoneIndia11, powerloot" style="width:100%; font-size:12px;" />
-          </label>
-        </div>
-        <p class="hint" style="margin:6px 0 0;">Currently saving from: {{ guided_source_line }}</p>
-      </fieldset>
+      <div style="margin-top:14px;">
+        {% with source_rows=guided_sources, source_picked=guided_source_picked,
+                source_all=guided_source_all, source_line=guided_source_line %}
+          {% include "_source_picker.html" %}
+        {% endwith %}
+      </div>
       <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button class="button-primary" type="submit">Save channels →</button>
         <span class="hint">

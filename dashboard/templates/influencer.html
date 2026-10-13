@@ -226,6 +226,13 @@
              placeholder="{{ source_default }}, powerloot (empty = all sources)"
              style="width: 100%; font-size: 12px;" />
       <small class="hint">Currently: {{ source_line }} · type or pick several, comma separated.</small>
+      <details style="margin-top:8px;">
+        <summary style="cursor:pointer; font-size:12px; color:#a5b4fc;">📡 Pick source channels by name</summary>
+        {% with source_rows=source_rows, source_picked=source_picked,
+                source_line=source_line, source_all=source_is_every %}
+          {% include "_source_picker.html" %}
+        {% endwith %}
+      </details>
       <span class="hint" style="font-size:10px;">Specific source channel nunchi mathrame deals raavalante ikkada rayandi</span>
     </div>
     <div>
@@ -398,7 +405,9 @@
           </td>
           <td><b>{{ c.platform }}</b></td>
           <td>
+            {% if c.title %}<div style="font-size:12px; color:#a7f3d0; font-weight:600;">{{ c.title }}</div>{% endif %}
             <input form="channel-update-{{ c.id }}" name="identifier" value="{{ c.identifier }}" style="font-size: 13px; padding: 6px; width: 140px; font-family: monospace;" />
+            <input form="channel-update-{{ c.id }}" name="title" value="{{ c.title or '' }}" placeholder="channel name" style="font-size: 10px; padding: 2px 4px; width: 140px; margin-top:3px;" />
             {% if c.invite_link %}<a href="{{ c.invite_link }}" target="_blank" style="font-size: 12px; margin-left: 4px; color:var(--accent);">(link)</a>{% endif %}
           </td>
           <td>
@@ -704,16 +713,39 @@
 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
         <input type="hidden" name="role" value="whatsapp" />
 
-        {% if wa_status_info.chats %}
+        {% if wa_status_info.admin_chats %}
           <div>
-            <label style="font-size:12px; font-weight:bold; color:#cbd5e1; display:block; margin-bottom:4px;">A) Detected Groups / Channels from Phone:</label>
+            <label style="font-size:12px; font-weight:bold; color:#86efac; display:block; margin-bottom:4px;">
+              ⭐ A) Channels / Groups where +{{ wa_status_info.phone }} is ADMIN (pick one by name):
+            </label>
             <select name="chat_jid" style="width:100%; padding:8px; font-size:13px;">
-              <option value="">-- Or Paste Link Below --</option>
-              {% for chat in wa_status_info.chats %}
-                <option value="{{ chat.jid }}">{{ chat.name }} ({{ 'Group' if chat.isGroup else 'Channel' }})</option>
+              <option value="">-- Pick your channel here --</option>
+              {% for chat in wa_status_info.admin_chats %}
+                <option value="{{ chat.jid }}|{{ chat.name }}">{{ chat.name }} · {{ 'Channel' if chat.kind == 'channel' else 'Group' }} · you are {{ chat.role }}{% if chat.members %} · {{ chat.members }} members{% endif %}</option>
               {% endfor %}
             </select>
+            <span class="hint" style="font-size:10px; color:#86efac;">
+              Ee list lo unnavi meeku admin/owner ga unna channels matrame. Select chesi save chesthe, aa channel
+              peru tho save avutundi and posts akkadaki veltayi.
+            </span>
           </div>
+        {% endif %}
+
+        {% if wa_status_info.chats %}
+          <details {% if not wa_status_info.admin_chats %}open{% endif %}>
+            <summary style="cursor:pointer; font-size:12px; color:#cbd5e1;">
+              {{ 'B)' if wa_status_info.admin_chats else 'A)' }} All groups / channels this phone sees (any role)
+            </summary>
+            <select name="chat_jid" style="width:100%; padding:8px; font-size:13px; margin-top:6px;">
+              <option value="">-- Or Paste Link Below --</option>
+              {% for chat in wa_status_info.chats %}
+                <option value="{{ chat.jid }}|{{ chat.name }}">{{ chat.name }} ({{ 'Group' if chat.isGroup else 'Channel' }})</option>
+              {% endfor %}
+            </select>
+            <span class="hint" style="font-size:10px;">
+              Meeku admin kani channel select chesthe, WhatsApp send fail avutundi — admin list (paina) vaadandi.
+            </span>
+          </details>
         {% endif %}
 
         <div>
@@ -730,6 +762,10 @@
           <span class="hint" style="font-size:10px;">Ee WhatsApp channel ki vere specific source loots mathrame vellali ante ikkada source peru ivvandi!</span>
         </div>
 
+        <label style="font-size:12px; display:flex; gap:6px; align-items:center; color:#a7f3d0;">
+          <input type="checkbox" name="mirror_whatsapp" value="1" checked />
+          Main Telegram channel lo vachinavi anni WhatsApp channel lo kuda vellali (mirror)
+        </label>
         <button type="submit" style="background:#059669; color:white; font-weight:bold; padding:9px; border-radius:6px; cursor:pointer;">⚡ Link WhatsApp Channel to Account</button>
       </form>
     </div>

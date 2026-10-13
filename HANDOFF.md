@@ -415,7 +415,7 @@ code” for the behaviour in full).
 through one function (`_render_and_deliver_destination`), so a mirrored post
 passes the same rendering, `commission_guard`, dedup (`deal_sig`, physical
 identifier, 24h content hash, 12h near-duplicate), rate limits (20/hour,
-5/10min) and 45–65s WhatsApp pacing as a direct post. The mirror pass runs
+5/10min) and random 60–80s WhatsApp pacing as a direct post. The mirror pass runs
 after the channel loop: a ready Telegram `broadcast` channel that really posted
 the deal feeds the creator's ready WhatsApp destinations (group or Channel)
 with the creator's own Amazon tag (channel override → creator tag → fallback).
@@ -1306,3 +1306,95 @@ guide documents the rollbacks. Full suite **709 passed**. The script was also
 rehearsed end to end in a throwaway copy of the repository with a real `.env` and
 a copy of the demo database: `--check` reported "✅ ready to deploy", `--dry-run`
 printed all eleven steps and left the database hash and the commit untouched.
+
+## 20. This session, part 15: adding a creator in one screen, and the channels you are admin of
+
+The operator's ask: pressing **Add Influencer** should be enough to fill
+everything in; a WhatsApp channel must become addable **after** the creator
+pairs their phone (by QR *or* login code) — the account is admin of that channel,
+so the hub should take it, save it, and keep posting into it; their **Telegram**
+channel should get the same smart handling; sends need random **60–80 s** gaps;
+source channels must be selectable several at a time, side by side; and every
+dropdown must show channel **names**, never JIDs.
+
+### One source picker, used everywhere (`dashboard/templates/_source_picker.html`, new)
+
+`app._source_rows()` and `app._source_selection_from_form()` are module-level, so
+the same block is included by the Setup Center (a full-width *📡 Deal sources*
+panel), the guided wizard (channel step) and the creator page. Rows come from
+`sources.choice_rows()` — the source's **name** and spec (`Power Loots ·
+@powerloot`) plus a tick box, so several can be chosen side by side, with a
+*post from every source* tick and a paste box for names, `@handles`,
+`https://t.me/…` and private invites. `sources.normalize_selection()` now also
+resolves a configured source's **name** to the token the pipeline filters on
+(`sources.known_names()`), so ticking "Power Loots" and typing "Power Loots" in
+the box store the same `powerloot`.
+
+### The WhatsApp channel you are admin of (`wa_hub`, `whatsapp_client`, dashboard)
+
+`wa_manager.listAdminChats()` + `GET /sessions/:key/admin-chats` list the groups
+and Channels where the paired number's role is admin/superadmin/owner (groups via
+`groupFetchAllParticipating`, newsletters via `newsletterMetadata`), each row
+`{jid, name, kind, role, members}`; `whatsapp_client.list_admin_chats()` soft-fails
+to `[]`. The creator card renders them as
+**⭐ Channels / Groups where `+91…` is ADMIN** with `value="jid|name"` and the
+full chat list demoted to a collapsed *see all chats*; picking one saves it
+`pending` with that **name** and the mirror switch, and only a successful visible
+Test activates it. `wa_connect_chat` splits `jid|name` **before** classifying the
+destination (the classifier must see a bare JID), keeps the pasted-link route
+working, and stores the name through `_whatsapp_chat_title()` /
+`_save_whatsapp_destination(title=…)`.
+
+`channels.title` is now a real column (CREATE TABLE + migration list):
+`db.add_channel(title=…)` (25-column INSERT), `db.update_channel_details(title=…)`
+(`None` = leave alone), the channel row shows the name above the monospace JID
+with an inline rename box, and the one-screen add form carries `whatsapp_name` +
+a mirror tick (default on) that lands on the broadcast channel.
+
+### Telegram, same treatment (`telegram_ops.inspect_channel`, `cli channel-names`, new)
+
+`telegram_ops.inspect_channel()` is a read-only peek: `get_entity` +
+`get_permissions`, wrapped in `asyncio.wait_for`, returning
+`{ok, title, username, chat_id, kind, can_post, is_admin, error}` and **never
+raising**. `session_ready()` is a filesystem check, so a box without a Telegram
+session does no network work at all. `app._telegram_destination_info()` +
+`_telegram_name_note()` wrap it for the dashboard: the channel's real name is
+saved on the channel (`title=`), and a destination we **cannot post to** is saved
+anyway with a warning ("still useful as an approval/preview channel"). Wired into
+`add_manual_channel` (add + duplicate path), the guided channel step, and the
+one-screen `/quick-add` (both Telegram channels, warning flashed). Nothing joins
+a group, nothing posts. `cli channel-names [--apply] [--id N] [--all] [--json]`
+is the read-only backfill for channels saved before this existed, and doubles as
+a fleet-wide "who can post where" check.
+
+### Pacing: 60–80 s (`config`, `pipeline`)
+
+`WA_SEND_GAP_MIN/MAX = 60/80` and `WA_HOURLY_REST_MIN/MAX = 120/150` are config
+now; `pipeline.whatsapp_gap_seconds()` draws a fresh `random.uniform` inside the
+window and repairs a reversed window, and `apply_whatsapp_safety_pacing` uses it
+on top of the existing hourly rest (the slot is still reserved in SQLite, so
+several processes cannot double-send).
+
+### Rehearsing it with no phone (`tools/demo_wa_hub.py`, `tools/DEMO_WHATSAPP.md`, new)
+
+A stdlib stand-in for the Node hub: same endpoints and JSON keys, a pretend
+paired number, three channels it is admin of and one it only follows — so the
+whole journey can be clicked against a scratch database without burning a real
+WhatsApp login (and without risking a ban for rehearsing). Nothing in `deploy/`
+starts it; a test enforces that.
+
+### Verified
+
+`tests/test_creator_onboarding.py` (10): the add form carries every field, the
+picker shows names and stores several, the admin dropdown renders `jid|name` and
+picking one saves the name + mirror, a wrong-token/down-hub hub yields an empty
+picker rather than an error, the send gap lands inside [60, 80] with variation,
+a reversed window is repaired, `list_admin_chats` soft-fails.
+`tests/test_telegram_channel_names.py` (11): the peek is read-only, names a
+channel, reports "not an admin", times out instead of hanging, never raises; the
+dashboard stores the name on add / in the wizard / on the one-screen form;
+`channel-names` changes nothing without `--apply`, skips already-named channels
+unless `--all`, and explains itself with no session.
+`tests/test_demo_wa_hub.py` (8): the stand-in answers the real client, hides the
+chat we are not an admin of, soft-fails on a wrong token or a dead hub, and a
+deal reaches a channel saved from the picker. Full suite **739 passed**.

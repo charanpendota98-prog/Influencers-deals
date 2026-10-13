@@ -61,18 +61,46 @@ def token_from_source_row(source: dict) -> str:
     return _clean(source.get("name") or token)
 
 
+def known_names() -> dict[str, str]:
+    """``lowercased name/spec → token`` for every configured source.
+
+    The picker shows a source's **name** ("Power Loots"), and an operator may
+    type that name instead of ticking the box. Both have to end up as the same
+    stored token, otherwise the same source would appear twice in a creator's
+    list. A row's own name and its spec both map to its token; the first row
+    wins when two rows share a name.
+    """
+    mapping: dict[str, str] = {}
+    try:
+        rows = db.list_sources(active_only=False)
+    except Exception:  # pragma: no cover - display/import path without a DB
+        return mapping
+    for row in rows or []:
+        token = token_from_source_row(row)
+        if not token:
+            continue
+        for key in (str(row.get("name") or "").strip().lower(),
+                    str(row.get("spec") or "").strip().lower()):
+            if key and key not in mapping:
+                mapping[key] = token
+    return mapping
+
+
 def normalize_selection(raw: str) -> str:
     """Accept anything the operator pastes; store plain tokens, comma-separated.
 
     ``https://t.me/LootZoneIndia11``, ``@LootZoneIndia11`` and
-    ``LootZoneIndia11`` all become ``LootZoneIndia11``; ``a, b`` and newline
-    lists are both accepted; blank entries and duplicates are dropped.
+    ``LootZoneIndia11`` all become ``LootZoneIndia11``; a configured source's
+    **name** ("Power Loots") becomes the token the pipeline filters on; ``a, b``
+    and newline lists are both accepted; blank entries and duplicates are dropped.
     """
     parts = re.split(r"[,\n;]+", str(raw or ""))
+    known = known_names()
     tokens: list[str] = []
     seen: set[str] = set()
     for part in parts:
-        token = token_for(part)
+        cleaned = part.strip()
+        token = known.get(cleaned.lower()) or token_for(cleaned)
         key = token.lower()
         if token and key not in seen:
             seen.add(key)

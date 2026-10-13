@@ -125,20 +125,39 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
     return converted
 
 
+def whatsapp_gap_seconds() -> float:
+    """One random gap from the configured anti-ban window (60–80 s by default).
+
+    A fresh random value per send, never a fixed one: a bot that always waits
+    exactly 60 seconds is a pattern in itself. The window is configurable
+    (``WA_SEND_GAP_MIN``/``WA_SEND_GAP_MAX``), and a reversed window is repaired
+    rather than obeyed.
+    """
+    low = float(getattr(config, "WA_SEND_GAP_MIN", 60) or 0)
+    high = float(getattr(config, "WA_SEND_GAP_MAX", 80) or 0)
+    if high < low:
+        low, high = high, low
+    return random.uniform(low, high)
+
+
 async def apply_whatsapp_safety_pacing(session_key: str) -> None:
     """Reserve a durable, conservative WhatsApp send slot for this session.
 
     SQLite serializes the slot across worker/dashboard processes and preserves
-    it across restarts. Consecutive reservations are separated by a random
-    45–65 second gap, with a 120–150 second rest at the hourly window boundary.
-    These delays reduce send frequency; they cannot guarantee account safety
-    or prevent platform enforcement. Failed sends also consume their reserved
-    slot, intentionally favoring conservative pacing over throughput.
+    it across restarts. Consecutive reservations are separated by a random gap
+    inside the configured window (60–80 seconds by default), with a 120–150
+    second rest at the hourly window boundary. These delays reduce send
+    frequency; they cannot guarantee account safety or prevent platform
+    enforcement. Failed sends also consume their reserved slot, intentionally
+    favoring conservative pacing over throughput.
     """
     delay = db.reserve_whatsapp_send(
         session_key,
-        gap_seconds=random.uniform(45.0, 65.0),
-        rest_seconds=random.uniform(120.0, 150.0),
+        gap_seconds=whatsapp_gap_seconds(),
+        rest_seconds=random.uniform(
+            float(getattr(config, "WA_HOURLY_REST_MIN", 120) or 0),
+            float(getattr(config, "WA_HOURLY_REST_MAX", 150) or 0),
+        ),
     )
     if delay > 0:
         await asyncio.sleep(delay)
@@ -217,7 +236,8 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
             if btn_enabled and btn_url and btn_url not in wa_text:
                 wa_text = f"{text}\n\n👉 {btn_text}: {btn_url}"
 
-            # Apply 45-65s gap + 120-150s hourly safety pacing
+            # Apply the configured anti-ban gap (60-80s by default) plus the
+            # hourly rest, through the durable per-session slot.
             await apply_whatsapp_safety_pacing(key)
 
             await whatsapp_client.send_text(key, channel["identifier"], wa_text)

@@ -224,6 +224,19 @@ def _port_from_url(url: str, fallback: int) -> int:
 DASHBOARD_PORT = _int("DASHBOARD_PORT", 5000)
 WA_HUB_PORT = _int("WA_HUB_PORT", _port_from_url(WA_HUB_URL, 8088))
 
+
+# ----- WhatsApp send pacing (anti-ban) -----
+# "60-80 seconds random gaps tho okaynaa" — consecutive sends on one session are
+# separated by a random gap inside this window, plus a longer rest at the hourly
+# boundary. Every send on a session shares the same durable slot (SQLite), so the
+# gap holds across the worker, the dashboard and restarts. These defaults are
+# deliberately conservative; they reduce send frequency but cannot guarantee that
+# an unofficial WhatsApp integration is never limited by the platform.
+WA_SEND_GAP_MIN = _int("WA_SEND_GAP_MIN", 60)      # seconds, inclusive
+WA_SEND_GAP_MAX = _int("WA_SEND_GAP_MAX", 80)      # seconds, inclusive
+WA_HOURLY_REST_MIN = _int("WA_HOURLY_REST_MIN", 120)
+WA_HOURLY_REST_MAX = _int("WA_HOURLY_REST_MAX", 150)
+
 # ----- Ops / monitoring -----
 # Telegram channel (username or id) where VM/bot health is reported.
 OPS_TELEGRAM_CHANNEL = _env("OPS_TELEGRAM_CHANNEL", "")

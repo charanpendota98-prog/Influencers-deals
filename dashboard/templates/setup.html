@@ -292,9 +292,17 @@
       <span class="hint" style="font-size:10px;">Deals routed using this profile's selected networks and tags</span>
     </div>
     <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde68a;">💬 3) WHATSAPP CHANNEL (Invite / JID)</label>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fde68a;">💬 3) WHATSAPP CHANNEL (Invite / JID) — optional here</label>
       <input name="whatsapp_id" placeholder="120363…@newsletter or …@g.us (pair first for invite links)" style="width: 100%;" />
-      <span class="hint" style="font-size:10px;">Paste invite link or phone chat JID</span>
+      <input name="whatsapp_name" placeholder="channel name, e.g. Ravi Loot Deals (optional)" style="width:100%; margin-top:5px; font-size:12px;" />
+      <span class="hint" style="font-size:10px;">
+        Ee step check cheyyakapoyina parledu: save ayina tarvata creator page lo <b>QR scan / login code</b> tho
+        connect chesi, <b>“meeku admin ga unna channels”</b> dropdown nunchi select chesthe chalu — akkade peru tho save avutundi.
+      </span>
+      <label style="font-size:11px; color:#a7f3d0; display:flex; align-items:center; gap:6px; margin-top:5px;">
+        <input type="checkbox" name="mirror_whatsapp" value="1" checked />
+        Main Telegram channel lo vachinavi anni WhatsApp channel lo kuda vellali (mirror)
+      </label>
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#fbbf24;">🎯 Deal Budget Filter</label>
@@ -306,16 +314,11 @@
         <option value="under_999">🏷️ Under ₹999 Only</option>
       </select>
     </div>
-    <div>
-      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#a5b4fc;">📡 Deal Sources (where their deals come from)</label>
-      <input name="allowed_sources" list="source-tokens"
-             value="{{ source_default.token if source_default else '' }}"
-             placeholder="{{ source_default.token if source_default else 'LootZoneIndia11' }}, powerloot"
-             style="width: 100%; font-family: monospace;" />
-      <span class="hint" style="font-size:10px;">Pre-filled with the hub default{% if source_default %} ⭐ {{ source_default.label }}{% endif %}; type or pick several, comma separated. Leave it as it is to use the default.</span>
-      <label style="font-size:11px; color:#94a3b8; display:flex; align-items:center; gap:6px; margin-top:4px;">
-        <input type="checkbox" name="sources_all" value="1" /> Post from every source in the hub
-      </label>
+    <div style="grid-column: 1 / -1;">
+      {% with source_rows=source_rows, source_picked=[],
+              source_line='nothing set yet — the default ' ~ (source_default.token if source_default else 'LootZoneIndia11') ~ ' will be used' %}
+        {% include "_source_picker.html" %}
+      {% endwith %}
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Tokens (Optional)</label>

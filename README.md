@@ -46,7 +46,7 @@ a direct post — the same WhatsApp rendering, the creator's **own** Amazon tag
 (channel override → creator tag → configured fallback, never another creator's
 tag), the same earned-link checks (`commission guard`), the same dedup layers
 (signature, physical identifier, 24h content hash, 12h near-duplicate), the
-same 20/hour + 5/10min rate limits and the same 45–65s WhatsApp safety pacing.
+same 20/hour + 5/10min rate limits and the same random 60–80s WhatsApp safety pacing (`WA_SEND_GAP_MIN`/`WA_SEND_GAP_MAX`).
 A mirrored post is stored with its source channel, so
 `pipeline.mirror_plan()` (and the creator page) can state exactly which main
 channel feeds which WhatsApp destination and how many posts were mirrored in
@@ -89,11 +89,52 @@ schedule runs in the background.
    dashboard shows the live 8-character code; on the phone open
    *Linked devices → Link with phone number* and type it. Status and code are
    polled read-only — the browser never creates a session or sends a message.
-4. Paste the WhatsApp Channel link (`https://whatsapp.com/channel/…`) or a
-   group invite. It resolves to the real JID and is saved as **Pending**.
+4. **Pick the channel by name.** Once the phone is connected the card fetches
+   the chats where that number is **admin or owner** and lists them under
+   *⭐ Channels / Groups where +<number> is ADMIN* — name, kind and size
+   (`Ravi Loot Deals · channel · owner · 4.2k`). Tick *Mirror main-channel
+   posts here* if the WhatsApp destination should also receive everything the
+   main Telegram channel posts. Pasting a
+   `https://whatsapp.com/channel/…` link or a group invite still works, and is
+   what you use for a destination the account is not an admin of yet; every
+   other chat the account can see stays in the collapsed *see all chats* list.
 5. Press **Test** once. Only a successful visible test activates the
-   destination; after that, deals post there — including mirrored
-   main-channel deals.
+   destination (the saved name is kept either way); after that, deals post
+   there — including mirrored main-channel deals. The stored name is editable
+   in the channel row on the creator page.
+6. **Rehearse it first, without a phone.** `python3 tools/demo_wa_hub.py`
+   answers the dashboard with a pretend paired number and three channels it is
+   admin of, so the whole click-through (status → pick by name → test → a deal
+   landing in it) can be exercised against a scratch database without logging
+   in a real WhatsApp account. See `tools/DEMO_WHATSAPP.md`.
+
+### 🅱️ Telegram gets the same smart handling
+
+A Telegram destination is now treated like the WhatsApp one: you paste whatever
+you were given (`@ravi_loots`, `https://t.me/ravi_loots`, `-1001234567890`) and
+the hub **asks Telegram for the truth — read-only** (`get_entity` +
+`get_permissions`; it never joins a group, never posts, never writes anything):
+
+* the destination's **real name** is saved on the channel, so the creator page,
+  the channel rows and the lists show `Ravi Loot Deals` instead of a JID;
+* the hub also reports whether the account it would post with is **allowed to
+  post there**. If not, the destination is still saved — an approval/preview
+  channel where we only read is perfectly valid — with a warning that says
+  exactly that instead of leaving you to discover it on delivery day;
+* on a box with **no Telegram session yet**, nothing changes: what you pasted is
+  saved exactly as pasted, and nothing waits on the network. The same is true if
+  Telegram cannot be reached or the channel is private and unjoined.
+
+This happens on the creator page, in the guided wizard's channel step and in the
+one-screen **Add Influencer** form (where a channel we cannot post to is flashed as
+a warning). Channels saved **before** this existed can be named in one read-only
+pass:
+
+```bash
+python -m influencer_hub.cli channel-names            # what it would name, and who can post
+python -m influencer_hub.cli channel-names --apply     # save the names it found
+python -m influencer_hub.cli channel-names --id 62 --all --json
+```
 
 ### ✅ Proving it works: the self-check panel
 
@@ -418,6 +459,13 @@ A creator's posts come from the sources **you** set beside their channels.
   `https://t.me/LootZoneIndia11`, `@LootZoneIndia11`, a private invite — is
   normalized to its token, because that is what a Telegram dialog name matches.
 * **Every source** is still possible: tick *Post from every source in the hub*.
+* The picker is one shared block, so it is identical on the **Setup Center**,
+  in the **guided wizard** and on a **creator page**: tick-boxes side by side
+  (tick several), each row labelled with the source's **name** and its spec —
+  `Power Loots · @powerloot` — never a bare token, plus a *paste as many as you
+  want* box that understands names, `@handles`, `https://t.me/…` and private
+  invites, and resolves a configured source's name to the token the pipeline
+  filters on.
 * The creator page's source fields suggest the tokens that exist (a `<datalist>`),
   per creator **and** per channel — one channel can read one source while the
   creator's others read several.

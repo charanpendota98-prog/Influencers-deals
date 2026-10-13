@@ -78,7 +78,9 @@ def test_whatsapp_pacing_human_gap(pacing_database):
 
         asyncio.run(pipeline.apply_whatsapp_safety_pacing(session))
         assert len(sleep_durations) == 1
-        assert 45.0 <= sleep_durations[0] <= 65.0
+        # The operator's anti-ban window: a fresh random gap, 60-80s by default.
+        assert 60.0 <= sleep_durations[0] <= 80.0
+        assert (config.WA_SEND_GAP_MIN, config.WA_SEND_GAP_MAX) == (60, 80)
 
 
 def test_whatsapp_pacing_hourly_cooldown(pacing_database, monkeypatch):
@@ -90,8 +92,11 @@ def test_whatsapp_pacing_hourly_cooldown(pacing_database, monkeypatch):
     ) == 0.0
 
     # Make the runtime-selected break deterministic while retaining the real
-    # persisted timestamp transition in the pacing implementation.
-    monkeypatch.setattr(pipeline.random, "uniform", lambda low, _high: low)
+    # persisted timestamp transition in the pacing implementation. The first
+    # uniform() call is the gap (60-80s), the second the hourly rest (120-150s),
+    # so the patched function distinguishes them by window.
+    monkeypatch.setattr(pipeline.random, "uniform",
+                        lambda low, high: low if high <= 80 else low)
     sleep_durations = []
 
     async def fake_sleep(duration):

@@ -933,6 +933,81 @@ def _cmd_restore(args):
     return 0
 
 
+def _cmd_channel_names(args):
+    """Name the Telegram destinations we already saved (read-only peek, opt-in write).
+
+    The Telegram twin of the WhatsApp picker: a channel added as a link or a JID
+    should read as its real name everywhere in the dashboard. Adding a channel
+    asks Telegram for that name (see ``dashboard.app._telegram_destination_info``);
+    this command backfills the ones saved before that, and answers the operator's
+    other question — is our account actually an admin there? — for the whole
+    fleet in one pass.
+
+    It joins nothing, posts nothing and writes nothing unless ``--apply`` is
+    given.
+    """
+    import asyncio
+    import json as _json
+
+    from . import db, telegram_ops
+
+    if not telegram_ops.session_ready():
+        print("no Telegram session on this box yet — run `python -m influencer_hub.cli authorize`")
+        print("(until then a pasted channel is saved exactly as pasted, and the dashboard")
+        print(" keeps showing the identifier instead of a name.)")
+        return 2
+
+    channels = [row for row in db.list_channels() if row.get("platform") == "telegram"]
+    if args.id:
+        channels = [row for row in channels if int(row.get("influencer_id") or 0) == args.id]
+    if not args.all_names:
+        channels = [row for row in channels if not str(row.get("title") or "").strip()]
+    channels = channels[: max(0, int(args.limit))]
+
+    async def _look(row: dict) -> dict:
+        info = await telegram_ops.inspect_channel(row.get("identifier") or "")
+        return {"channel_id": row.get("id"), "identifier": row.get("identifier"),
+                "role": row.get("role"), **info}
+
+    results = []
+    for row in channels:
+        results.append(asyncio.run(_look(row)))
+
+    applied = 0
+    if args.apply:
+        for row in results:
+            if row.get("ok") and str(row.get("title") or "").strip():
+                db.update_channel_details(int(row["channel_id"]), title=row["title"])
+                applied += 1
+
+    if args.json:
+        print(_json.dumps({"checked": len(results), "applied": applied,
+                           "channels": results}, indent=2, ensure_ascii=False))
+        return 0
+
+    if not results:
+        print("every Telegram destination already has a name"
+              + ("" if args.all_names else " (--all re-checks the named ones too)"))
+        return 0
+    for row in results:
+        if not row.get("ok"):
+            print(f"  [??] {row['identifier']} — {row.get('error') or 'unresolved'}")
+            continue
+        rights = {True: "can post", False: "NOT an admin here",
+                  None: "rights unknown"}[row.get("can_post")]
+        name = row.get("title") or "(no title)"
+        print(f"  [OK] {name} · {row.get('kind')} · {rights} · {row['identifier']}"
+              f" ({row['role']})")
+    print(f"checked {len(results)} Telegram destination(s)")
+    if args.apply:
+        print(f"saved {applied} name(s) — the dashboard now shows the name, not the JID")
+    else:
+        print("nothing was changed; run again with --apply to save these names")
+    print("a destination marked NOT an admin here is still saved: our account simply")
+    print("cannot post to it, so it is useful as an approval/preview channel only.")
+    return 0
+
+
 def _cmd_amazon_scan(args):
     """What Amazon links a source carries, and whose tag each creator's post gets."""
     import json as _json
@@ -1278,6 +1353,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="also print the ordered deploy steps")
     dc.add_argument("--json", action="store_true", help="machine-readable output")
     dc.set_defaults(func=_cmd_deploy_check)
+
+    cn = sub.add_parser(
+        "channel-names",
+        help="name the Telegram channels we saved (read-only peek; --apply saves the names)",
+    )
+    cn.add_argument("--id", type=int, default=None, help="only this creator's channels")
+    cn.add_argument("--limit", type=int, default=50, help="how many to look at (default 50)")
+    cn.add_argument("--all", dest="all_names", action="store_true",
+                    help="re-check destinations that already have a name")
+    cn.add_argument("--apply", action="store_true", help="save the names it found")
+    cn.add_argument("--json", action="store_true", help="machine-readable output")
+    cn.set_defaults(func=_cmd_channel_names)
 
     rp = sub.add_parser("run-pipeline", help="pull shared deals and dispatch to influencers")
     rp.add_argument("--id", type=int, default=None, help="limit to one influencer")

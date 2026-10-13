@@ -537,6 +537,67 @@ export class Hub {
     return chats
   }
 
+  // The operator's own ask: "vallu admin ga vunna channel ni isthanu" — show the
+  // channels/groups this paired number can actually post to, with the role it
+  // holds there, so the dashboard can offer a name in a dropdown instead of a JID.
+  // Groups come from one bulk call (groupFetchAllParticipating) that includes our
+  // participant entry; channels are checked one by one because Baileys exposes
+  // their viewer role only through newsletterMetadata. Failures are reported per
+  // chat, never thrown, so one odd chat cannot break the picker.
+  async listAdminChats(key) {
+    const s = this.sessions.get(key)
+    if (!s?.sock) throw new Error('session not connected: ' + key)
+    const chats = []
+    const wanted = new Set(['admin', 'superadmin', 'owner', 'administer'])
+
+    try {
+      if (typeof s.sock.groupFetchAllParticipating === 'function') {
+        const groups = await s.sock.groupFetchAllParticipating()
+        const me = s.sock.user?.id || ''
+        for (const g of Object.values(groups || {})) {
+          const mine = (g.participants || []).find(
+            (p) => p.id === me || (p.id && me && p.id.split(':')[0] === me.split(':')[0]),
+          )
+          const role = String(mine?.admin || '').toLowerCase()
+          if (!wanted.has(role)) continue
+          chats.push({
+            jid: g.id,
+            name: g.subject || g.id,
+            kind: 'group',
+            role: role === 'superadmin' ? 'owner' : 'admin',
+            members: (g.participants || []).length,
+          })
+        }
+      }
+    } catch (error) {
+      logger.warn({ key, error }, 'group admin listing failed')
+    }
+
+    const newsletters = Object.values(s.sock.chats || {})
+      .filter((c) => c.id && c.id.endsWith('@newsletter'))
+    for (const c of newsletters) {
+      try {
+        const meta = typeof s.sock.newsletterMetadata === 'function'
+          ? await s.sock.newsletterMetadata('jid', c.id)
+          : null
+        const role = String(meta?.viewer_metadata?.role || '').toLowerCase()
+        if (!wanted.has(role)) continue
+        chats.push({
+          jid: c.id,
+          name: c.name || meta?.name || c.id,
+          kind: 'channel',
+          role: role === 'owner' ? 'owner' : 'admin',
+          members: meta?.subscriber_count ?? meta?.subscribers ?? null,
+        })
+      } catch (error) {
+        logger.warn({ key, jid: c.id, error }, 'newsletter admin check failed')
+      }
+    }
+
+    chats.sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    return chats
+  }
+
   async stop(key) {
     const s = this.sessions.get(key)
     if (!s) return

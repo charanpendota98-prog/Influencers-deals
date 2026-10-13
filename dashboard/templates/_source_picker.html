@@ -1,0 +1,49 @@
+{# One source picker for every screen that sets deal sources.
+   Callers pass:
+     source_rows    – sources.choice_rows() (token, label/name, spec, active, used_by, is_default)
+     source_default – sources.default_token()
+     source_picked  – lowercased tokens already ticked (a set or list)
+     source_all     – bool: "post from every source" currently on
+     source_line    – sources.selection_line(...) for the "currently" hint
+   The tick boxes carry the token the pipeline filters on, so a source channel
+   NAME is what the operator reads and the token is what gets stored. #}
+<fieldset class="card" style="border:1px solid #334155; padding:12px;">
+  <legend style="font-size:13px; font-weight:700; color:#a5b4fc; padding:0 6px;">
+    📡 Deal sources — which channels these posts come from
+  </legend>
+  <p class="hint" style="margin-top:0; font-size:11px;">
+    Tick one or many. Nothing ticked keeps the default
+    <strong>{{ source_default }}</strong> — a creator never ends up posting from every source
+    in the hub by accident.
+  </p>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:6px 14px;">
+    {% for row in source_rows %}
+      <label style="display:flex; gap:8px; align-items:flex-start; font-size:12px;">
+        <input type="checkbox" name="sources" value="{{ row.token }}"
+               {% if row.token.lower() in source_picked %}checked{% endif %} />
+        <span>
+          {{ row.label }}{% if row.is_default %} <span class="pill">default</span>{% endif %}
+          {% if row.used_by %}<span class="pill">{{ row.used_by }}</span>{% endif %}
+          {% if not row.active %}<span class="pill">paused</span>{% endif %}
+          <div class="hint" style="font-size:10px;">{{ row.spec or row.token }}</div>
+        </span>
+      </label>
+    {% else %}
+      <p class="hint" style="margin:0; font-size:11px;">
+        No source rows yet — the default <strong>{{ source_default }}</strong> is used.
+      </p>
+    {% endfor %}
+  </div>
+  <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:8px; align-items:center;">
+    <label style="font-size:12px; display:flex; gap:6px; align-items:center;">
+      <input type="checkbox" name="sources_all" value="1" {% if source_all %}checked{% endif %} />
+      Post from every source in the hub
+    </label>
+    <label style="font-size:12px; flex:1; min-width:220px;">
+      Or type / paste source names (comma separated)
+      <input name="sources_text" maxlength="400" value=""
+             placeholder="LootZoneIndia11, powerloot" style="width:100%; font-size:12px;" />
+    </label>
+  </div>
+  <p class="hint" style="margin:6px 0 0; font-size:11px;">Currently saving from: {{ source_line }}</p>
+</fieldset>
