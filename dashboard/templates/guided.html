@@ -45,6 +45,9 @@
         <span class="pill">{{ guided_progress }}</span>
         <span class="pill">{{ guided_profile.amazon_tag or 'no tag yet' }}</span>
         <span class="pill" title="{{ guided_age }}">🕒 {{ guided_age }}</span>
+        {% if guided_tag_link %}
+          <span class="pill" title="Every Amazon link on this creator's channels">🔗 {{ guided_tag_link }}</span>
+        {% endif %}
       {% else %}
         <span class="pill">{{ batch_defaults_line }}</span>
       {% endif %}
@@ -90,7 +93,10 @@
         </div>
         <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
           <button class="button-primary" type="submit">Save and add channels →</button>
-          <span class="hint">Categories, hours and switches come next, pre-filled for you.</span>
+          <span class="hint">
+            That tag signs every Amazon link on their channels (approval, main and the WhatsApp
+            mirror) — nobody else's tag can appear there.
+          </span>
         </div>
       </form>
     {% else %}
@@ -276,7 +282,16 @@
             <tr>
               <td>{{ line.label }}</td>
               <td class="{{ '' if line.ok else 'no' }}">
-                {{ line.value }}{% if not line.ok %} — still missing{% endif %}
+                {% if line.link and line.value %}<code>{{ line.value }}</code>
+                {% elif line.link %}—{% else %}{{ line.value }}{% endif %}
+                {% if line.link %}
+                  <div class="hint">
+                    {% if line.ok %}the same tag on every Amazon link this creator posts —
+                    approval, main and the WhatsApp mirror ✅
+                    {% else %}⚠ without their own tag these deals are held, not signed with
+                    <code>{{ batch_defaults_line }}</code>'s shared id{% endif %}
+                  </div>
+                {% elif not line.ok %}— still missing{% endif %}
               </td>
             </tr>
           {% endfor %}

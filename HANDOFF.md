@@ -946,7 +946,7 @@ when non-empty, so a channel-only paste never wipes a saved field).
 
 Tests: `tests/test_guard.py` (33) and `tests/test_smart_add.py` (26). Live-verified
 on a 60-creator demo hub: the refusal, the preview JSON, the defaults save, the
-money-map API/CLI and the self-check item (VERIFICATION §0b).
+money-map API/CLI and the self-check item (VERIFICATION §0c).
 
 ## 16. This session, part 11: guided setup and the setup age (creator → channels → deals → go live)
 
@@ -1042,7 +1042,77 @@ The wizard's brain, no Flask in it:
   `until` / `sort`.
 
 Tests: `tests/test_age.py` (13) and `tests/test_guided_setup.py` (28), plus the
-scale-budget note in `tests/test_bulk_setup_scale.py`. Full suite **627 passed**
-(`HUB_SKIP_DOTENV=1`). Live-verified end to end
+scale-budget note in `tests/test_bulk_setup_scale.py`. Full suite **652 passed**
+(`HUB_SKIP_DOTENV=1`) after the own-tag round (§17). Live-verified end to end
 on the demo hub — the four saves, the refusal by name, the team hijack refused
-with the owner's channels unchanged, and the page timings (VERIFICATION §0).
+with the owner's channels unchanged, and the page timings (VERIFICATION §0b).
+
+## 17. This session, part 12: the own-tag proof and the hold
+
+The operator's ask: "akkada tag lo em tag isthe valla channel ah channels loney
+valla tag tho links cheyali … vallaki commission miss avvakunda carefulga cheyu
+… ilaga 1000+ influencers ki kuda cheyali." Whatever tag is saved for a creator,
+their channels post under that tag — and a link that would carry anybody else's
+id is never published, at 1000+ creators too.
+
+### The rule, in one place
+
+* `influencer_hub/tag_proof.py` (new) resolves the tag chain — channel
+  `amazon_override_tag` → creator `amazon_tag` → `config.AMAZON_ASSOCIATE_TAG` —
+  and calls that last one **not an own tag**: the database fills a blank tag with
+  it (the shared-default trap), so a value equal to the hub-wide default is
+  reported `shared_default` and `own: false`. `signing()`, `own_tag()`,
+  `tagged_link()`, `verify()`, `fleet()`, `holds()`, `describe_fix()` and
+  `url_summary()` are the public surface; the pipeline, the dashboard, the CLI
+  and the self-check all read the same answer. It deliberately does **not**
+  import `pipeline` (the pipeline imports it): `ACTIVE_CHANNEL_STATUSES` is
+  duplicated and `tests/test_tag_proof.py` fails if the two ever drift.
+* `influencer_hub/pipeline.py` — the **own-tag gate** in
+  `_render_and_deliver_destination`, just before the final render. When the
+  channel has no own tag and the deal carries an Amazon link, the destination is
+  not rendered: it warn-logs "OWN-TAG HOLD", parks the deal (`db.defer_deal`,
+  reason `no_own_amazon_tag`, 300 s backoff), audits `amazon_tag_hold`
+  (actor `pipeline`, target = the creator) and returns
+  `skipped:no_own_amazon_tag`. The gate has **no `role != "approval"` exemption**
+  on purpose: an approval channel is still that creator's channel and its link is
+  the one being approved.
+* `influencer_hub/worker.py` — `drain_deferred_deals` keeps that status in the
+  retry queue (bounded by `max_attempts`) instead of deleting the row as
+  "processed", and keeps the reason `no_own_amazon_tag` on the row so the board
+  still says "paste the tag" rather than "unconverted". The first pass after the
+  tag is saved posts the deal, signed with the creator's own tag.
+* `config.REQUIRE_OWN_AMAZON_TAG` (default **on**) is the single escape hatch for
+  a hub that really runs one shared account.
+
+### What the owner sees
+
+* `cli tag-proof [--creator N] [--json]` — the fleet or one creator, exit 1 while
+  anything is held; `cli assignments` still covers tag/channel collisions.
+* `/api/tag-proof` (admin only) — fleet counts + the blocked creators, or one
+  creator with the exact link their posts will carry and a per-channel tag row.
+* `/setup → 🏷️ Tag proof` card, a dashboard-home chip, the **Amazon attribution**
+  self-check item (names the creators, says "held"), the ops digest line
+  (`🏷️ Amazon tags: 61/62 channel(s) own · ⛔ 1 held (No Tag Yet)` plus
+  "N waiting for their own Amazon tag" on the retry-queue line).
+* The guided review now states the link itself (`Amazon links will read
+  www.amazon.in/dp/…?tag=ravi-21`), and `/easy-setup`'s hint uses the same real
+  link instead of the old `B0EXAMPLE` placeholder.
+
+### Scale
+
+`fleet()` reads the creators and the channels and checks every active channel in
+the same pass: two queries, no per-creator round trip. The suite pins it —
+1001 creators + 1001 channels, exactly two `SELECT`s, under a second — and the
+self-check/digest reuse the same read instead of repeating it.
+
+### Verified
+
+`tests/test_tag_proof.py` (25 tests, all green in the 652-test suite): the
+shared-default trap, the channel override, `verify()` catching a foreign and an
+untagged link, the full hold matrix, the pipeline hold end to end (assertion on
+the deferred row's reason and the audit row, no captured post), the own-tag post,
+one tag across approval + main + WhatsApp mirror, the approval channel held too,
+the escape hatch, the worker's bounded retry and its first-of-many post after the
+tag is saved, the fleet pass, `describe_fix`, the self-check line, the CLI
+(exit codes 0/1/2), the dashboard API, the setup card, the home chip, the flow
+board reasons and the digest line.

@@ -126,8 +126,11 @@ def test_active_channel_and_all_toggles_do_not_drop_shopsy_deal(monkeypatch):
 
 def test_amazon_associate_links_are_not_sent_to_bitly(monkeypatch):
     db.init()
+    # A creator posts with their own Associate id: the hub-wide tag is only a
+    # fallback, and the pipeline holds a deal whose Amazon link would be signed
+    # with it (see tests/test_tag_proof.py).
     influencer_id = db.add_influencer(
-        "No Amazon Shortening", bitly_api_key="test-bitly-token"
+        "No Amazon Shortening", "noamz-21", bitly_api_key="test-bitly-token"
     )
     channel_id = db.add_channel(
         influencer_id, "telegram", "@no_amazon_shortening", status="ready"
@@ -153,7 +156,7 @@ def test_amazon_associate_links_are_not_sent_to_bitly(monkeypatch):
         ))
         assert result[influencer_id][channel_id] == "posted"
         assert calls == []
-        assert "https://www.amazon.in/dp/B0ABCDEFGH?tag=mama086-21" in sent[0]
+        assert "https://www.amazon.in/dp/B0ABCDEFGH?tag=noamz-21" in sent[0]
     finally:
         db.delete_influencer(influencer_id)
 

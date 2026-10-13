@@ -156,7 +156,14 @@ async def drain_deferred_deals(limit: int = 3) -> int:
             for per_channel in (result or {}).values()
             for status in (per_channel or {}).values()
         ]
-        still_held = any(status == "skipped:no_our_affiliate_after_guard" for status in statuses)
+        # A deal held for a missing own Amazon tag is not "processed": it stays in
+        # the retry queue (bounded by max_attempts) so it goes out the moment the
+        # owner pastes that creator's tag, instead of being silently dropped.
+        tag_hold = f"skipped:{pipeline.tag_proof.HOLD_REASON}"
+        still_held = any(
+            status in {tag_hold, "skipped:no_our_affiliate_after_guard"}
+            for status in statuses
+        )
         if not still_held:
             # Posted (or skipped for an unrelated reason): the retry queue entry
             # has done its job.
@@ -176,13 +183,19 @@ async def drain_deferred_deals(limit: int = 3) -> int:
                 deal_hash[:8], int(item.get("attempts") or 0),
             )
             continue
+        # Keep the *real* reason on the row: "no_own_amazon_tag" tells the owner
+        # to paste a tag, "still_unconverted" tells them to look at EarnKaro.
+        held_for_tag = tag_hold in statuses
         db.note_deferred_attempt(
             deal_hash, delay_seconds=pipeline.DEFERRED_RETRY_DELAY_SECONDS,
-            reason="still_unconverted",
+            reason=(pipeline.tag_proof.HOLD_REASON if held_for_tag
+                    else "still_unconverted"),
         )
         logger.info(
-            "Deferred deal %s still unconverted (attempt %s/%s)",
-            deal_hash[:8], int(item.get("attempts") or 0) + 1, int(item.get("max_attempts") or 1),
+            "Deferred deal %s %s (attempt %s/%s)",
+            deal_hash[:8],
+            "still held: no own Amazon tag" if held_for_tag else "still unconverted",
+            int(item.get("attempts") or 0) + 1, int(item.get("max_attempts") or 1),
         )
     return drained
 

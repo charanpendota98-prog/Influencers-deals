@@ -26,6 +26,7 @@ from . import (
     hypd_shortlinks,
     lehlah_shortlinks,
     link_router,
+    tag_proof,
     telegram_ops,
     whatsapp_client,
 )
@@ -605,6 +606,44 @@ async def _render_and_deliver_destination(
             should_shorten = (len(final_urls) >= 2) or any(len(url) > 65 for url in final_urls)
             if should_shorten:
                 shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
+
+    # === OWN-TAG GATE: never sign a creator's Amazon link with somebody else ===
+    # The owner's rule: whatever tag a creator is given, the Amazon links on their
+    # channels carry it. When this channel has no own tag (empty, or still the
+    # hub-wide shared default) and the deal carries an Amazon link, the post is
+    # HELD — parked for a bounded retry and reported — instead of quietly paying
+    # the shared account while the creator loses the commission.
+    #
+    # This gate runs for EVERY role on purpose, including ``approval``: an
+    # approval channel is still a channel of that creator, and the link in the
+    # approval copy is the link the owner looks at before saying yes — a
+    # wrongly-signed link there is the same leak, one click away from going out.
+    # Nobody loses sight of the deal: the hold is logged, audited
+    # (``amazon_tag_hold``), parked in the deferred queue and listed on 🏷️ Tag
+    # proof until the tag is saved, at which point the worker posts it.
+    hold = tag_proof.holds(inf, ch, render_text, strip_amazon=strip_amz)
+    if hold["hold"]:
+        info = hold["signing"]
+        logging.getLogger(__name__).warning(
+            "OWN-TAG HOLD inf=%s ch=%s creator=%r would post Amazon links as %s "
+            "(the creator has no own tag) — held, not signed with the shared id",
+            inf.get("id"), ch.get("id"), info.get("creator"), info.get("tag") or "(none)",
+        )
+        try:
+            db.defer_deal(deal_text, source=source_channel,
+                          reason=tag_proof.HOLD_REASON,
+                          delay_seconds=DEFERRED_RETRY_DELAY_SECONDS)
+        except Exception:  # pragma: no cover - parking must never break a run
+            logging.getLogger(__name__).exception("could not park the held deal")
+        try:
+            from . import security
+            security.audit("pipeline", "system", "amazon_tag_hold",
+                           target=info.get("creator") or f"creator #{inf.get('id')}",
+                           detail=(f"tag {info.get('tag') or '(none)'} is the shared default; "
+                                   f"channel {ch.get('identifier') or ch.get('id')} holds the post"))
+        except Exception:  # pragma: no cover - auditing is best-effort
+            pass
+        return f"skipped:{tag_proof.HOLD_REASON}"
 
     rendered = link_router.render_for_influencer(
         render_text, effective_amz_tag, channel_ek_map, shortened_links=shortened_map,

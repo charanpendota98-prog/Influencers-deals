@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from . import accounts, age, config, db, pipeline
+from . import accounts, age, config, db, pipeline, tag_proof
 
 # Order matters: the first unfinished step is the "next step" shown to the
 # operator, so it follows the order a person actually onboards a creator.
@@ -581,8 +581,10 @@ def creator_overview(inf_id: int) -> dict:
 
 
 def example_tagged_link(inf: dict) -> str:
-    """A real, native Amazon URL carrying this creator's tag — shown in the UI."""
-    tag = accounts.creator_amazon_tag(inf)
-    if not tag:
-        return ""
-    return f"https://www.amazon.in/dp/B0EXAMPLE?tag={tag}"
+    """The real Amazon URL carrying this creator's tag — shown in the UI.
+
+    Not a placeholder: the same canonical link the pipeline builds (real ASIN,
+    native ``?tag=``), so "what will my posts look like?" is answered with the
+    url itself rather than a lookalike. ``tag_proof`` owns that construction.
+    """
+    return tag_proof.tagged_link(inf)

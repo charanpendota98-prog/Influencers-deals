@@ -152,6 +152,12 @@ def review_lines(profile: dict, channels: list[dict] | None = None, *,
                                   member=str(profile.get("added_by") or "")) or "—",
          "ok": True},
     ]
+    # The proof the owner asks for at the end: the exact Amazon link this
+    # creator's channels will carry. Filled by the caller (the wizard) so this
+    # module stays free of the database and the router.
+    if lines[1]["ok"]:  # a tag is saved
+        lines.append({"label": "Amazon links will read", "value": "", "ok": True,
+                      "link": True})
     return lines
 
 

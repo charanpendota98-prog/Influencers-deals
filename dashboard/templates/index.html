@@ -134,6 +134,12 @@
         ➕ {{ recent_creators.count }} added in the last {{ recent_creators.window_days }} days
       </span>
     {% endif %}
+    {% if tag_fleet and tag_fleet.fallback %}
+      <a class="command-chip is-warn" href="{{ url_for('setup') }}#tag-proof"
+         title="{{ tag_fleet.fix }}">🏷️ {{ tag_fleet.fallback }} channel(s) held — no own Amazon tag</a>
+    {% elif tag_fleet and tag_fleet.channels %}
+      <a class="command-chip is-ok" href="{{ url_for('setup') }}#tag-proof">🏷️ every channel on its own Amazon tag</a>
+    {% endif %}
     <a class="command-chip is-info" href="{{ url_for('guided_setup') }}">🧭 Guided setup — one creator in four steps</a>
   </div>
 

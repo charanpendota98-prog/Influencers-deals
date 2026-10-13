@@ -39,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import config, db, readiness, selfcheck
+from . import config, db, readiness, selfcheck, tag_proof
 
 # Global settings used to remember alert state (so a restart does not re-alert).
 LAST_VERDICT_KEY = "ops_last_verdict"
@@ -121,6 +121,17 @@ def digest(*, hours: int = 24, plan: dict | None = None, influencers: list[dict]
             sources = db.list_sources(active_only=False)
         except Exception:  # pragma: no cover - display only
             sources = []
+    # Whose Amazon tag signs which channel (one batched pass) — the ops card says
+    # how many creators are held for a missing own tag, and why the retry queue
+    # is holding deals, so a quiet channel is never a mystery.
+    try:
+        amazon_tags = tag_proof.fleet(active_only=True, sample=False)
+    except Exception:  # pragma: no cover - display only
+        amazon_tags = None
+    try:
+        retry_reasons = db.deferred_reasons()
+    except Exception:  # pragma: no cover - display only
+        retry_reasons = {}
     if heartbeat is None:
         try:
             heartbeat = db.get_worker_heartbeat()
@@ -200,6 +211,10 @@ def digest(*, hours: int = 24, plan: dict | None = None, influencers: list[dict]
             ],
         },
         "retry_queue": deferred,
+        # {reason: count}: "no_own_amazon_tag" is a creator waiting for their own
+        # tag — the owner's next action, not a broken source.
+        "retry_reasons": retry_reasons,
+        "amazon_tags": amazon_tags,
         "worker": {"state": worker_state, "last_poll_at": (heartbeat or {}).get("last_poll_at")},
         "sources": {"active": active_sources, "total": len(sources)},
         "creators": {
@@ -235,7 +250,10 @@ def render_digest(data: dict) -> str:
         f"{icon} Hub digest · {data.get('hours', 24)}h",
         f"Posts: {posts.get('posted', 0)} delivered · {posts.get('failed', 0)} failed"
         + (f" · {posts.get('mirrored', 0)} mirrored" if posts.get("mirrored") else ""),
-        f"Retry queue: {data.get('retry_queue', 0)} parked deal(s)",
+        f"Retry queue: {data.get('retry_queue', 0)} parked deal(s)"
+        + (f" — {held} waiting for their own Amazon tag"
+           if (held := int((data.get('retry_reasons') or {}).get(
+               tag_proof.HOLD_REASON, 0))) else ""),
         f"Worker: {data.get('worker', {}).get('state', 'unknown')}"
         f" · sources: {(data.get('sources') or {}).get('active', 0)}"
         f"/{(data.get('sources') or {}).get('total', 0)}",
@@ -266,6 +284,14 @@ def render_digest(data: dict) -> str:
         if amazon.get("foreign_tag"):
             amazon_line += f" · ⛔ {amazon['foreign_tag']} foreign"
         lines.append(amazon_line)
+
+    tags = data.get("amazon_tags") or {}
+    if tags.get("fallback"):
+        names = ", ".join(row["name"] for row in (tags.get("blocked") or [])[:2])
+        tag_line = (f"🏷️ Amazon tags: {tags.get('own', 0)}/{tags.get('channels', 0)} "
+                    f"channel(s) own · ⛔ {tags['fallback']} held"
+                    + (f" ({names})" if names else ""))
+        lines.append(tag_line)
 
     failures = posts.get("top_failures") or []
     if failures:

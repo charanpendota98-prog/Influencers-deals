@@ -588,6 +588,89 @@ def _cmd_assignments(args):
     return 0 if guard.is_clear(findings) else 1
 
 
+def _cmd_tag_proof(args):
+    """Whose Amazon tag signs which active channel — and what is held.
+
+    Exit code 1 when any active channel would post an Amazon link under a tag
+    that is not its creator's own: those deals are held by the pipeline, so the
+    owner fixes the tag and they go out signed correctly.
+    """
+    from . import tag_proof
+
+    if getattr(args, "creator", 0):
+        profile = db.get_influencer(int(args.creator))
+        if not profile:
+            print(f"No creator with id {args.creator}.")
+            return 2
+        link = tag_proof.tagged_link(profile)
+        proof = tag_proof.verify(link, profile) if link else {"ok": False, "issues": ["no tag saved"]}
+        channels = []
+        for channel in db.list_channels(int(profile["id"])):
+            info = tag_proof.signing(profile, channel)
+            channels.append({
+                "channel_id": info["channel_id"],
+                "identifier": str(channel.get("identifier") or ""),
+                "tag": info["tag"],
+                "own": info["own"],
+                "source": info["source"],
+                "shared_default": info["shared_default"],
+                "status": str(channel.get("status") or ""),
+            })
+        payload = {
+            "ok": bool(link) and proof["ok"],
+            "creator_id": int(profile["id"]),
+            "name": str(profile.get("name") or ""),
+            "own_tag": tag_proof.own_tag(profile),
+            "stored_tag": tag_proof.stored_tag(profile),
+            "link": link,
+            "link_summary": tag_proof.url_summary(link) if link else "",
+            "hold_reason": tag_proof.HOLD_REASON,
+            "channels": channels,
+            "verify": proof,
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            stored = payload["stored_tag"] or "(none)"
+            print(f"{payload['name']} — own tag: {payload['own_tag'] or '(none)'} "
+                  f"(stored: {stored})")
+            print(f"  Amazon links will read: {payload['link_summary'] or '(nothing: tag missing)'}")
+            for row in channels:
+                mark = "✅ own" if row["own"] else "⛔ held"
+                shared = " (the hub's shared id)" if row["shared_default"] else ""
+                print(f"  {mark}  {row['identifier'] or row['channel_id']} "
+                      f"[{row['source']}] tag={row['tag'] or '(none)'}{shared}")
+            if not payload["ok"]:
+                print("  Amazon deals for this creator are held, not signed with the "
+                      "shared id:")
+                for issue in (proof.get("issues") or ["paste their own Associate tag"])[:3]:
+                    print(f"    · {issue}")
+        return 0 if payload["ok"] else 1
+
+    fleet = tag_proof.fleet(active_only=True)
+    if args.json:
+        print(json.dumps(fleet, indent=2))
+        return 0 if fleet["ok"] else 1
+    print(fleet["summary"])
+    fix = tag_proof.describe_fix(fleet["blocked"])
+    if fix:
+        print(fix)
+    if not fleet["blocked"]:
+        print(f"Nothing to fix — {fleet['creators']} creator(s), {fleet['channels']} active "
+              "channel(s) checked.")
+        return 0
+    print()
+    for row in fleet["blocked"]:
+        held = ", ".join(channel["identifier"] or f"#{channel['channel_id']}"
+                         for channel in row["channels"])
+        print(f"  ⛔ {row['name']} (#{row['creator_id']}) — {held}")
+        print(f"     Amazon deals held: no own tag "
+              f"(would post as {row['fallback_tag'] or '(none)'})")
+    print("\nFix: paste each creator's own Associate tag (🧭 Guided setup or the creator "
+          "page). Held deals post on the next worker run.")
+    return 1
+
+
 def _cmd_add_defaults(args):
     """Read or write what every NEW creator starts with."""
     from . import presets
@@ -1060,6 +1143,15 @@ def build_parser() -> argparse.ArgumentParser:
     asg.add_argument("--json", action="store_true", help="machine-readable findings")
     asg.add_argument("--fix-hint", action="store_true", help="print how to fix them")
     asg.set_defaults(func=_cmd_assignments)
+
+    tpr = sub.add_parser(
+        "tag-proof",
+        help="prove every active channel posts Amazon links under its own tag (exit 1 when not)",
+    )
+    tpr.add_argument("--creator", type=int, default=0,
+                     help="the single-creator proof: the exact link their posts will carry")
+    tpr.add_argument("--json", action="store_true", help="machine-readable output")
+    tpr.set_defaults(func=_cmd_tag_proof)
 
     ad = sub.add_parser("add-defaults",
                         help="what every NEW creator starts with (presets for the team)")

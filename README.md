@@ -313,6 +313,65 @@ audited (`add_blocked_duplicate`). Inside one paste the index stays honest too, 
 two lines of the same file cannot create the collision. Updating a creator's own
 tag or channel is of course still allowed (its own id is ignored).
 
+### 🏷️ Tag proof: the tag saved is the tag posted — or nothing posts
+
+The money map finds the **mix-ups**. This is the promise: whatever tag you type
+for a creator, the Amazon links that go out on **their** channels carry exactly
+that tag — and a link that would carry anybody else's id is never published.
+
+Every destination resolves its tag the same way, in one place
+(`tag_proof.signing`): a channel's own Amazon override → the creator's own
+Associate id → the hub-wide `AMAZON_ASSOCIATE_TAG`. That last one is **not** the
+creator's own: the database fills a blank tag with it so a deal is never
+dropped, which is exactly the mix-up that loses a creator their commission. So
+the hub treats it as missing, and:
+
+| Situation | What happens |
+|---|---|
+| Creator has their own tag (or a channel override) | the post goes out, links signed with it — approval, main, WhatsApp mirror alike |
+| Creator is still on the hub-wide tag, deal has Amazon links | the post is **held**: nothing is published under the shared id. The deal is parked with the reason `no_own_amazon_tag`, logged, audited (`amazon_tag_hold`) and retried by the worker |
+| Creator saved the tag before the worker's next pass | the parked deal goes out — signed with **their** tag |
+| Deal has no Amazon link (Flipkart/EarnKaro/HYPD/Meesho) | untouched: EarnKaro and HYPD money goes to the hub's central accounts by design |
+| Channel strips Amazon links | never held (there is no Amazon link to sign) |
+
+The hold applies to **every** role including the approval preview: an approval
+channel is still a channel of that creator, and the link there is the one you
+are being asked to approve — a wrongly-signed link is one click from going out.
+
+```bash
+python -m influencer_hub.cli tag-proof                  # every active channel, exit 1 if any is held
+python -m influencer_hub.cli tag-proof --creator 62      # the exact link #62's posts will carry
+python -m influencer_hub.cli tag-proof --json
+curl -s http://127.0.0.1:5000/api/tag-proof              # admin only: counts + who is held
+curl -s "http://127.0.0.1:5000/api/tag-proof?creator=62" # one creator: link + per-channel tag
+```
+
+```
+$ python -m influencer_hub.cli tag-proof
+⛔ 2 of 62 active channel(s) still on the hub's shared tag (No Tag Yet, Copy Cat)
+Paste each creator's own Associate tag (for example on No Tag Yet's page) — until
+then their Amazon deals are held, never signed with mama086-21.
+  ⛔ No Tag Yet (#41) — @notag
+     Amazon deals held: no own tag (would post as mama086-21)
+```
+
+Where you see it: `/setup → 🏷️ Tag proof` (one line per held creator, with the
+link their posts would carry today and a **Paste their own tag →** link), a chip
+on the dashboard home, the **Amazon attribution** self-check item, the daily ops
+digest (`🏷️ Amazon tags: 61/62 channel(s) own · ⛔ 1 held (No Tag Yet)`) and the
+creator's own page — where the review line now states the exact link
+(`Amazon links will read www.amazon.in/dp/…?tag=ravi-21`).
+
+The whole-fleet proof is **one batched pass**: 1001 creators + 1001 channels are
+checked with two queries (measured < 1 s in the suite), so it runs on a page
+render and on a cron alike.
+
+One switch, for a hub that really does run a single shared account:
+
+```bash
+REQUIRE_OWN_AMAZON_TAG=off        # restores the old fallback signing (default: on)
+```
+
 ### ✍️ Adding creators the easy way: one line, anything you have
 
 Whoever is onboarding does not need a column order. This is all the same row:

@@ -39,7 +39,8 @@ sys.path.insert(0, str(ROOT))
 from influencer_hub import (
     age, amazon_shortlinks, amazon_watch, config, creators, db, guard, hypd_shortlinks,
     inventory, lehlah_shortlinks, link_router, onboarding, ops, presets, security,
-    polls, pipeline, puller, readiness, selfcheck, telegram_ops, whatsapp_client,
+    polls, pipeline, puller, readiness, selfcheck, tag_proof, telegram_ops,
+    whatsapp_client,
 )  # noqa: E402
 
 def _running_under_pytest() -> bool:
@@ -1498,7 +1499,24 @@ def index():
         # How long the fleet has been running, for the command-center chips.
         hub_age=age.summarise(influencers),
         recent_creators=_recent_creators(age_since_days=30, influencers=influencers),
+        # Whose Amazon tag signs which channel, for the command-center chip.
+        tag_fleet=_tag_fleet_snapshot(influencers),
     )
+
+
+def _tag_fleet_snapshot(influencers: list[dict] | None = None) -> dict:
+    """The fleet tag proof, cheap enough for the dashboard home.
+
+    ``sample=False``: the chip only needs the counts, not a rendered link per
+    channel, so a 1000-creator hub pays for one pass over rows it already has.
+    """
+    try:
+        fleet = tag_proof.fleet(influencers=influencers, sample=False)
+    except Exception as exc:  # pragma: no cover - the dashboard must render
+        return {"error": str(exc)[:160], "ok": True, "blocked": [], "channels": 0,
+                "own": 0, "fallback": 0, "summary": "", "fix": ""}
+    fleet["fix"] = tag_proof.describe_fix(fleet.get("blocked") or [])
+    return fleet
 
 
 def _recent_creators(age_since_days: int, *, influencers: list[dict] | None = None) -> dict:
@@ -1932,6 +1950,7 @@ def setup():
         team_access=_team_access_snapshot(),
         inventory_card=_inventory_snapshot(),
         assignments=_assignments_snapshot(),
+        tag_proof_card=_tag_proof_snapshot(),
     )
 
 
@@ -1972,6 +1991,106 @@ def _sort_by_setup_age(influencers: list[dict], sort: str = "") -> list[dict]:
     if key == "oldest":
         return sorted(influencers, key=lambda inf: str(inf.get("created_at") or ""))
     return influencers
+
+
+def _tag_proof_snapshot() -> dict:
+    """The setup card: whose Amazon tag signs which active channel, today.
+
+    One batched read (the fleet pass), so a 1000-creator hub renders this card
+    without a query per creator. The blocked list is what the owner acts on:
+    without an own tag, that creator's Amazon deals are held, not signed with
+    the shared id.
+    """
+    try:
+        fleet = tag_proof.fleet()
+    except Exception as exc:  # pragma: no cover - display only
+        return {"error": str(exc)[:200], "ok": False, "blocked": [], "channels": 0,
+                "own": 0, "fallback": 0, "broken_links": [], "summary": "",
+                "fix": "", "hold_reason": tag_proof.HOLD_REASON,
+                "require_own_tag": bool(getattr(config, "REQUIRE_OWN_AMAZON_TAG", True)),
+                "samples": []}
+    samples: list[dict] = []
+    for row in (fleet.get("blocked") or [])[:6]:
+        samples.append({
+            "creator_id": row["creator_id"],
+            "name": row["name"],
+            "channel": (row.get("channels") or [{}])[0].get("identifier", ""),
+            # The link their posts would carry today (the shared id, i.e. our
+            # money, not theirs) and the shape of the link they get once the tag
+            # is saved.
+            "would_post": tag_proof.url_summary(
+                f"https://www.amazon.in/dp/{tag_proof.SAMPLE_ASIN}?tag={row.get('fallback_tag') or ''}"
+            ),
+        })
+    return {
+        **fleet,
+        "fix": tag_proof.describe_fix(fleet.get("blocked") or []),
+        "hold_reason": tag_proof.HOLD_REASON,
+        "samples": samples,
+        "shared_default_tag": link_router.effective_amazon_tag(""),
+    }
+
+
+@app.route("/api/tag-proof")
+def api_tag_proof():
+    """Whose Amazon tag signs which active channel — the owner's money check.
+
+    Read-only JSON, admin only. ``?creator=<id>`` returns the single-creator
+    proof: the channel list, the tag that will sign each one, and the exact link
+    that creator's posts will carry.
+    """
+    inf_id = request.args.get("creator", type=int)
+    if inf_id:
+        profile = db.get_influencer(inf_id)
+        if not profile:
+            return jsonify({"ok": False, "error": "creator_not_found"}), 404
+        channels = db.list_channels(inf_id)
+        rows = []
+        for channel in channels:
+            info = tag_proof.signing(profile, channel)
+            rows.append({
+                "channel_id": info["channel_id"],
+                "platform": str(channel.get("platform") or ""),
+                "identifier": str(channel.get("identifier") or ""),
+                "role": str(channel.get("role") or ""),
+                "status": str(channel.get("status") or ""),
+                "tag": info["tag"],
+                "own": info["own"],
+                # Where the value came from (channel override / creator row /
+                # hub-wide default) and whether it *is* the hub-wide default —
+                # the two together are why a channel is held.
+                "source": info["source"],
+                "shared_default": info["shared_default"],
+                "usable": info["usable"],
+                "hold_reason": info["reason"],
+            })
+        link = tag_proof.tagged_link(profile)
+        proof = tag_proof.verify(link, profile) if link else {"ok": False, "issues": []}
+        return jsonify({
+            "ok": bool(link) and proof["ok"],
+            "creator_id": inf_id,
+            "name": str(profile.get("name") or ""),
+            "own_tag": tag_proof.own_tag(profile),
+            "link": link,
+            "link_summary": tag_proof.url_summary(link) if link else "",
+            "verify": proof,
+            "channels": rows,
+            "hold_reason": tag_proof.HOLD_REASON,
+        })
+    snapshot = _tag_proof_snapshot()
+    return jsonify({
+        "ok": bool(snapshot.get("ok")),
+        "counts": {"creators": snapshot.get("creators", 0),
+                   "channels": snapshot.get("channels", 0),
+                   "own": snapshot.get("own", 0),
+                   "fallback": snapshot.get("fallback", 0)},
+        "summary": snapshot.get("summary", ""),
+        "fix": snapshot.get("fix", ""),
+        "blocked": snapshot.get("blocked", []),
+        "broken_links": snapshot.get("broken_links", []),
+        "hold_reason": tag_proof.HOLD_REASON,
+        "require_own_tag": snapshot.get("require_own_tag", True),
+    })
 
 
 def _assignments_snapshot() -> dict:
@@ -2967,8 +3086,21 @@ def _flow_snapshot(
     only_earning = bool(getattr(config, "ONLY_EARNING_DEALS", False))
     try:
         deferred_deals = db.count_deferred_deals()
+        defer_reasons = db.deferred_reasons()
+        defer_recent = [
+            {
+                "reason": str(row.get("reason") or "unconverted"),
+                "source": str(row.get("source") or ""),
+                "attempts": int(row.get("attempts") or 0),
+                "max_attempts": int(row.get("max_attempts") or 0),
+                "next_in": max(0, int(float(row.get("not_before") or 0) - time.time())),
+            }
+            for row in db.list_deferred_deals(limit=5)
+        ]
     except Exception:
         deferred_deals = 0
+        defer_reasons = {}
+        defer_recent = []
     retry_seconds = 300
     try:
         from influencer_hub import pipeline as _pipeline
@@ -3031,6 +3163,11 @@ def _flow_snapshot(
         # gap is, so "why is the channel quiet?" has a concrete answer.
         "deferred": {
             "waiting": deferred_deals,
+            # Why they are parked: "no_own_amazon_tag" is a creator waiting for
+            # their own Amazon tag (their Amazon deals stay held, never signed
+            # with the shared id), not a broken source.
+            "reasons": defer_reasons,
+            "recent": defer_recent,
             "retry_seconds": retry_seconds,
             "allow_unconverted_posts": bool(
                 getattr(config, "ALLOW_UNCONVERTED_POSTS", False)
@@ -3551,6 +3688,16 @@ def _guided_context(profile: dict | None) -> dict:
     sessions = db.list_wa_sessions(int(profile["id"])) if profile else []
     wa_status = str(sessions[0].get("status") or "not paired") if sessions else "not paired"
     checkpoint = onboarding.checkpoint(profile, channels, wa_status=wa_status) if profile else None
+    if checkpoint:
+        # "Amazon links will read …?tag=ravi-21" — the exact link the worker will
+        # publish for this creator, shown in the review before Go live.
+        own_tag = tag_proof.own_tag(profile)
+        for line in checkpoint["review"]:
+            if line.get("link"):
+                line["value"] = (tag_proof.url_summary(tag_proof.tagged_link(profile))
+                                 if own_tag else
+                                 "their own Amazon tag is missing — Amazon deals stay held")
+                line["ok"] = bool(own_tag)
     return {
         "guided_profile": profile,
         "guided_channels": channels,
@@ -3563,6 +3710,7 @@ def _guided_context(profile: dict | None) -> dict:
         "guided_wa_status": wa_status,
         "guided_checkpoint": checkpoint,
         "guided_progress": onboarding.progress_text(checkpoint) if checkpoint else "",
+        "guided_tag_link": tag_proof.url_summary(tag_proof.tagged_link(profile)) if profile else "",
         "guided_steps": onboarding.STEPS,
         "guided_categories": onboarding.CATEGORY_CHOICES,
         "guided_picked": onboarding.selected_categories((profile or {}).get("categories")),

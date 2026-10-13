@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import accounts, config, db, readiness
+from . import accounts, config, db, readiness, tag_proof
 
 OK, WARN, FAIL, SKIP = "ok", "warn", "fail", "skip"
 _STATE_ORDER = {FAIL: 3, WARN: 2, OK: 1, SKIP: 0}
@@ -131,7 +131,14 @@ def _telegram_check() -> dict:
                   f"Credentials and a saved session for “{name}” are in place.")
 
 
-def _amazon_check(plan: dict | None) -> dict:
+def _amazon_check(plan: dict | None, fleet: dict | None = None) -> dict:
+    """Is every channel signing Amazon links with its creator's own tag?
+
+    The owner's rule: whatever tag a creator is given, their channels post under
+    that tag. A channel without one is *not* quietly paid to the shared account —
+    the pipeline holds those Amazon deals (:data:`tag_proof.HOLD_REASON`), so this
+    check names the creators that are waiting for a tag.
+    """
     tag = str(config.AMAZON_ASSOCIATE_TAG or "").strip()
     if not tag:
         return _check("amazon", "Amazon attribution", FAIL,
@@ -141,6 +148,27 @@ def _amazon_check(plan: dict | None) -> dict:
     shared = 0
     if plan:
         shared = int(plan["summary"].get("shared_tag") or 0)
+    if fleet is None:
+        try:
+            fleet = tag_proof.fleet(active_only=True)
+        except Exception:  # pragma: no cover - defensive
+            fleet = None
+    if fleet and fleet.get("blocked"):
+        names = ", ".join(row["name"] for row in fleet["blocked"][:4])
+        more = f" and {len(fleet['blocked']) - 4} more" if len(fleet["blocked"]) > 4 else ""
+        return _check(
+            "amazon", "Amazon attribution", WARN,
+            f"{len(fleet['blocked'])} creator(s) have no own Amazon tag "
+            f"({fleet['fallback']} of {fleet['channels']} active channels) — "
+            f"their Amazon deals are held, not signed with {tag}: {names}{more}.",
+            "Paste each creator's own Associate tag (🧭 Guided setup or the creator "
+            "page); their held deals post on the next worker run.",
+        )
+    if fleet and fleet.get("channels"):
+        return _check("amazon", "Amazon attribution", OK,
+                      f"{fleet['own']} of {fleet['channels']} active channel(s) sign "
+                      f"Amazon links with their creator's own tag (fallback tag {tag} "
+                      "unused).")
     if shared:
         return _check("amazon", "Amazon attribution", WARN,
                       f"Fallback tag {tag} is set, but {shared} creator(s) still "
@@ -496,6 +524,12 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
             plan = readiness.overview(influencers=influencers)
         except Exception:  # pragma: no cover - defensive
             plan = None
+    # Whose Amazon tag signs which channel: one batched pass, reused by the
+    # Amazon-attribution check so the panel and the CLI cannot disagree.
+    try:
+        fleet = tag_proof.fleet(influencers=influencers, active_only=True)
+    except Exception:  # pragma: no cover - defensive
+        fleet = None
     if plan is not None:
         try:
             # The dashboard builds its plan with a query/limit for the table;
@@ -522,7 +556,7 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
         _guard("dashboard", "Dashboard access", _dashboard_check),
         _guard("worker", "Background worker", lambda: _worker_check(heartbeat)),
         _guard("sources", "Deal sources", lambda: _sources_check(sources)),
-        _guard("amazon", "Amazon attribution", lambda: _amazon_check(plan)),
+        _guard("amazon", "Amazon attribution", lambda: _amazon_check(plan, fleet)),
         _guard("central", "Central EarnKaro / HYPD", _central_accounts_check),
         _guard("creators", "Creator readiness", lambda: _creators_check(plan)),
         _guard("mirror", "Main → WhatsApp mirror", lambda: _mirror_check(plan)),

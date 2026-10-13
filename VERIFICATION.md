@@ -11,7 +11,7 @@ git fetch origin arena/3496cf5b-influencers-deals
 git checkout -B arena/3496cf5b-influencers-deals FETCH_HEAD
 ```
 
-## 0. The guided flow and the setup age (this round)
+## 0b. The guided flow and the setup age (previous round)
 
 ```bash
 # 1. the whole wizard, in four saves (admin or team session; CSRF from the page)
@@ -62,7 +62,7 @@ PYTHONPATH=. .venv/bin/python -c "from influencer_hub import age; print(age.huma
 | team member on `/setup` / `/api/inventory.csv` | `302` → `/team` and `403 admin_only` |
 | page timings (60 creators) | `/guided` **3 ms**, `/setup` 68 ms, `/easy-setup` 61 ms, `/` 126 ms, `/api/assignments` 4 ms |
 
-## 0b. The two guarantees from the previous round (money map + one-line adds)
+## 0c. The money map and one-line adds (round before that)
 
 ```bash
 # 1. nobody's money is attached to somebody else (read-only, exit 1 when it is)
@@ -97,6 +97,47 @@ PYTHONPATH=. .venv/bin/python -m influencer_hub.cli add-defaults --show
 | money-map scan, 1000 creators + 1000 channels | **45 ms**; `GuardIndex.from_db` 15 ms; one preflight < 0.1 ms |
 | self-check | 14 items, `Money map (tags & channels)` amber while mixed, green after the fix |
 
+## 0. The own-tag proof (this round)
+
+```bash
+# 1. the fleet proof, in one command — read-only, no network, exit 1 if anything is held
+python -m influencer_hub.cli tag-proof            # "⛔ N of M active channel(s) …" when somebody is on the shared tag
+python -m influencer_hub.cli tag-proof --json | python -m json.tool | head -20
+
+# 2. one creator: the exact link their channels will publish
+python -m influencer_hub.cli tag-proof --creator 62
+#   Ravi Loots — own tag: ravi-21 (stored: ravi-21)
+#     Amazon links will read: www.amazon.in/dp/B0D9P2M1PB?tag=ravi-21
+#     ✅ own  @ravi_loots [creator] tag=ravi-21
+python -m influencer_hub.cli tag-proof --creator 41     # a creator with no own tag
+#   No Tag Yet — own tag: (none) (stored: mama086-21)
+#     ⛔ held  @notag [creator] tag=mama086-21 (the hub's shared id)
+#   exit 1
+
+# 3. the same picture in the dashboard (admin session)
+curl -s -b cookies http://127.0.0.1:5000/api/tag-proof | python -m json.tool | head -25
+curl -s -b cookies "http://127.0.0.1:5000/api/tag-proof?creator=62" | python -m json.tool | head -25
+curl -s -b cookies http://127.0.0.1:5000/setup | grep -o 'id="tag-proof"'      # the card is on the page
+curl -s -b cookies http://127.0.0.1:5000/ | grep -o 'held — no own Amazon tag' # the home chip, only while somebody is held
+
+# 4. the hold itself, end to end (no real post: the pipeline logs, parks and audits)
+HUB_ENV=development HUB_DB_PATH="$(mktemp /tmp/tag-hold.XXXXXX.sqlite3)" HUB_SKIP_DOTENV=1 \
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_tag_proof.py
+#   25 passed — includes the pipeline hold (nothing posted, deferred row reason
+#   no_own_amazon_tag, audit action amazon_tag_hold), the own-tag post, the
+#   WhatsApp mirror carrying the same tag, the approval channel being held too,
+#   the REQUIRE_OWN_AMAZON_TAG=off escape hatch, the worker keeping the retry
+#   slot, and the 1001-creator fleet pass reading two queries
+```
+
+**What is expected:** `tag-proof` exits `0` on a clean hub and `1` while any
+active channel would post under the shared id; `/api/tag-proof` lists exactly the
+creators named by the CLI and the self-check **Amazon attribution** item; a held
+creator's Amazon deal never reaches a channel — it waits in the retry queue with
+the reason `no_own_amazon_tag` and posts (signed with their own tag) on the first
+worker pass after the tag is saved. A creator *without* an Amazon link in a deal
+is unaffected, so EarnKaro/HYPD/Meesho posts keep flowing.
+
 ## 1. Code tests (services stopped, no credential read at all)
 
 ```bash
@@ -108,7 +149,7 @@ RC=$?; rm -f "$TEST_DB"; echo "pytest exit code: $RC"
 cd wa_hub && node --test
 ```
 
-**Expected:** `627 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
+**Expected:** `652 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
 the run ignore the VM's private `.env` entirely (`config._load_dotenv` returns
 before reading the file), so no real Telegram session, affiliate key, shortener
 token or bot credential exists for the duration of the run: no real post, no

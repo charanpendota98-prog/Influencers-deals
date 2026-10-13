@@ -568,6 +568,62 @@
 </section>
 {% endif %}
 
+{% if tag_proof_card %}
+<section class="card" style="border: 2px solid #0f766e; padding: 18px 20px; border-radius: 12px; margin-top: 24px;"
+         id="tag-proof">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div>
+      <h2 style="margin:0;">🏷️ Tag proof — every channel posts under its own Amazon id</h2>
+      <p class="hint">
+        Whatever tag you type for a creator, the Amazon links on <strong>their</strong> channels carry
+        <em>that</em> tag. This card proves it for every active channel in one pass. A creator with no
+        own tag is <strong>not</strong> paid to the shared id (<code>{{ tag_proof_card.shared_default_tag }}</code>):
+        their Amazon deals are held and listed here until you paste their own Associate tag —
+        nothing is posted that would send their commission to the wrong account.
+      </p>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <span class="pill">{{ '✅ all own tags' if tag_proof_card.ok else '⛔ ' ~ tag_proof_card.fallback ~ ' to fix' }}</span>
+      <span class="pill">{{ tag_proof_card.own }}/{{ tag_proof_card.channels }} channel(s) on their own tag</span>
+      <span class="pill">{{ tag_proof_card.creators }} creator(s)</span>
+      <a class="btn btn-secondary" href="{{ url_for('api_tag_proof') }}">JSON</a>
+    </div>
+  </div>
+
+  <p class="hint" style="margin-top:6px;">{{ tag_proof_card.summary }}</p>
+  {% if tag_proof_card.fix %}<p class="hint">{{ tag_proof_card.fix }}</p>{% endif %}
+
+  {% if tag_proof_card.blocked %}
+    <table class="table">
+      <thead><tr><th>Creator</th><th>Channel</th><th>Posts today as</th><th>Fix</th></tr></thead>
+      <tbody>
+        {% for row in tag_proof_card.samples %}
+          <tr>
+            <td><a class="text-link" href="{{ url_for('influencer_detail', inf_id=row.creator_id) }}">{{ row.name }}</a></td>
+            <td class="hint">{{ row.channel or '—' }}</td>
+            <td class="hint"><code>{{ row.would_post }}</code> <span class="pill">held</span></td>
+            <td class="hint">
+              <a class="text-link" href="{{ url_for('guided_setup', creator=row.creator_id) }}">Paste their own tag →</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if tag_proof_card.blocked | length > tag_proof_card.samples | length %}
+      <p class="hint">… and {{ tag_proof_card.blocked | length - tag_proof_card.samples | length }} more creator(s) with the same fix.</p>
+    {% endif %}
+  {% else %}
+    <p class="empty-state">
+      Every active channel signs Amazon links with its creator's own Associate tag — nothing is on
+      the shared id, and the guard re-checks it on every post. 🎉
+    </p>
+  {% endif %}
+  {% if not tag_proof_card.require_own_tag %}
+    <p class="hint">⚠ <code>REQUIRE_OWN_AMAZON_TAG</code> is off — one shared account is being used on purpose.</p>
+  {% endif %}
+</section>
+{% endif %}
+
 {% if assignments %}
 <section class="card" style="border: 2px solid #2563eb; padding: 18px 20px; border-radius: 12px; margin-top: 24px;"
          id="add-defaults">

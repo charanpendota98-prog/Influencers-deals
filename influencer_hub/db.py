@@ -1566,6 +1566,36 @@ def delete_deferred_deal(deal_hash: str) -> None:
         con.close()
 
 
+def list_deferred_deals(limit: int = 20) -> list[dict]:
+    """The parked deals, soonest retry first — with the reason they were parked.
+
+    Read-only and bounded: the dashboard shows *why* the channels are quiet
+    (``no_own_amazon_tag`` means a creator is waiting for their own Amazon tag,
+    not that the source is broken).
+    """
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT * FROM deferred_deals ORDER BY not_before ASC, created_at ASC LIMIT ?",
+            (max(1, min(500, int(limit or 20))),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        con.close()
+
+
+def deferred_reasons() -> dict[str, int]:
+    """``{reason: count}`` for the parked queue — one query, no rows shipped."""
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT reason, COUNT(*) AS n FROM deferred_deals GROUP BY reason ORDER BY n DESC"
+        ).fetchall()
+        return {str(row["reason"] or "unconverted"): int(row["n"]) for row in rows}
+    finally:
+        con.close()
+
+
 def count_deferred_deals() -> int:
     con = _connect()
     try:

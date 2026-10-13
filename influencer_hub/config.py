@@ -85,6 +85,13 @@ DB_PATH = Path(_env("HUB_DB_PATH", str(BASE_DIR / "influencer_hub" / "hub.sqlite
 # supplied tag whenever one is available.
 AMAZON_ASSOCIATE_TAG = _env("AMAZON_ASSOCIATE_TAG", "mama086-21")
 DEFAULT_AMAZON_TAG = AMAZON_ASSOCIATE_TAG
+# The owner's rule: "akkada tag lo em tag isthe, valla channel aa channels loney
+# valla tag tho links cheyali" — Amazon links on a creator's channels are signed
+# with that creator's own Associate id. When a creator or channel has none (the
+# hub-wide tag would be used instead), the Amazon deal is held and reported
+# instead of paying the wrong account. Set REQUIRE_OWN_AMAZON_TAG=off only to run
+# one deliberately shared account for everybody.
+REQUIRE_OWN_AMAZON_TAG = _bool("REQUIRE_OWN_AMAZON_TAG", True)
 AMAZON_CREATORS_API_CLIENT_ID = _env(
     "AMAZON_CREATORS_API_CLIENT_ID",
     "amzn1.application-oa2-client.83229d9d14664351be9fc2059038a4f2",
