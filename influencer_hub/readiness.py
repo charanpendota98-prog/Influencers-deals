@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from . import accounts, config, db, pipeline
+from . import accounts, age, config, db, pipeline
 
 # Order matters: the first unfinished step is the "next step" shown to the
 # operator, so it follows the order a person actually onboards a creator.
@@ -332,6 +332,13 @@ def creator_readiness(inf: dict, *, channels: list[dict] | None = None,
         "added_by": str(inf.get("added_by") or ""),
         "created_at": str(inf.get("created_at") or ""),
         "created_date": str(inf.get("created_at") or "")[:10],
+        # How long this creator has been set up, in the owner's words: "2
+        # months", "1 year 3 months" — plus one ready-to-render line.
+        "age_days": age.days_since(inf.get("created_at")),
+        "age": age.human_age(inf.get("created_at")),
+        "age_long": age.long_age(inf.get("created_at")),
+        "setup_label": age.setup_label(inf.get("created_at"),
+                                      member=str(inf.get("added_by") or "")),
     }
 
 

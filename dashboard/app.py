@@ -37,8 +37,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
-    amazon_shortlinks, amazon_watch, config, creators, db, guard, hypd_shortlinks,
-    inventory, lehlah_shortlinks, link_router, ops, presets, security,
+    age, amazon_shortlinks, amazon_watch, config, creators, db, guard, hypd_shortlinks,
+    inventory, lehlah_shortlinks, link_router, onboarding, ops, presets, security,
     polls, pipeline, puller, readiness, selfcheck, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
@@ -1495,7 +1495,34 @@ def index():
         query=query,
         state=state,
         paging=paging,
+        # How long the fleet has been running, for the command-center chips.
+        hub_age=age.summarise(influencers),
+        recent_creators=_recent_creators(age_since_days=30, influencers=influencers),
     )
+
+
+def _recent_creators(age_since_days: int, *, influencers: list[dict] | None = None) -> dict:
+    """The creators set up in the last N days: when, who, and how many.
+
+    This is the answer to “when many people are adding creators, how does the
+    owner see it?” — newest first, with the member's name next to each row.
+    """
+    rows_source = influencers if influencers is not None else db.list_influencers()
+    recent: list[dict] = []
+    for profile in rows_source:
+        days = age.days_since(profile.get("created_at"))
+        if days is None or days > age_since_days:
+            continue
+        recent.append({
+            "id": int(profile.get("id") or 0),
+            "name": str(profile.get("name") or ""),
+            "added_by": str(profile.get("added_by") or ""),
+            "created_date": str(profile.get("created_at") or "")[:10],
+            "age": age.human_age(profile.get("created_at")),
+            "days": days,
+        })
+    recent.sort(key=lambda row: (row["days"] or 0))
+    return {"count": len(recent), "window_days": age_since_days, "rows": recent[:12]}
 
 
 @app.route("/api/readiness")
@@ -1860,7 +1887,12 @@ def setup():
     """Dedicated protected setup center for profiles, routes, and operations."""
     q = request.args.get("q", "").strip()
     dir_offset = max(0, request.args.get("dir_offset", 0, type=int) or 0)
+    dir_sort = (request.args.get("sort") or "").strip().lower()
+    dir_since = (request.args.get("since") or "").strip()
+    dir_until = (request.args.get("until") or "").strip()
     influencers = db.search_influencers(q) if q else db.list_influencers()
+    influencers = _filter_by_setup_age(influencers, since=dir_since, until=dir_until)
+    influencers = _sort_by_setup_age(influencers, dir_sort)
     settings = db.get_all_global_settings()
     sources = db.list_sources(active_only=False)
     current_ek_key = settings.get("earnkaro_api_key") or config.EARNKARO_API_KEY or ""
@@ -1879,6 +1911,12 @@ def setup():
         directory_offset=dir_offset,
         directory_shown=[inf["id"] for inf in influencers[dir_offset:dir_offset + DIRECTORY_PAGE_SIZE]],
         search_query=q,
+        directory_sort=dir_sort,
+        directory_since=dir_since,
+        directory_until=dir_until,
+        age_summary=age.summarise(influencers),
+        creator_age={int(inf["id"]): age.human_age(inf.get("created_at"))
+                     for inf in influencers},
         current_ek_key=current_ek_key,
         current_ek_pubid=current_ek_pubid,
         current_hypd_store=current_hypd_store,
@@ -1895,6 +1933,45 @@ def setup():
         inventory_card=_inventory_snapshot(),
         assignments=_assignments_snapshot(),
     )
+
+
+# "2 months ago" reads wrong for a creator set up today, so every template says
+# the age through this one helper rather than gluing "ago" on by hand.
+app.jinja_env.globals["age_phrase"] = age.phrase
+
+
+def _filter_by_setup_age(influencers: list[dict], *, since: str = "",
+                         until: str = "") -> list[dict]:
+    """Narrow a creator list by when it was set up (``YYYY-MM-DD``, inclusive).
+
+    A creator whose stored date cannot be read is kept — the point of the filter
+    is to find people, never to hide them.
+    """
+    def keep(profile: dict) -> bool:
+        day = str(profile.get("created_at") or "")[:10]
+        if not day:
+            return True
+        if since and day < since:
+            return False
+        if until and day > until:
+            return False
+        return True
+
+    return [profile for profile in influencers if keep(profile)] if (since or until) else influencers
+
+
+def _sort_by_setup_age(influencers: list[dict], sort: str = "") -> list[dict]:
+    """Order the directory: what was set up when, and what is still not ready."""
+    key = (sort or "").strip().lower()
+    if key in {"name", "name_desc"}:
+        return sorted(influencers, key=lambda inf: str(inf.get("name") or "").lower(),
+                      reverse=key.endswith("_desc"))
+    if key == "newest":
+        return sorted(influencers, key=lambda inf: str(inf.get("created_at") or ""),
+                      reverse=True)
+    if key == "oldest":
+        return sorted(influencers, key=lambda inf: str(inf.get("created_at") or ""))
+    return influencers
 
 
 def _assignments_snapshot() -> dict:
@@ -3417,6 +3494,344 @@ def _routing_arguments(values: dict) -> dict:
     }
 
 
+def _guided_owned(profile: dict | None) -> bool:
+    """May this session work on that creator?
+
+    The owner may work on anybody. For a team member the wizard *is* their add
+    flow: they may finish setting up a creator they created in this very run
+    (``guided_fresh``), and nothing else. Coming back later to change a creator
+    that is already saved — even one they added — is an edit, and editing stays
+    the owner's job (the team page says so, and that is also how
+    :func:`team_add` treats a name that already exists).
+
+    The check is server-side and every step goes through it, so a crafted
+    ``?creator=`` link or a hand-built form post fails the same way a bookmarked
+    admin URL does.
+    """
+    if not profile:
+        return False
+    if not _is_team():
+        return True
+    inf_id = int(profile.get("id") or 0)
+    return (str(profile.get("added_by") or "").strip() == _session_actor()
+            and int(session.get("guided_fresh") or 0) == inf_id)
+
+
+def _guided_creator(values: dict) -> dict | None:
+    """The creator the wizard is working on.
+
+    Precedence: the creator the submitted form names, then ``?creator=``, then
+    the one this session was last working on. A form that names a creator must
+    win — with the session taking precedence, two open tabs could silently edit
+    the wrong creator.
+    """
+    inf_id = 0
+    if request.method == "POST":
+        inf_id = request.form.get("creator", type=int) or 0
+    if not inf_id:
+        inf_id = request.args.get("creator", type=int) or session.get("guided_creator")
+    try:
+        inf_id = int(inf_id or 0)
+    except (TypeError, ValueError):
+        return None
+    profile = db.get_influencer(inf_id) if inf_id else None
+    if profile and not _guided_owned(profile):
+        security.audit(_session_actor(), security.TEAM, "team_blocked_route",
+                       target=f"/guided?creator={inf_id}",
+                       detail="another member's creator", ip=_client_ip())
+        flash("That creator was added by somebody else. Keep setting up your own — "
+              "ask the owner to change one that is already saved.", "warning")
+        return None
+    return profile
+
+
+def _guided_context(profile: dict | None) -> dict:
+    """Everything the wizard page needs, without a second read per template."""
+    channels = db.list_channels(int(profile["id"])) if profile else []
+    sessions = db.list_wa_sessions(int(profile["id"])) if profile else []
+    wa_status = str(sessions[0].get("status") or "not paired") if sessions else "not paired"
+    checkpoint = onboarding.checkpoint(profile, channels, wa_status=wa_status) if profile else None
+    return {
+        "guided_profile": profile,
+        "guided_channels": channels,
+        # How long this creator has been set up — the owner asked for this line
+        # beside every creator, and the guided page is where a creator is read
+        # back before it is made live.
+        "guided_age": age.setup_label((profile or {}).get("created_at"),
+                                      member=str((profile or {}).get("added_by") or "")),
+        "guided_wa_key": WA_SESSION_KEY(int(profile["id"])) if profile else "",
+        "guided_wa_status": wa_status,
+        "guided_checkpoint": checkpoint,
+        "guided_progress": onboarding.progress_text(checkpoint) if checkpoint else "",
+        "guided_steps": onboarding.STEPS,
+        "guided_categories": onboarding.CATEGORY_CHOICES,
+        "guided_picked": onboarding.selected_categories((profile or {}).get("categories")),
+        "batch_defaults": presets.resolved(),
+        "batch_defaults_line": presets.summary_line(),
+    }
+
+
+@app.route("/guided")
+def guided_setup():
+    """The guided setup screen: creator → channels → categories → go live.
+
+    One page, four numbered steps, each one save — open the dashboard, add the
+    links you were given, pick the categories, press Go live. Every step works
+    without JavaScript (the page simply shows all four cards) and JavaScript only
+    moves the highlight along as each step saves.
+    """
+    profile = _guided_creator({})
+    step = (request.args.get("step") or "").strip()
+    if profile and not step:
+        step = (_guided_context(profile)["guided_checkpoint"] or {}).get("current", "channels")
+    return render_template("guided.html", step=step, **_guided_context(profile),
+                           **_setup_page_context())
+
+
+@app.route("/guided/creator", methods=["POST"])
+def guided_creator_step():
+    """Step 1: the name and their own Amazon tag (or pick an existing creator)."""
+    name = request.form.get("name", "").strip()
+    tag = request.form.get("amazon_tag", "").strip()
+    existing_id = request.form.get("creator", type=int) or 0
+    if not name and not existing_id:
+        flash("Enter the creator's name (or pick one from the list).", "warning")
+        return redirect(url_for("guided_setup"))
+
+    if not existing_id:
+        # A team member only ever sees their own additions here: the wizard is
+        # an add flow for them, not a way into the rest of the hub.
+        known = db.list_influencers(added_by=_session_actor() if _is_team() else "")
+        match = next((profile for profile in known
+                      if str(profile.get("name") or "").strip().lower() == name.lower()), None)
+        if match and _is_team() and not _guided_owned(match):
+            flash(f"“{match['name']}” is already in the hub and already saved — ask the owner "
+                  "to change it. Add a different creator, or paste everything in one go with "
+                  "the one-line add above.", "warning")
+            return redirect(url_for("team_home"))
+        if match:
+            existing_id = int(match["id"])
+            flash(f"“{match['name']}” is already in the hub — continuing its setup below.",
+                  "success")
+    if existing_id:
+        profile = db.get_influencer(existing_id)
+        if not profile:
+            flash("That creator no longer exists.", "warning")
+            return redirect(url_for("guided_setup"))
+        if not _guided_owned(profile):
+            security.audit(_session_actor(), security.TEAM, "team_blocked_route",
+                           target=f"/guided/creator#{existing_id}",
+                           detail="another member's creator", ip=_client_ip())
+            flash("That creator was added by somebody else — only the owner can edit it.",
+                  "warning")
+            return redirect(url_for("team_home") if _is_team() else url_for("guided_setup"))
+        session["guided_creator"] = existing_id
+        if tag:
+            index = guard.GuardIndex.from_db()
+            taken = index.preflight(name=profile.get("name") or name, tag=tag,
+                                    ignore_id=existing_id)
+            if taken["errors"]:
+                flash("⛔ " + index.explain(taken), "error")
+                return redirect(url_for("guided_setup", creator=existing_id))
+            if taken["warnings"]:
+                flash("⚠ " + taken["warnings"][0]["detail"], "warning")
+            db.update_influencer(existing_id, amazon_tag=tag)
+            security.audit(_session_actor(), _session_role(), "guided_tag_saved",
+                           target=profile.get("name"), detail=f"tag {tag}", ip=_client_ip())
+        return redirect(url_for("guided_setup", creator=existing_id, step="channels"))
+
+    if not tag:
+        flash("This creator's own Amazon Associate tag is required — their deals must earn "
+              "under their own id.", "warning")
+        return redirect(url_for("guided_setup"))
+    index = guard.GuardIndex.from_db()
+    taken = index.preflight(name=name, tag=tag)
+    if taken["errors"]:
+        flash("⛔ " + index.explain(taken), "error")
+        return redirect(url_for("guided_setup"))
+    inf_id = db.add_influencer(name, tag, added_by=_session_actor() if _is_team() else "",
+                               **_add_defaults_kwargs())
+    db.set_influencer_active(inf_id, True)
+    session["guided_creator"] = inf_id
+    # For a team member this marks the creator as belonging to this run: they may
+    # finish setting it up now, and never edit it later.
+    session["guided_fresh"] = inf_id
+    security.audit(_session_actor(), _session_role(), "guided_creator_created", target=name,
+                   detail=f"tag {tag}", ip=_client_ip())
+    for warning in taken["warnings"]:
+        flash("⚠ " + warning["detail"], "warning")
+    flash(f"✅ {name} created — now add the channels you were given.", "success")
+    return redirect(url_for("guided_setup", creator=inf_id, step="channels"))
+
+
+@app.route("/guided/channels", methods=["POST"])
+def guided_channels_step():
+    """Step 2: the approval / main links and the WhatsApp destination."""
+    profile = _guided_creator({})
+    if not profile:
+        flash("Pick a creator first.", "warning")
+        return redirect(url_for("guided_setup"))
+    inf_id = int(profile["id"])
+    index = guard.GuardIndex.from_db()
+    added: list[str] = []
+    problems: list[str] = []
+
+    for field, role, label in (("approval_channel", "approval", "Approval (preview) channel"),
+                               ("main_channel", "broadcast", "Main channel")):
+        raw = request.form.get(field, "").strip()
+        if not raw:
+            continue
+        ident = clean_identifier(raw)
+        ok, error = _valid_telegram_identifier(ident)
+        if not ok:
+            problems.append(f"{label}: {error}")
+            continue
+        taken = index.preflight(name=profile.get("name") or "", tag="",
+                                ignore_id=inf_id, approval=ident if role == "approval" else "",
+                                main=ident if role == "broadcast" else "")
+        if taken["errors"]:
+            problems.append(index.explain(taken))
+            continue
+        existing = db.get_channel(inf_id, role)
+        mirror = "1" if (role == "broadcast" and request.form.get("mirror_whatsapp")) else (
+            "0" if role == "broadcast" and request.form.get("mirror_whatsapp_off") else None)
+        if existing:
+            db.update_channel_details(int(existing["id"]), identifier=ident, status="ready")
+            if mirror is not None:
+                db.update_channel_details(int(existing["id"]), mirror_whatsapp=mirror)
+        else:
+            db.add_channel(inf_id, "telegram", ident, role=role, status="ready",
+                           mirror_whatsapp=mirror if mirror is not None else
+                           ("1" if role == "broadcast" and
+                            presets.resolved().get("mirror_whatsapp", True) else ""))
+        index.note(inf_id, "", name=profile.get("name") or "",
+                   channels=[{"platform": "telegram", "identifier": ident, "role": role}])
+        added.append(f"{label} {ident}")
+
+    whatsapp = request.form.get("whatsapp_channel", "").strip()
+    if whatsapp:
+        if _looks_like_whatsapp_jid(whatsapp) or whatsapp.lower().startswith(
+                ("http://", "https://", "chat.whatsapp.com", "whatsapp.com")):
+            destination, error = _resolve_whatsapp_destination(inf_id, whatsapp)
+            if destination:
+                taken = index.preflight(name=profile.get("name") or "", tag="",
+                                        ignore_id=inf_id,
+                                        whatsapp=str(destination.get("identifier") or ""))
+                if taken["errors"]:
+                    problems.append(index.explain(taken))
+                else:
+                    _save_whatsapp_destination(inf_id, destination, role="whatsapp",
+                                               wa_session_key=WA_SESSION_KEY(inf_id))
+                    added.append(f"WhatsApp {destination['identifier']} (pending a test)")
+            elif _looks_like_whatsapp_jid(whatsapp):
+                problems.append(error or "That WhatsApp destination could not be saved.")
+            else:
+                # An invite link needs the creator's paired phone to resolve: save
+                # the line for the pairing step instead of losing it.
+                session["guided_wa_link"] = whatsapp[:300]
+                problems.append(
+                    "WhatsApp invite link kept: pair the phone (QR or code) below and press "
+                    "Save channels again to resolve it.")
+        else:
+            problems.append("WhatsApp channel link: paste a whatsapp.com/channel link, a "
+                            "chat.whatsapp.com invite, or the …@newsletter id.")
+
+    mirror_pick = request.form.get("mirror_whatsapp")
+    if mirror_pick in {"0", "1"} and profile:
+        main = db.get_channel(inf_id, "broadcast")
+        if main:
+            db.update_channel_details(int(main["id"]), mirror_whatsapp=mirror_pick)
+
+    if added:
+        security.audit(_session_actor(), _session_role(), "guided_channels_saved", target=profile.get("name"),
+                       detail=" · ".join(added)[:200], ip=_client_ip())
+        flash("✅ " + " · ".join(added), "success")
+    for problem in problems:
+        flash("⚠ " + problem, "warning")
+    if not added and not problems:
+        flash("Paste at least the main channel link (and the approval one if you have it).",
+              "warning")
+    return redirect(url_for("guided_setup", creator=inf_id, step="categories"))
+
+
+@app.route("/guided/categories", methods=["POST"])
+def guided_categories_step():
+    """Step 3: which deals, which hours, which networks (pre-filled from presets)."""
+    profile = _guided_creator({})
+    if not profile:
+        flash("Pick a creator first.", "warning")
+        return redirect(url_for("guided_setup"))
+    inf_id = int(profile["id"])
+
+    picked = request.form.getlist("categories")
+    free_text = request.form.get("categories_text", "").strip()
+    categories = onboarding.category_text(picked) if picked else free_text
+    schedule = request.form.get("posting_schedule", "").strip()
+    price_filter = request.form.get("price_filter", "").strip() or "all"
+    flags = {}
+    for key in ("allow_amazon", "allow_earnkaro", "allow_hypd", "only_amazon"):
+        flags[key] = str(request.form.get(key, "")).strip().lower() in {"1", "on", "yes"}
+    if not (flags["allow_amazon"] or flags["allow_earnkaro"] or flags["allow_hypd"]):
+        flash("⚠ Switch on at least one network — otherwise nothing can be posted.",
+              "warning")
+        flags["allow_amazon"] = True
+    db.update_influencer(inf_id, categories=categories, posting_schedule=schedule,
+                         price_filter=price_filter, **flags)
+    mirror = request.form.get("mirror_whatsapp")
+    main = db.get_channel(inf_id, "broadcast")
+    if main and mirror in {"0", "1"}:
+        db.update_channel_details(int(main["id"]), mirror_whatsapp=mirror)
+    security.audit(_session_actor(), _session_role(), "guided_deals_saved", target=profile.get("name"),
+                   detail=f"categories {categories or 'all'} · hours {schedule or 'any'} · "
+                          f"price {price_filter}", ip=_client_ip())
+    flash("✅ Deal settings saved.", "success")
+    return redirect(url_for("guided_setup", creator=inf_id, step="post"))
+
+
+@app.route("/guided/finish", methods=["POST"])
+def guided_finish():
+    """Step 4: activate everything and point at the first post."""
+    profile = _guided_creator({})
+    if not profile:
+        flash("Pick a creator first.", "warning")
+        return redirect(url_for("guided_setup"))
+    inf_id = int(profile["id"])
+    db.set_influencer_active(inf_id, True)
+    session.pop("guided_creator", None)
+    session.pop("guided_fresh", None)
+    session.pop("guided_wa_link", None)
+    checkpoint = onboarding.checkpoint(db.get_influencer(inf_id), db.list_channels(inf_id))
+    security.audit(_session_actor(), _session_role(), "guided_finished", target=profile.get("name"),
+                   detail=onboarding.progress_text(checkpoint), ip=_client_ip())
+    flash(f"🚀 {profile.get('name')} is live — {onboarding.progress_text(checkpoint)}. "
+          "The worker posts to it as soon as a matching deal arrives; use "
+          "“Send a test deal” below to see it happen now.", "success")
+    return redirect(url_for("guided_setup", creator=inf_id, step="post", done=1))
+
+
+def _add_defaults_kwargs() -> dict:
+    """The owner's new-creator presets as ``db.add_influencer`` keyword arguments."""
+    values = presets.resolved()
+    return {
+        "allow_amazon": bool(values.get("allow_amazon", True)),
+        "allow_earnkaro": bool(values.get("allow_earnkaro", True)),
+        "allow_hypd": bool(values.get("allow_hypd", True)),
+        "only_amazon": bool(values.get("only_amazon", False)),
+        "hypd_store_id": str(values.get("hypd_store_id") or ""),
+        "categories": str(values.get("categories") or ""),
+        "posting_schedule": str(values.get("posting_schedule") or ""),
+        "price_filter": str(values.get("price_filter") or "all") or "all",
+    }
+
+
+def _setup_page_context() -> dict:
+    """The few things ``guided.html`` shares with the setup page."""
+    return {
+        "default_amazon_tag": config.AMAZON_ASSOCIATE_TAG,
+        "current_hypd_store": _effective_hypd_store_id(),
+    }
+
+
 @app.route("/easy-setup", methods=["GET", "POST"])
 def easy_setup():
     """One screen: creator + approval channel + main channel + 3 switches."""
@@ -3523,6 +3938,9 @@ def easy_setup():
     plan = None
     creator_plan = None
     wa_pairing = None
+    # Who was set up when, in one line: the owner opens Easy Setup and instantly
+    # sees how long the oldest and the newest creator have been running.
+    hub_age = age.summarise(creators)
     wa_key = ""
     example_link = ""
     # The creator picker is one page of pills, not the whole hub: with a
@@ -3583,6 +4001,10 @@ def easy_setup():
         plan=plan,
         creator_plan=creator_plan,
         creators=creators,
+        hub_age=hub_age,
+        creator_ages={int(inf["id"]): age.setup_label(
+            inf.get("created_at"), member=str(inf.get("added_by") or ""))
+            for inf in creators},
         bulk_result=bulk_result,
         bulk_limit=BULK_MAX_ROWS,
         pill_q=pill_q,

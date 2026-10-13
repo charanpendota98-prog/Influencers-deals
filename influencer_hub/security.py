@@ -44,6 +44,10 @@ TEAM_ADDS_PER_HOUR = 120
 TEAM_ALLOWED_ENDPOINTS = {
     "static", "healthz", "logout",
     "team_login", "team_home", "team_add", "team_creators", "team_preview",
+    # The guided flow only ever creates a creator and saves that creator's own
+    # channels/settings; editing somebody else's data is still admin-only.
+    "guided_setup", "guided_creator_step", "guided_channels_step",
+    "guided_categories_step", "guided_finish",
     "amazon_short_link", "meesho_hypd_short_link", "lehlah_meesho_short_link",
 }
 

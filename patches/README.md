@@ -361,8 +361,9 @@ still wins and nothing that was set once gets silently overridden.
 The owner can take the whole hub out in one click and put it back — with the
 safety of seeing exactly what would change **before** anything is written.
 
-**Export** (one row per creator, 29 columns): `creator_id`, `name`, `added_by`,
-`created_date`, `created_at`, `active`, `ready`, `amazon_tag` + `tag_source`
+**Export** (one row per creator, 31 columns): `creator_id`, `name`, `added_by`,
+`created_date`, `created_at`, `setup_age`, `setup_age_days`, `active`, `ready`,
+`amazon_tag` + `tag_source`
 (creator / admin / none), the approval / main / WhatsApp channel identifiers,
 `wa_status`, `phone_number`, `mirror_whatsapp` (`yes`/`no`/`inherit`), the four
 money switches (`allow_amazon`, `allow_earnkaro`, `allow_hypd`, `only_amazon`),
@@ -418,6 +419,73 @@ looks for it. Every applied row is written to the audit log
 (`creator_updated` / `creator_created` / `inventory_imported` with counts), and
 the result table stays on `/setup` as “Result of the last import”.
 
+### 🧭 Guided setup: name → channels → categories → go live
+
+One page that takes a creator from nothing to posting, in four numbered steps.
+Every step saves on its own, so the operator can close the laptop in the middle
+and come back — the page reopens on the step that is still missing.
+
+```
+/setup → 🧭 Guided setup        (top navigation: 🧭 Guided)
+```
+
+| Step | What is saved | What the page does for you |
+|---|---|---|
+| 1 · 🧑 Creator | the name and **their own Amazon Associate tag** (e.g. `ravi-21`) | creates or resumes the creator; a tag or channel that already belongs to somebody else is refused **naming the owner**; the creator is stamped with who added them |
+| 2 · 🔗 Channels | approval (preview), main, and the WhatsApp channel / group link | pastes in any shape (`@handle`, `t.me/…`, full link); both Telegram channels inherit that one tag; the main channel mirrors to WhatsApp unless you switch it off; **QR / login-code pairing is inline**; a pasted WhatsApp invite link that needs the phone is kept (never silently dropped) and re-resolved on the next save |
+| 3 · 🛍️ Deals & hours | the category picker (12, the same list the creator page uses), posting hours, price filter, the four network switches | pre-filled from your **new-creator defaults**; ticking “All categories” clears the rest (it means *any loot*); a save can never leave a creator with no network |
+| 4 · 🚀 Go live | active + the review | a line-by-line review (“their own Amazon tag — `ravi-21`”, “WhatsApp destination — not linked yet”) marked ✅ or *still missing*, then **Go live**, **Send a test deal now** (the same code path the worker uses) and Test a Deal |
+
+A progress pill always says where this creator is: *“3 of 4 steps done · next:
+Deals & hours”*. The whole flow is plain forms — it works with JavaScript
+switched off, and JavaScript only moves the highlight along as each step saves.
+Every save is audited (`guided_creator_created`, `guided_channels_saved`,
+`guided_deals_saved`, `guided_finished`).
+
+**The team may use it to add, never to edit.** A team member can create a
+creator and keep filling in that creator's channels and settings **while that run
+is open**; the moment the run finishes (or on any creator they did not create in
+that run), the wizard refuses them: *“already saved — ask the owner to change
+it.”* Every step re-checks ownership server-side before any write — walking the
+flow for a creator somebody else added is refused before the view runs, however
+the request is shaped, and recorded as `team_blocked_route` — exactly how
+`/team/add` already treats a name that is already in the hub. Editing and
+removing stay the owner's job.
+
+### 🕒 Setup date and age beside every creator
+
+When many people are adding creators, “*when* was this one set up, and *how long*
+has it been running?” is the question the owner asks first. The hub answers it
+everywhere the creator list appears.
+
+```
+today · 1 day · 6 days · 4 weeks · 2 months · 11 months · 1 year · 1 year 3 months · 2 years 6 months
+```
+
+* `influencer_hub/age.py` does the wording once: **one unit** in lists
+  (`2 months`, `1 year 3 months`), **two units** on a card (`1 week 6 days`,
+  `1 month 29 days`); under 7 days it counts days, under 30 weeks, and past 345
+  days it becomes years + months — “12 months” can never appear. A date the hub
+  cannot read shows as *“Set up date unknown”* instead of a wrong number.
+* **Dashboard command center**: a **Set up** column next to every creator
+  (`2 years 6 months` · the date · *by Mohan*), plus chips for the fleet —
+  *oldest 2 years 6 months · newest today* and *➕ 6 added in the last 30 days*
+  with the names, the age and who added each one.
+* **Setup directory** (`/setup#creator-directory`): each card says *Added
+  2026-08-10 by Mohan · 🕒 2 months*; the list can be ordered **oldest first,
+  newest first, A–Z or Z–A** and cut to a **date range** (`since` / `until`), so
+  “show me what we set up last month” is two clicks. A creator whose stored date
+  is unreadable is never hidden by a filter.
+* **Easy Setup**: every creator pill carries its age, and the strip header prints
+  the hub line — *“Set up: oldest 2 years 6 months ago · newest today · 6 added in
+  the last 30 days.”*
+* **Team page**: the same age column for the creators that member added.
+* Everywhere: hover the line (or read the export) for the full
+  `Set up 1 year 3 months ago · 2025-07-14 · by Mohan`.
+
+One `summarise()` call per page — the age of the whole hub costs no extra query
+per creator, so the 1000-creator hub stays a single fast read.
+
 ### 🚀 Dashboard: the setup command center
 
 The dashboard home (`/`) is not just counters. Above the metrics it renders a
@@ -426,6 +494,7 @@ unblocks the most:
 
 | Column | What it answers |
 |---|---|
+| Set up | When this creator was set up, how long ago, and which team member added them |
 | Own Amazon tag | Is this creator's Amazon money going to *their* id, or still the hub-wide shared default? |
 | Approval · Main · WhatsApp | Which of the three channels exist, and which are Pending instead of live |
 | Phone | Is the creator's WhatsApp phone actually linked (QR or login code)? |

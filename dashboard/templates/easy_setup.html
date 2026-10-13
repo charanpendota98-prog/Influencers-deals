@@ -26,6 +26,10 @@
         {% else %}
           {{ plan.total if plan else 0 }} creator{{ '' if plan and plan.total == 1 else 's' }} in this hub{% if plan and plan.summary.blocked %} · {{ plan.summary.blocked }} still blocked{% endif %}.
         {% endif %}
+        {% if hub_age and hub_age.count %}
+          Set up: oldest {{ age_phrase(hub_age.oldest) }}{% if hub_age.newest_days is not none %} · newest {{ age_phrase(hub_age.newest) }}{% endif %}
+          · {{ hub_age.this_month }} added in the last 30 days.
+        {% endif %}
       </p>
     </div>
     <form method="get" action="{{ url_for('easy_setup') }}" class="search-form">
@@ -45,6 +49,9 @@
          title="{{ card.next_step.action if card.next_step else 'nothing to do' }}">
         {{ '🟢' if card.ready else '🟡' }} {{ card.name }}
         <small>{{ card.amazon_tag or 'no tag' }}{% if card.mirror_active %} · 🔁 {{ card.mirrored_posts_24h }}{% endif %}</small>
+        <small class="pill-age" title="{{ creator_ages.get(card.id, '') }}">
+          🕒 {{ (creator_ages.get(card.id, '') or 'Set up date unknown').split(' · ')[0].replace('Set up ', '') }}
+        </small>
       </a>
     {% endfor %}
   </div>

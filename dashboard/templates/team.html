@@ -54,6 +54,14 @@
     that tag is used for every Amazon deal posted to their channels. Fill the channels you were given;
     the WhatsApp link can be pasted now or after the phone is paired. One form, one save: the channels
     inherit that tag automatically, and posting starts on its own once each channel is ready.
+    Prefer to be walked through it?
+    <a class="text-link" href="{{ url_for('guided_setup') }}">🧭 Guided setup</a> takes you
+    name → channels → categories → go live, one step at a time.
+  </p>
+  <p class="hint">
+    You can add and read back your own creators. Editing or removing one that is already saved is the
+    owner's job — so the guided flow only keeps working on the creator you are setting up right now;
+    after that, ask the owner for any change.
   </p>
   {% if add_defaults_line %}
     <p class="hint"><strong>{{ add_defaults_line }}</strong> Everything else is already decided for you —
@@ -127,7 +135,7 @@ Kiran Deals, kiran-21, @kiran_main, @kiran_approval, , 9876543210, electronics, 
   {% if plan and plan.creators %}
     <table class="table">
       <thead>
-        <tr><th>Creator</th><th>Own Amazon tag</th><th>Added on</th><th>Ready?</th><th>Next step</th><th>Channels</th></tr>
+        <tr><th>Creator</th><th>Own Amazon tag</th><th>Added on</th><th>Set up</th><th>Ready?</th><th>Next step</th><th>Channels</th></tr>
       </thead>
       <tbody>
         {% for creator in plan.creators %}
@@ -135,6 +143,9 @@ Kiran Deals, kiran-21, @kiran_main, @kiran_approval, , 9876543210, electronics, 
             <td>{{ creator.name }}</td>
             <td><code>{{ creator.amazon_tag }}</code></td>
             <td class="hint">{{ creator.created_date or '—' }} <span class="hint">{{ creator.created_at[11:16] }}</span></td>
+            <td class="hint" title="{{ creator.setup_label or '' }}">
+              🕒 {{ age_phrase(creator.age) or 'unknown' }}
+            </td>
             <td>{{ '✅ ready' if creator.ready else '⏳ not yet' }}</td>
             <td class="hint">{{ creator.next_step.action if creator.next_step else '—' }}</td>
             <td class="hint">

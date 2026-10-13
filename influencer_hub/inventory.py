@@ -23,11 +23,12 @@ import csv
 import io
 from datetime import datetime, timezone
 
-from . import config, db, pipeline, readiness
+from . import age, config, db, pipeline, readiness
 
 # Export order. Everything an operator needs to plan offline, in one row.
 COLUMNS = [
     "creator_id", "name", "added_by", "created_date", "created_at",
+    "setup_age", "setup_age_days",
     "active", "ready", "amazon_tag", "tag_source",
     "approval_channel", "main_channel", "whatsapp_channel", "wa_status",
     "phone_number", "mirror_whatsapp",
@@ -80,17 +81,25 @@ def _flag(value: str) -> str:
     return "" if parsed is None else ("yes" if parsed else "no")
 
 
-def rows(*, member: str = "", query: str = "", limit: int = 0) -> list[dict]:
+def rows(*, member: str = "", query: str = "", limit: int = 0,
+         since: str = "", until: str = "", sort: str = "") -> list[dict]:
     """Every creator as one flat dict (read-only, batched queries).
 
-    ``member`` narrows the list to the creators one team member added.
+    ``member`` narrows the list to the creators one team member added; ``query``
+    is a free-text search over name, tag, channel ids and phone; ``since`` /
+    ``until`` bound the setup date (``YYYY-MM-DD``, inclusive); ``sort`` is
+    ``name``, ``oldest``, ``newest`` or ``ready`` (default: oldest first, the
+    order creators were onboarded).
     """
     influencers = db.list_influencers(added_by=member)
-    if query:
-        needle = query.strip().lower()
+    needle = str(query or "").strip().lower()
+    if since:
         influencers = [inf for inf in influencers
-                       if needle in str(inf.get("name") or "").lower()]
-    if limit:
+                       if str(inf.get("created_at") or "")[:10] >= since]
+    if until:
+        influencers = [inf for inf in influencers
+                       if str(inf.get("created_at") or "")[:10] <= until]
+    if limit and not needle:
         influencers = influencers[: max(1, int(limit))]
 
     channels_by_creator: dict[int, list[dict]] = {}
@@ -179,7 +188,29 @@ def rows(*, member: str = "", query: str = "", limit: int = 0) -> list[dict]:
             "posts_24h": posted_24h,
             "mirrored_24h": mirrored_24h,
             "last_post_at": last_post_at,
+            "setup_age": age.human_age(created),
+            "setup_age_days": age.days_since(created),
         })
+    if needle:
+        out = [row for row in out
+               if needle in " ".join(str(row.get(field) or "") for field in (
+                   "name", "amazon_tag", "approval_channel", "main_channel",
+                   "whatsapp_channel", "phone_number", "categories", "notes",
+                   "added_by")).lower()]
+        if limit:
+            out = out[: max(1, int(limit))]
+
+    sort_key = str(sort or "").strip().lower()
+    if sort_key in {"name", "name_desc"}:
+        out.sort(key=lambda row: str(row.get("name") or "").lower(),
+                 reverse=sort_key.endswith("_desc"))
+    elif sort_key == "newest":
+        out.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    elif sort_key == "ready":
+        out.sort(key=lambda row: (row.get("ready") != "yes",
+                                  str(row.get("created_at") or "")), reverse=False)
+    elif sort_key == "oldest":
+        out.sort(key=lambda row: str(row.get("created_at") or ""))
     return out
 
 

@@ -17,6 +17,7 @@
     {% if dashboard_authenticated %}
       <nav class="app-nav" aria-label="Main navigation">
         <a href="{{ url_for('index') }}">📊 Dashboard</a>
+        <a href="{{ url_for('guided_setup') }}">🧭 Guided</a>
         <a href="{{ url_for('easy_setup') }}">⚡ Easy</a>
         <a href="{{ url_for('money_dashboard') }}">💰 Money</a>
         <a href="{{ url_for('setup') }}">⚙️ Setup</a>

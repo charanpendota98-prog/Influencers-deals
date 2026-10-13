@@ -124,7 +124,25 @@
     {% if plan.summary.shared_tag %}
       <span class="command-chip is-warn" data-live-chip="shared-tag">🏷️ {{ plan.summary.shared_tag }} still on the shared Amazon tag</span>
     {% endif %}
+    {% if hub_age and hub_age.count %}
+      <span class="command-chip is-info" title="Oldest {{ hub_age.oldest }} · newest {{ hub_age.newest }}">
+        🕒 oldest {{ age_phrase(hub_age.oldest) }} · newest {{ age_phrase(hub_age.newest) }}
+      </span>
+    {% endif %}
+    {% if recent_creators and recent_creators.count %}
+      <span class="command-chip is-ok" title="{% for row in recent_creators.rows %}{{ row.name }} — {{ age_phrase(row.age) }}{% if row.added_by %} by {{ row.added_by }}{% endif %}&#10;{% endfor %}">
+        ➕ {{ recent_creators.count }} added in the last {{ recent_creators.window_days }} days
+      </span>
+    {% endif %}
+    <a class="command-chip is-info" href="{{ url_for('guided_setup') }}">🧭 Guided setup — one creator in four steps</a>
   </div>
+
+  {% if recent_creators and recent_creators.count %}
+    <p class="hint" style="margin-top:6px;">
+      Set up in the last {{ recent_creators.window_days }} days:
+      {% for row in recent_creators.rows %}<a class="text-link" href="{{ url_for('influencer_detail', inf_id=row.id) }}">{{ row.name }}</a> ({{ age_phrase(row.age) }}{% if row.added_by %}, by {{ row.added_by }}{% endif %}){{ ' · ' if not loop.last }}{% endfor %}{% if recent_creators.count > recent_creators.rows | length %} · and {{ recent_creators.count - recent_creators.rows | length }} more{% endif %}.
+    </p>
+  {% endif %}
 
   {% if plan.warnings %}
     <ul class="command-warnings">
@@ -184,7 +202,7 @@
     <table class="routing-table command-table">
       <thead>
         <tr>
-          <th>Creator</th><th>Own Amazon tag</th><th>Approval</th><th>Main</th>
+          <th>Creator</th><th>Set up</th><th>Own Amazon tag</th><th>Approval</th><th>Main</th>
           <th>WhatsApp</th><th>Phone</th><th>Live</th><th>Mirror · 24h</th><th>Next action</th>
         </tr>
       </thead>
@@ -202,6 +220,11 @@
             <td>
               <strong>{{ creator.name }}</strong>
               <code>#{{ creator.id }}{% if not creator.active %} · paused{% endif %}</code>
+            </td>
+            <td class="command-step" title="{{ creator.setup_label or 'Set up date unknown' }}">
+              {{ creator.age or 'unknown' }}
+              {% if creator.created_date %}<br /><code>{{ creator.created_date }}</code>{% endif %}
+              {% if creator.added_by %}<br /><span class="routing-note">by {{ creator.added_by }}</span>{% endif %}
             </td>
             <td class="command-step is-{{ steps.tag.state }}" title="{{ steps.tag.detail }}">
               {% if creator.tag_is_shared_default %}⚠️ <code>{{ creator.amazon_tag }}</code>
@@ -228,7 +251,7 @@
             </td>
           </tr>
         {% else %}
-          <tr><td colspan="9">No creators yet. <a class="text-link" href="{{ url_for('easy_setup') }}">Add the first one in Easy Setup →</a></td></tr>
+          <tr><td colspan="10">No creators yet. <a class="text-link" href="{{ url_for('guided_setup') }}">Set up the first one with the guided flow →</a> or <a class="text-link" href="{{ url_for('easy_setup') }}">the one-line Easy Setup</a>.</td></tr>
         {% endfor %}
       </tbody>
     </table>

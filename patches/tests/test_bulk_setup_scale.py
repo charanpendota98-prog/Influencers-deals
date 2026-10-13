@@ -294,7 +294,9 @@ def test_the_operator_pages_do_not_shrink_the_hub_to_one_page(client):
 
     setup = client.get("/setup").get_data(as_text=True)
     assert setup.count("creator-directory-card") <= 61      # one directory page
-    assert setup.count("<option value=") <= 210              # capped simulator list
+    # The creator dropdowns are capped at one page (200) plus the fixed controls
+    # that do not grow with the hub: the sort selector and the state filter.
+    assert setup.count("<option value=") <= 215
     assert "300 in this hub" in setup
 
     api = client.get("/api/readiness?limit=25").get_json()

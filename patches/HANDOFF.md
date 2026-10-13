@@ -944,7 +944,105 @@ when non-empty, so a channel-only paste never wipes a saved field).
 * `dashboard/templates/team.html`, `setup.html`; `dashboard/app.py` team +
   easy-setup add loops run the guard and audit `add_blocked_duplicate`.
 
-Tests: `tests/test_guard.py` (33) and `tests/test_smart_add.py` (26). Full suite
-**585 passed** (`HUB_SKIP_DOTENV=1`). Live-verified on a 60-creator demo hub: the
-refusal, the preview JSON, the defaults save, the money-map API/CLI and the
-self-check item (VERIFICATION §0).
+Tests: `tests/test_guard.py` (33) and `tests/test_smart_add.py` (26). Live-verified
+on a 60-creator demo hub: the refusal, the preview JSON, the defaults save, the
+money-map API/CLI and the self-check item (VERIFICATION §0b).
+
+## 16. This session, part 11: guided setup and the setup age (creator → channels → deals → go live)
+
+The owner asked for the easiest possible setup: open the dashboard, paste the
+channel links, connect WhatsApp, pick the categories, post — and, beside every
+creator, *when* they were set up and *how long* ago. Both are now in the tree.
+
+### `influencer_hub/age.py` (new)
+
+Pure stdlib, no database, no query per creator.
+
+* `parse_moment(value)` → aware `datetime` (accepts `YYYY-MM-DD HH:MM:SS`,
+  `T`-separated ISO, date-only, `datetime`), `None` for anything unreadable.
+* `days_since(value)`, `human_age` / `human_age_from_days` — the **short** scale:
+  `today`, `1 day`, `6 days`, `1 week`, `4 weeks`, `1 month`, `11 months`,
+  `1 year`, `1 year 3 months`, `2 years 6 months`. Thresholds: <7 days, <30
+  weeks, <345 days → months, else years + months (`years_and_months()` rounds the
+  remainder and rolls a rounded 12 months into the next year, so “12 months” and
+  “0 years 11 months” can never be printed).
+* `long_age` / `long_age_from_days` — the **long** scale, two units: `1 week 6
+  days`, `1 month 29 days`, `1 year 3 months`.
+* `setup_label(created_at, member=)` → `Set up 1 year 3 months ago · 2025-07-14 ·
+  by Mohan`, `Set up today · 2026-10-13`, `Set up date unknown`.
+* `summarise(values)` → `{count, oldest_days, newest_days, oldest, newest,
+  this_month}`; accepts stored timestamps **or** whole profile dicts (`_moment`),
+  so a caller never builds a throwaway list.
+* `phrase(age)` → `today` stays, everything else gets `… ago` (registered as the
+  Jinja global `age_phrase`, so no template glues “ago” on by hand).
+
+`readiness.creator_readiness()` now also returns `age_days / age / age_long /
+setup_label / created_date / added_by` on every creator card, which is what
+`/`, `/setup`, `/easy-setup`, `/team` and the wizard read.
+
+### `influencer_hub/onboarding.py` (new)
+
+The wizard's brain, no Flask in it:
+
+* `STEPS` — creator → channels → categories → post, with `label`/`icon`/`what`;
+* `CATEGORY_CHOICES` (12, mirrors the creator page) + `CATEGORY_KEYS`,
+  `selected_categories()` / `category_text()` (`''` = all categories);
+* `checkpoint(profile, channels, wa_status)` → `{done, current, current_number,
+  finished, total, percent, ready, review}` — `channels` is done when a main
+  channel is `ready`, `post` when the creator is active **and** has that channel;
+* `review_lines()` — the step-4 table: creator, their own tag, approval, main
+  (+ mirror note), WhatsApp + live status, categories, hours, price, set-up line,
+  each with `ok`;
+* `progress_text()` → `3 of 4 steps done · next: Deals & hours`.
+
+### Routes and page
+
+* `GET /guided` — one page, four cards, the rail always showing all four steps.
+  Works without JavaScript (plain forms; JS only moves the highlight and drives
+  the optional pairing panel).
+* `POST /guided/creator` — creates or resumes (a name already in the hub resumes
+  that creator instead of making a twin); a duplicate tag/channel is refused
+  **naming the owner** via the guard preflight; creator stamped with the actor.
+* `POST /guided/channels` — approval / main / WhatsApp in any paste shape, both
+  Telegram channels inheriting the one tag, mirror switch, WhatsApp invite link
+  kept in the session until the phone is paired (with a flash saying so);
+  pairing panel reuses the read-only `GET /api/wa/<key>/qr|status|pairing`
+  passthrough and `POST /influencer/<id>/pair-wa`.
+* `POST /guided/categories` — category picker + free-text field, hours, price
+  filter, the four switches, mirror; never leaves a creator with no network.
+* `POST /guided/finish` — activates, clears the wizard session and points at
+  “Send a test deal now” (`/influencer/<id>/trigger-hourly-loot`) and Test a Deal.
+* **Creator precedence**: the form's `creator` field wins over `?creator=` over
+  the session, so two open tabs can never write into the wrong creator.
+* **Team role**: `guided_*` endpoints are in `security.TEAM_ALLOWED_ENDPOINTS`,
+  and `_guided_owned()` allows a team member only the creator **this run** created
+  (`session["guided_fresh"]`, set at step 1, cleared by Go live) — walking the
+  flow for anybody else's creator, or coming back later to change one that is
+  already saved (even their own), is refused before any write and audited
+  `team_blocked_route`. That matches `team_add`, which reports a name already in
+  the hub instead of updating it. The owner is never restricted.
+* Every save is audited: `guided_creator_created`, `guided_channels_saved`,
+  `guided_deals_saved`, `guided_finished`.
+
+### Everywhere the age now shows
+
+* `/` command center: a **Set up** column (`2 years 6 months` · date · *by Mohan*)
+  plus chips *oldest … · newest …* and *➕ N added in the last 30 days*, with a
+  line under the chips naming those creators, their age and who added them.
+* `/setup#creator-directory`: *Added 2026-08-10 by Mohan · 🕒 2 months*, a hub line
+  *“Setup ages: oldest … ago · newest … · N added in the last 30 days”*, and a
+  server-side **sort** (`oldest`/`newest`/`name`/`name_desc`) plus **`since`/
+  `until` date filters** (a row with an unreadable date is never filtered away).
+* `/easy-setup`: the hub line in the strip header, and each creator pill carries
+  its age; the pill search now also matches tag, channel ids, phone and notes.
+* `/team`: an age column for the member's own creators + a guided-setup link and
+  a sentence stating what the team may and may not do.
+* `/api/inventory.csv`: two new columns, `setup_age` and `setup_age_days`
+  (header is now 31 columns) and `inventory.rows()` grew `query` / `since` /
+  `until` / `sort`.
+
+Tests: `tests/test_age.py` (13) and `tests/test_guided_setup.py` (28), plus the
+scale-budget note in `tests/test_bulk_setup_scale.py`. Full suite **627 passed**
+(`HUB_SKIP_DOTENV=1`). Live-verified end to end
+on the demo hub — the four saves, the refusal by name, the team hijack refused
+with the owner's channels unchanged, and the page timings (VERIFICATION §0).

@@ -11,7 +11,58 @@ git fetch origin arena/3496cf5b-influencers-deals
 git checkout -B arena/3496cf5b-influencers-deals FETCH_HEAD
 ```
 
-## 0. The two new guarantees (money map + one-line adds)
+## 0. The guided flow and the setup age (this round)
+
+```bash
+# 1. the whole wizard, in four saves (admin or team session; CSRF from the page)
+curl -s -b cookies -c cookies -d "_csrf_token=$CSRF" -d "name=Ravi Loots" \
+     -d "amazon_tag=ravi-21" http://127.0.0.1:5000/guided/creator -o /dev/null -w "%{redirect_url}\n"
+#   http://127.0.0.1:5000/guided?creator=62&step=channels
+curl -s -b cookies -c cookies -d "_csrf_token=$CSRF" -d "creator=62" \
+     -d "approval_channel=@ravi_amazon" -d "main_channel=@ravi_loots" \
+     -d "whatsapp_channel=120363012345678901@newsletter" -d "mirror_whatsapp=1" \
+     http://127.0.0.1:5000/guided/channels -o /dev/null -w "%{redirect_url}\n"
+curl -s -b cookies -c cookies -d "_csrf_token=$CSRF" -d "creator=62" \
+     -d "categories=electronics" -d "categories=home" -d "posting_schedule=09-23" \
+     -d "price_filter=budget" -d "allow_amazon=1" -d "allow_hypd=1" \
+     http://127.0.0.1:5000/guided/categories -o /dev/null -w "%{redirect_url}\n"
+curl -s -b cookies -c cookies -d "_csrf_token=$CSRF" -d "creator=62" \
+     http://127.0.0.1:5000/guided/finish -o /dev/null -w "%{redirect_url}\n"
+#   …/guided?creator=62&step=post&done=1   → page shows "4 of 4 steps done" + the review
+
+# 2. the same tag twice is refused at the first step, naming the owner
+curl -s -b cookies -d "_csrf_token=$CSRF" -d "name=Copy Cat" -d "amazon_tag=ravi-21" -L \
+     http://127.0.0.1:5000/guided/creator | grep -o 'already belongs to[^<]*'
+
+# 3. a team member cannot open or post into somebody else's creator
+curl -s -o /dev/null -w "%{http_code}\n" -b team-cookies -d "_csrf_token=$TEAM_CSRF" \
+     -d "creator=62" -d "main_channel=@stolen_channel" http://127.0.0.1:5000/guided/channels
+#   302 → /guided, page says "added by somebody else", channels of #62 unchanged,
+#   audit row team_blocked_route
+
+# 4. the age the owner reads, and the export columns behind it
+curl -s -b cookies "http://127.0.0.1:5000/setup" | grep -o 'Setup ages:[^<]*'
+curl -s -b cookies "http://127.0.0.1:5000/api/inventory.csv" | head -1 | cut -d, -f1-7
+#   creator_id,name,added_by,created_date,created_at,setup_age,setup_age_days
+curl -s -b cookies "http://127.0.0.1:5000/setup?sort=newest&since=2026-09-01" | grep -c creator-directory-card
+PYTHONPATH=. .venv/bin/python -c "from influencer_hub import age; print(age.human_age('2025-07-14'), '|', age.long_age('2025-07-14'), '|', age.setup_label('2025-07-14', member='Mohan'))"
+#   1 year 3 months | 1 year 3 months | Set up 1 year 3 months ago · 2025-07-14 · by Mohan
+```
+
+**Observed on the 60-creator demo hub** (branch code, gunicorn on :5000):
+
+| Check | Result |
+|---|---|
+| the four wizard saves | `302` each, redirecting to `&step=channels` → `&step=categories` → `&step=post` → `&step=post&done=1` |
+| what landed in the database | creator `guideddemo-21`, approval `@guideddemo_preview`, main `@guideddemo_loots` (mirror `1`), WhatsApp `120363019999999999@newsletter` (`pending`), `categories=electronics,home`, hours `09-23`, price `budget`, `allow_amazon=1`, `allow_hypd=1` |
+| the review page | `4 of 4 steps done`, every line ✅, “Send a test deal now” present |
+| audits | `guided_creator_created`, `guided_channels_saved`, `guided_deals_saved`, `guided_finished` |
+| team member posting into the owner's creator | `302`, *“added by somebody else”*, **channels of #62 unchanged**, `team_blocked_route` recorded |
+| team member returning to a creator they added earlier | refused the same way — the wizard is an add flow, so a saved creator is only changed by the owner |
+| team member on `/setup` / `/api/inventory.csv` | `302` → `/team` and `403 admin_only` |
+| page timings (60 creators) | `/guided` **3 ms**, `/setup` 68 ms, `/easy-setup` 61 ms, `/` 126 ms, `/api/assignments` 4 ms |
+
+## 0b. The two guarantees from the previous round (money map + one-line adds)
 
 ```bash
 # 1. nobody's money is attached to somebody else (read-only, exit 1 when it is)
@@ -57,7 +108,7 @@ RC=$?; rm -f "$TEST_DB"; echo "pytest exit code: $RC"
 cd wa_hub && node --test
 ```
 
-**Expected:** `585 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
+**Expected:** `627 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
 the run ignore the VM's private `.env` entirely (`config._load_dotenv` returns
 before reading the file), so no real Telegram session, affiliate key, shortener
 token or bot credential exists for the duration of the run: no real post, no
