@@ -138,3 +138,30 @@ def test_whatsapp_pacing_reservations_are_atomic_across_processes(pacing_databas
     assert sorted(delays) == pytest.approx(
         [0.0, 50.0, 100.0, 150.0, 200.0, 250.0, 300.0, 350.0]
     )
+
+def test_a_saving_flag_never_vetoes_a_real_product_deal():
+    """A coupon word must not hide the product: the coupon is not a category.
+
+    "🔥 BOAT AIRDOPES at ₹1299 · Use code BOAT500" is electronics. The keyword
+    lists know neither the brand nor the product, so the only thing they can see
+    is the word "code" — which used to drop the deal for any creator who asked
+    for electronics, silently and for good.
+    """
+    branded = ("🔥 BOAT AIRDOPES at ₹1299 (MRP ₹2999)\n"
+               "https://www.amazon.in/dp/B09N3ZNHTY\n"
+               "Use code BOAT500 · Sizes M, L, XL")
+    assert lr.classify_deal_category(branded) == ["recharge_freebies"]
+    assert lr.matches_category_filter(branded, "electronics") is True
+    assert lr.matches_category_filter(branded, "clothing") is True      # unknown too
+    # …while a deal that really belongs elsewhere is still dropped.
+    saree = "🥻 Banarasi Silk Saree with Blouse Piece at ₹899"
+    assert lr.matches_category_filter(saree, "electronics") is False
+    assert lr.matches_category_filter(saree, "clothing") is True
+
+
+def test_strict_mode_drops_what_it_cannot_place(monkeypatch):
+    """An operator who wants a curated feed can have the old behaviour back."""
+    unknown = "🎟️ General quiz contest information"
+    assert lr.matches_category_filter(unknown, "electronics") is True
+    monkeypatch.setattr(config, "CATEGORY_FILTER_STRICT_UNKNOWN", True)
+    assert lr.matches_category_filter(unknown, "electronics") is False

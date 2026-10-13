@@ -281,3 +281,69 @@ def test_a_broken_source_pool_never_stops_the_worker(monkeypatch):
 
     monkeypatch.setattr(worker.sources, "ensure_default", explode)
     assert worker.ensure_default_source() is None      # logged, not raised
+
+# --------------------------------------------------------------------------
+# 4. "Nothing selected" is the default — on every add path, not just the wizard
+# --------------------------------------------------------------------------
+def test_quick_add_prefills_and_stores_the_default_source(client):
+    """The add form sends the field pre-filled: nothing chosen = the default."""
+    client.post("/quick-add", data={
+        "_csrf_token": _csrf(client, "/setup"),
+        "name": "Default Reader", "tag": "defaultreader-21",
+        "allowed_sources": sources.default_token(),          # what the form sends
+    })
+    profile = db.list_influencers()[0]
+    assert profile["allowed_sources"] == sources.default_token()
+
+
+def test_quick_add_accepts_anything_pasted_and_normalizes_it(client):
+    client.post("/quick-add", data={
+        "_csrf_token": _csrf(client, "/setup"),
+        "name": "Pasted Reader", "tag": "pastedreader-21",
+        "allowed_sources": "https://t.me/LootZoneIndia11, @powerloot",
+    })
+    assert db.list_influencers()[0]["allowed_sources"] == "LootZoneIndia11, powerloot"
+
+
+def test_quick_add_still_offers_every_source_when_asked_for_it(client):
+    """The box is the explicit way to keep reading every source in the hub."""
+    client.post("/quick-add", data={
+        "_csrf_token": _csrf(client, "/setup"),
+        "name": "Every Source", "tag": "everysource-21",
+        "allowed_sources": sources.default_token(), "sources_all": "1",
+    })
+    assert db.list_influencers()[0]["allowed_sources"] == ""
+
+
+def test_the_setup_page_offers_the_default_for_the_creators_with_none(client):
+    """One click switches the blanks; it never touches a creator pointed somewhere."""
+    blank = db.add_influencer("Blank Reader", "blank-21")
+    pointed = db.add_influencer("Pointed Reader", "pointed-21", allowed_sources="powerloot")
+    explicit_all = db.add_influencer("Everything Reader", "everything-21",
+                                     allowed_sources="all")
+
+    page = client.get("/setup").get_data(as_text=True)
+    assert "creator(s) with no source" in page
+    assert "1 with no source set" in page
+
+    response = client.post("/sources/apply-default",
+                           data={"_csrf_token": _csrf(client, "/setup")})
+    assert response.status_code == 302
+    assert db.get_influencer(blank)["allowed_sources"] == sources.default_token()
+    assert db.get_influencer(pointed)["allowed_sources"] == "powerloot"
+    assert db.get_influencer(explicit_all)["allowed_sources"] == "all"
+
+    # Idempotent: a second click has nothing left to do and says so.
+    page = client.get("/setup").get_data(as_text=True)
+    assert "creator(s) with no source" not in page
+
+
+def test_usage_counts_the_fleet_by_how_they_read_sources():
+    db.add_influencer("Blank", "b-21")
+    db.add_influencer("Default", "d-21", allowed_sources=sources.default_token())
+    db.add_influencer("Pointed", "p-21", allowed_sources="powerloot")
+    db.add_influencer("Everything", "e-21", allowed_sources="*")
+    assert sources.usage() == {"creators": 4, "default": 1, "every": 1,
+                               "specific": 1, "unset": 1}
+    assert sources.is_unset("") and not sources.is_unset("all")
+    assert [row["name"] for row in sources.unset_creators()] == ["Blank"]

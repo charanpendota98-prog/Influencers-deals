@@ -421,6 +421,31 @@ A creator's posts come from the sources **you** set beside their channels.
 * The creator page's source fields suggest the tokens that exist (a `<datalist>`),
   per creator **and** per channel — one channel can read one source while the
   creator's others read several.
+* The **Quick Add** form has the same field, pre-filled with the default, plus a
+  *post from every source* tick — so a creator added in one line reads the
+  default without anybody thinking about it.
+* Creators saved **before** the default existed have no source at all, which has
+  always meant "every source in the hub". The pool card says how many there are
+  and switches them in one click (`POST /sources/apply-default`, audited); it
+  never touches a creator the operator already pointed somewhere.
+
+### 🎯 Categories never cost a sale
+
+A creator can be narrowed to chosen categories ("this one posts electronics"),
+and the filter is keyword based — so it can only ever be sure about the deals it
+recognises. `🔥 BOAT AIRDOPES at ₹1299 · Use code BOAT500` matches no electronics
+keyword and only the word *code*: dropping it for an electronics creator would be
+a lost sale caused by our own vocabulary. So the filter now drops a deal only
+when the hub is sure it belongs to a **different product category**:
+
+| Deal | Creator asked for | Result |
+|---|---|---|
+| `Banarasi Silk Saree at ₹899` | electronics | dropped — it is clothing |
+| `BOAT AIRDOPES … Use code BOAT500` | electronics | **posted** — the brand is unknown to us, the coupon is not a category |
+| `General quiz contest information` | electronics | posted (unknown), unless strict mode is on |
+
+`CATEGORY_FILTER_STRICT_UNKNOWN=on` restores the old, strict behaviour for an
+operator who wants a tightly curated feed.
 
 ### 🔁 No duplicates — the same product never lands twice
 

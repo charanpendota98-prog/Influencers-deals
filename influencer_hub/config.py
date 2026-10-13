@@ -101,6 +101,16 @@ REQUIRE_OWN_AMAZON_TAG = _bool("REQUIRE_OWN_AMAZON_TAG", True)
 # with the source picker on the creator page and in the guided wizard.
 DEFAULT_SOURCE_SPEC = _env("DEFAULT_SOURCE_SPEC", "https://t.me/LootZoneIndia11")
 DEFAULT_SOURCE_NAME = _env("DEFAULT_SOURCE_NAME", "LootZoneIndia11")
+
+# ----- Category filter -----
+# A creator can be narrowed to chosen categories ("this one posts electronics").
+# The filter is keyword based, so a real deal can use words it does not know —
+# "🔥 BOAT AIRDOPES at ₹1299" matches no electronics keyword at all. Dropping it
+# would be a lost sale caused by our vocabulary, so by default a deal the hub
+# cannot place anywhere passes the filter; only a deal it is sure belongs to a
+# *different* category is dropped. Set CATEGORY_FILTER_STRICT_UNKNOWN=on to drop
+# unrecognised deals as well (the old behaviour, for a strictly curated feed).
+CATEGORY_FILTER_STRICT_UNKNOWN = _bool("CATEGORY_FILTER_STRICT_UNKNOWN", False)
 AMAZON_CREATORS_API_CLIENT_ID = _env(
     "AMAZON_CREATORS_API_CLIENT_ID",
     "amzn1.application-oa2-client.83229d9d14664351be9fc2059038a4f2",

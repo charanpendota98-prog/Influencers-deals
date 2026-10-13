@@ -98,6 +98,15 @@
           {{ 'Use default source again' if source_default and source_default.configured else 'Add the default source' }}
         </button>
       </form>
+      {% if source_usage and source_usage.unset %}
+        <form method="post" action="{{ url_for('apply_default_source') }}">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+          <button type="submit" class="btn btn-primary"
+                  title="Creators saved before the default existed: they read every source in the hub. This points the ones with no source at the default, and never touches a creator you have already pointed somewhere.">
+            ⭐ Use the default for {{ source_usage.unset }} creator(s) with no source
+          </button>
+        </form>
+      {% endif %}
       <form method="post" action="{{ url_for('seed_default_sources') }}">
         <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
         <button type="submit" class="btn btn-secondary">Add suggested selectors</button>
@@ -107,6 +116,11 @@
   <div class="setup-shortcuts">
     <div class="dashboard-status"><strong>{{ sources|length }} configured selectors</strong><p>{{ sources|selectattr('active', 'equalto', 1)|list|length }} active · use the live check below to confirm joined-dialog matches.</p></div>
     <div class="dashboard-status"><strong>{{ influencers|length }} creator profiles</strong><p>Adding and saving need no password. A removal (creator, channel or deal source) asks once.</p></div>
+    {% if source_usage %}
+    <div class="dashboard-status"><strong>Who reads what today</strong>
+      <p>{{ source_usage.default }} from the default ⭐ {{ source_default.label if source_default else '' }} · {{ source_usage.every }} from every source · {{ source_usage.specific }} from a specific list{% if source_usage.unset %} · <b>{{ source_usage.unset }} with no source set (they read every source until switched)</b>{% endif %}</p>
+    </div>
+    {% endif %}
   </div>
   <form method="post" action="{{ url_for('add_deal_source') }}" class="source-add-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
@@ -231,6 +245,10 @@
 </section>
 
 <!-- ➕ ADD NEW INFLUENCER FORM (INSTANT 1-CLICK) -->
+<datalist id="source-tokens">
+  {% for row in sources %}<option value="{{ row.name }}"></option>{% endfor %}
+</datalist>
+
 <section id="quick-add-form" class="card" style="border: 2px solid #3b82f6; background: #131b2e; border-radius: 12px; box-shadow:0 8px 30px rgba(0,0,0,0.4);">
   <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #283759; padding-bottom:12px; margin-bottom:14px;">
     <div>
@@ -287,6 +305,17 @@
         <option value="under_499">🎁 Under ₹499 Only</option>
         <option value="under_999">🏷️ Under ₹999 Only</option>
       </select>
+    </div>
+    <div>
+      <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#a5b4fc;">📡 Deal Sources (where their deals come from)</label>
+      <input name="allowed_sources" list="source-tokens"
+             value="{{ source_default.token if source_default else '' }}"
+             placeholder="{{ source_default.token if source_default else 'LootZoneIndia11' }}, powerloot"
+             style="width: 100%; font-family: monospace;" />
+      <span class="hint" style="font-size:10px;">Pre-filled with the hub default{% if source_default %} ⭐ {{ source_default.label }}{% endif %}; type or pick several, comma separated. Leave it as it is to use the default.</span>
+      <label style="font-size:11px; color:#94a3b8; display:flex; align-items:center; gap:6px; margin-top:4px;">
+        <input type="checkbox" name="sources_all" value="1" /> Post from every source in the hub
+      </label>
     </div>
     <div>
       <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 5px; color:#f472b6;">🔗 Bitly API Tokens (Optional)</label>

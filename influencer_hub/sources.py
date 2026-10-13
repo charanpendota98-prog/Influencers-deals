@@ -184,3 +184,66 @@ def selection_line(raw: str) -> str:
     if not tokens:
         return "every source in the hub"
     return ", ".join(tokens)
+
+
+# ``all``/``any``/``*`` and friends: an operator who typed one of these asked for
+# every source on purpose, so it is not treated as "nothing selected".
+EVERY_TOKENS = {"all", "any", "unrestricted", "*", "no_filter", "every"}
+
+
+def asks_for_everything(raw: str) -> bool:
+    """Did the operator explicitly ask for every source in the hub?"""
+    return str(raw or "").strip().lower() in EVERY_TOKENS
+
+
+def is_unset(raw: str) -> bool:
+    """No source chosen: not a token list, and not an explicit "every source"."""
+    return not selection_tokens(raw) and not asks_for_everything(raw)
+
+
+def unset_creators(profiles=None) -> list[dict]:
+    """The creators that were saved with no source selection at all."""
+    rows = profiles if profiles is not None else db.list_influencers()
+    return [row for row in (rows or []) if is_unset(row.get("allowed_sources") or "")]
+
+
+def usage(profiles=None) -> dict:
+    """How the fleet reads sources today — for the /setup pill and the self-check."""
+    rows = profiles if profiles is not None else db.list_influencers()
+    counts = {"creators": len(rows or []), "default": 0, "every": 0,
+              "specific": 0, "unset": 0}
+    token = default_token().lower()
+    for row in rows or []:
+        raw = str(row.get("allowed_sources") or "").strip()
+        if not raw:
+            counts["unset"] += 1
+        elif asks_for_everything(raw):
+            counts["every"] += 1
+        else:
+            tokens = [item.lower() for item in selection_tokens(raw)]
+            if tokens and all(item == token for item in tokens):
+                counts["default"] += 1
+            else:
+                counts["specific"] += 1
+    return counts
+
+
+def apply_default(profiles=None) -> dict:
+    """Switch creators with **no** source selection to the hub default.
+
+    Returns what happened so the dashboard can say it out loud: how many were
+    blank, how many rows were actually updated, and a few names as proof. It is
+    the explicit half of the default rule — nothing flips implicitly, because
+    "empty" used to mean "every source in the hub" and 1000+ creators are already
+    saved that way.
+    """
+    blanks = unset_creators(profiles)
+    token = default_token()
+    updated = db.set_allowed_sources_for_unset(token)
+    return {
+        "token": token,
+        "spec": DEFAULT_SPEC,
+        "creators": len(blanks),
+        "updated": int(updated),
+        "names": [str(row.get("name") or "") for row in blanks[:5]],
+    }

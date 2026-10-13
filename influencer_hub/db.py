@@ -715,6 +715,33 @@ def set_influencer_active(influencer_id: int, active: bool) -> None:
         con.close()
 
 
+def set_allowed_sources_for_unset(token: str) -> int:
+    """Point every creator with **no** source selection at ``token``.
+
+    An empty ``allowed_sources`` has always meant "every source in the hub"; the
+    operator's rule is that a creator with nothing chosen should read the hub
+    default instead. Because that flips a long-standing meaning, it only ever
+    happens through the one-click button on ``/setup`` — this function is that
+    click, and it touches nothing but rows that are still blank. A creator whose
+    value is ``all``/``any``/``*`` asked for every source on purpose and is left
+    alone.
+    """
+    value = str(token or "").strip()
+    if not value:
+        return 0
+    con = _connect()
+    try:
+        cursor = con.execute(
+            "UPDATE influencers SET allowed_sources=? "
+            "WHERE TRIM(COALESCE(allowed_sources, ''))=''",
+            (value,),
+        )
+        con.commit()
+        return int(cursor.rowcount or 0)
+    finally:
+        con.close()
+
+
 def set_use_dummy_sources(influencer_id: int, use_dummy: bool) -> None:
     con = _connect()
     try:

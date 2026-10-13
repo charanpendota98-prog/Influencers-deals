@@ -144,7 +144,7 @@ is unaffected, so EarnKaro/HYPD/Meesho posts keep flowing.
 # 1. the text rules, and the network filter, as code
 HUB_ENV=development HUB_DB_PATH="$(mktemp /tmp/fidelity.XXXXXX.sqlite3)" HUB_SKIP_DOTENV=1 \
 PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_text_fidelity.py tests/test_sources.py
-#   35 passed: a missing price line and an invented line are caught, a rewritten
+#   39 passed: a missing price line and an invented line are caught, a rewritten
 #   link is not a loss, the conservative render wins when text would be lost, a
 #   switched-off network takes its product's copy with it, the default source is
 #   LootZoneIndia11, the picker saves several tokens, and duplicates are blocked
@@ -173,6 +173,19 @@ python -m influencer_hub.cli status | head -5      # sources line: how many are 
 #    the Amazon product only, and the Flipkart block is recorded as removed.
 ```
 
+```bash
+# 6. the whole journey in one go (a copy of the demo DB, fake send):
+#    create (name, number, tag) → channels + WhatsApp paste → pair → finish →
+#    a deal from the default source reaches approval + main + WhatsApp with the
+#    creator's own tag → the same product again is skipped → another source is ignored
+HUB_ENV=development HUB_SKIP_DOTENV=1 PYTHONPATH=. .venv/bin/python /tmp/e2e_journey.py
+#    2. first delivery: {64: {190: 'posted', 191: 'posted', 192: 'posted'}}
+#    3. same product again: {64: {190: 'skipped:duplicate_same_product', …}}
+#    4. a source they do not read: {64: {190: 'skipped', …}}
+#    5. fidelity of what went out vs the source: True | Source text preserved:
+#       4 deal line(s), 0 promotion line(s) removed, nothing added.
+```
+
 **What is expected:** no post ever loses a source line silently — a loss is
 caught before delivery, the conservative render is used when it keeps more, and
 either way the delivery row says what happened. A creator with nothing selected
@@ -190,7 +203,7 @@ RC=$?; rm -f "$TEST_DB"; echo "pytest exit code: $RC"
 cd wa_hub && node --test
 ```
 
-**Expected:** `687 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
+**Expected:** `695 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
 the run ignore the VM's private `.env` entirely (`config._load_dotenv` returns
 before reading the file), so no real Telegram session, affiliate key, shortener
 token or bot credential exists for the duration of the run: no real post, no

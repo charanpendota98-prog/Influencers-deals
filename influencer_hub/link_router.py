@@ -1710,10 +1710,26 @@ def classify_deal_category(text: str) -> list[str]:
     return matched or ["other"]
 
 
+# Categories that describe the *kind of offer* rather than the product: a promo
+# code, a cashback, a "loot deal", or simply "we could not tell". They never veto
+# a deal, because they are not about what is being sold — "🔥 BOAT AIRDOPES at
+# ₹1299 · Use code BOAT500" is electronics that happens to carry a coupon, and
+# dropping it for a creator who asked for electronics would be a lost sale caused
+# by our own vocabulary.
+SECONDARY_CATEGORIES = {"other", "recharge_freebies"}
+
+
 def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> bool:
     """Return True if the deal belongs to any of the allowed categories.
-    allowed_categories_spec: comma-separated list like 'clothing,electronics' or empty/all for all.
-    When set to 'all' or empty, NO restrictions are applied: ANY deal in the world is allowed!
+
+    allowed_categories_spec: comma-separated list like 'clothing,electronics', or
+    empty/all for no restriction at all.
+
+    A deal is dropped when the hub is **sure** it belongs to a product category
+    the destination did not ask for (a saree deal for an electronics-only
+    creator). A deal it cannot place — an unknown brand, or one whose only match
+    is a saving-type flag — passes, so a missing keyword can never silently cost a
+    sale. Set ``CATEGORY_FILTER_STRICT_UNKNOWN=on`` to drop even those.
     """
     s = (allowed_categories_spec or "").strip().lower()
     unrestricted = {"all", "any", "unrestricted", "all categories", "all deals", "*", "no_filter", "default"}
@@ -1725,8 +1741,11 @@ def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> boo
     # If the deal matches any allowed category, return True
     if deal_cats.intersection(allowed_set):
         return True
-    # If deal has uncategorized items ('other'), let it pass if explicitly permitted or 'other' in allowed_set
-    if "other" in deal_cats and ("other" in allowed_set or not allowed_set):
+    # Nothing but saving-type flags / "other": the product is unknown to us.
+    if not (deal_cats - SECONDARY_CATEGORIES):
+        return not getattr(config, "CATEGORY_FILTER_STRICT_UNKNOWN", False)
+    # If deal has uncategorized items ('other'), let it pass if explicitly permitted
+    if "other" in deal_cats and "other" in allowed_set:
         return True
     return False
 

@@ -476,3 +476,72 @@ def test_the_export_search_finds_a_creator_by_tag_channel_and_phone(client):
     assert [row["name"] for row in inventory.rows(query="@ravi_loots")] == ["Ravi Loots"]
     assert [row["name"] for row in inventory.rows(query="mohan")] == ["Ravi Loots"]
     assert inventory.rows(query="nobody-by-that-name") == []
+
+# --------------------------------------------------------------------------
+# the whole journey: create → channels → nothing ticked → the deals go out
+# --------------------------------------------------------------------------
+def test_the_whole_journey_ends_with_the_deals_going_out(client):
+    """Create a creator the way the operator does, then let the worker deliver.
+
+    The step the operator cares about is the one where **no source is ticked**:
+    the creator must read the hub default, and the deal that comes from it must
+    reach all three destinations with the creator's own Amazon tag — and must not
+    come out a second time.
+    """
+    import asyncio
+
+    from influencer_hub import pipeline, sources
+
+    login(client)
+    client.post("/guided/creator",
+                data={"_csrf_token": token(client), "name": "Journey Ravi",
+                      "phone_number": "919000012345", "amazon_tag": "journeyravi-21"})
+    creator = db.search_influencers("Journey Ravi")[0]
+    inf_id = int(creator["id"])
+    assert creator["allowed_sources"] == sources.default_token()
+
+    client.post("/guided/channels", data={
+        "_csrf_token": token(client, f"/guided?creator={inf_id}&step=channels"),
+        "creator": inf_id, "approval_channel": "@journey_amazon",
+        "main_channel": "@journey_loots",
+        "whatsapp_channel": "120363009998887776@newsletter", "mirror_whatsapp": "1",
+    })
+    # the WhatsApp channel is paired (QR/code accepted) and the creator posts 24/7
+    for channel in db.list_channels(inf_id):
+        if channel["platform"] == "whatsapp_channel":
+            db.update_channel_details(channel["id"], status="ready")
+    db.update_influencer(inf_id, posting_schedule="")
+
+    sent: dict[str, str] = {}
+
+    async def fake_dispatch(_inf, channel, text):
+        sent[f"{channel['role']}:{channel['identifier']}"] = text
+        return "posted"
+
+    monkeypatch_ready = pipeline.dispatch_to_channel
+    pipeline.dispatch_to_channel = fake_dispatch
+    deal = ("🔥 BOAT AIRDOPES at ₹1299 (MRP ₹2999)\n"
+            "https://www.amazon.in/dp/B09N3ZNHTY\n"
+            "Use code BOAT500 · Sizes M, L, XL\n#deal #amazon\n")
+    try:
+        first = asyncio.run(pipeline.render_and_dispatch(
+            deal, influencer_ids=[inf_id], source_channel="LootZoneIndia11"))
+        second = asyncio.run(pipeline.render_and_dispatch(
+            deal, influencer_ids=[inf_id], source_channel="LootZoneIndia11"))
+    finally:
+        pipeline.dispatch_to_channel = monkeypatch_ready
+
+    destinations = db.list_channels(inf_id)
+    assert len(destinations) == 3
+    assert set(first[inf_id].values()) == {"posted"}
+    for channel in destinations:
+        key = f"{channel['role']}:{channel['identifier']}"
+        assert key in sent, sent.keys()
+        assert "tag=journeyravi-21" in sent[key]        # the creator's own money
+        assert "BOAT AIRDOPES" in sent[key]             # the source text survived
+        assert "BOAT500" in sent[key]                   # …including the coupon line
+
+    # Same product again, minutes later: nothing goes out twice, and the reason is
+    # written down rather than swallowed.
+    assert set(second[inf_id].values()) == {"skipped:duplicate_same_product"}
+    assert db.list_recent_posts(hours=1)[0]["status"].startswith("skipped")

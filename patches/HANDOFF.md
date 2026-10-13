@@ -1185,10 +1185,52 @@ instead of only implied by the returned status.
   and it never raises — a locked DB must not stop the pull loop), so the default
   exists before the first deal is read on a fresh box.
 
+### "Nothing selected" holds on every add path, not only in the wizard
+
+The wizard was never the only door: Quick Add had no source field at all, so a
+creator added there kept the old meaning of empty (`every source in the hub`).
+The form now carries the same field, pre-filled with the default (and a *post
+from every source* tick for the operator who wants the old behaviour), and the
+route treats a blank field as "the default" while callers that do not send the
+field at all stay unchanged. For creators already saved with no source, the pool
+card shows the count and offers one click (`POST /sources/apply-default` ->
+`sources.apply_default()` -> `db.set_allowed_sources_for_unset()`, audited
+`default_source_applied`); it touches only blank rows, so an explicit `all` or a
+creator pointed at `powerloot` is never rewritten. `sources.usage()` counts the
+fleet by how it reads sources (default / every / specific / unset) for that card
+and the self-check sentence.
+
+### The category filter no longer costs sales
+
+The journey test exposed a silent trap: the wizard's category tick is a
+**keyword** filter, so `🔥 BOAT AIRDOPES at ₹1299 · Use code BOAT500` — a real
+electronics deal whose text contains no electronics keyword — was classified
+`recharge_freebies` (the word "code") and dropped for a creator who asked for
+electronics. Two changes in `link_router`:
+
+* `SECONDARY_CATEGORIES = {"other", "recharge_freebies"}` — flags that describe
+  the *kind of offer* (a coupon, a cashback, "loot deal") never veto a deal: only
+  a real product category the destination did not ask for does ("Banarasi Silk
+  Saree" for an electronics-only creator is still dropped).
+* a deal the classifier cannot place anywhere passes,
+  `CATEGORY_FILTER_STRICT_UNKNOWN=on` (config) restores the strict behaviour for
+  a curated feed.
+
 ### Verified
 
-Full suite **687 passed** (`HUB_SKIP_DOTENV=1`), including the new
-`tests/test_text_fidelity.py` (19) and `tests/test_sources.py` (16). Live on the
+Full suite **695 passed** (`HUB_SKIP_DOTENV=1`), including
+`tests/test_text_fidelity.py` (19), `tests/test_sources.py` (21) and the new
+whole-journey test in `tests/test_guided_setup.py` (29). The journey itself, end
+to end on a copy of the demo hub with fake sends: wizard create (name, number,
+tag) → channels + WhatsApp link pasted → paired → nothing ticked for sources →
+`allowed_sources == LootZoneIndia11`; a deal from that source posted to approval,
+main **and** the mirrored WhatsApp channel, every link signed `tag=journeyravi-21`,
+the coupon line intact (`#ad (paid link)` added on approval only); the same
+product a moment later came back `skipped:duplicate_same_product` on all three
+destinations with the reason in the delivery log; a source the creator does not
+read was skipped; and `fidelity.compare(source, what_went_out)` reported
+`True | Source text preserved: 4 deal line(s), 0 promotion line(s) removed,
+nothing added.` Live on the
 demo hub (62 creators, 186 channels): the wizard's picker rendered
 `LootZoneIndia11` as the default and saved `powerloot, HUga1JTHwhBmNDE1` when two
 were ticked; `api/self-check` showed `ok | Source text & duplicates | Every post

@@ -1952,6 +1952,7 @@ def setup():
         assignments=_assignments_snapshot(),
         tag_proof_card=_tag_proof_snapshot(),
         source_default=_default_source_state(sources),
+        source_usage=_source_usage(influencers),
     )
 
 
@@ -2010,6 +2011,18 @@ def _default_source_state(configured: list[dict] | None = None) -> dict:
         "active": bool(have and have[0].get("active")),
         "source_id": int(have[0]["id"]) if have else 0,
     }
+
+
+def _source_usage(profiles=None) -> dict:
+    """How the fleet reads deal sources today, for the setup page.
+
+    A module-level helper on purpose: inside ``setup()`` the name *sources* is the
+    configured pool, which would shadow the module.
+    """
+    try:
+        return sources.usage(profiles)
+    except Exception:  # pragma: no cover - display only
+        return {}
 
 
 def _tag_proof_snapshot() -> dict:
@@ -2482,6 +2495,29 @@ def ensure_default_source():
     return redirect(url_for("setup", source_saved=1))
 
 
+@app.route("/sources/apply-default", methods=["POST"])
+def apply_default_source():
+    """Switch creators that were saved with **no** source to the hub default.
+
+    "Empty allowed_sources" has always meant "every source in the hub", and the
+    live hub has creators saved that way. The operator's rule is that nothing
+    chosen means the default, so the change is one explicit click — never
+    implicit — and it only touches rows that are still blank.
+    """
+    result = sources.apply_default()
+    security.audit(_session_actor(), _session_role(), "default_source_applied",
+                   target=result.get("token") or "", detail=str(result.get("updated") or 0),
+                   ip=_client_ip())
+    if result.get("updated"):
+        names = ", ".join(name for name in result["names"] if name)
+        flash(f"✅ {result['updated']} creator(s) with no source now post from "
+              f"{result['token']}{' (' + names + '…)' if names else ''}", "success")
+    else:
+        flash("Nothing to change: every creator already selects a source, or asks "
+              "for every source explicitly.", "success")
+    return redirect(url_for("setup", source_saved=1))
+
+
 @app.route("/sources/add", methods=["POST"])
 def add_deal_source():
     name = request.form.get("name", "").strip()
@@ -2626,7 +2662,18 @@ def quick_add():
     insta = request.form.get("insta_id", "").strip()
     handle = request.form.get("handle", "").strip()
     price_filt = request.form.get("price_filter", "all").strip()
-    allowed_src = request.form.get("allowed_sources", "").strip()
+    # This form always sends the source field, pre-filled with the hub default: a
+    # creator added while nothing is chosen posts from LootZoneIndia11, and an
+    # operator who really wants every source ticks the box (which stores the empty
+    # value that has always meant "every source"). Callers that do not send the
+    # field at all — scripts, older forms — keep that behaviour unchanged.
+    raw_src = request.form.get("allowed_sources")
+    if _form_flag("sources_all", default=False):
+        allowed_src = ""
+    elif raw_src is None:
+        allowed_src = ""
+    else:
+        allowed_src = sources.normalize_selection(raw_src) or sources.default_token()
     bitly_key = request.form.get("bitly_api_key", "").strip()
     categories_list = request.form.getlist("categories")
     categories = ",".join(c.strip() for c in categories_list if c.strip())
