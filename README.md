@@ -962,6 +962,56 @@ python -c 'import secrets; print(secrets.token_urlsafe(48))'  # WA_HUB_TOKEN; ke
 
 Set `DASHBOARD_ADMIN_PASSWORD` to the first value, `DASHBOARD_SECRET_KEY` to the second, `WA_HUB_TOKEN` to the third, plus `HUB_ENV=production`. The admin password must be at least 16 characters; the signing key must remain stable across restarts and workers. Leave `ADMIN_DELETE_PASSWORD` unset to reuse the dashboard password for destructive confirmations. Production mode enables Secure cookies on HTTPS requests (over plain HTTP the flag is dropped so sign-in still works), and the dashboard listens on `0.0.0.0:5000` so it is reachable on the VM IP — keep that port firewalled or fronted by HTTPS. The WhatsApp hub binds to loopback and refuses production startup without its private token. `/healthz` is the sole unauthenticated health endpoint besides validated first-party affiliate redirects. Do not deploy publicly with missing/weak dashboard credentials.
 
+### 🚀 Deploying and updating in one command (`deploy/deploy.sh`)
+
+Updating the VM used to be "pull, remember the migrations, restart, hope". It is
+now one command that cannot surprise you — it **checks first, backs up, and can
+undo itself**:
+
+```bash
+./deploy/deploy.sh --check     # read-only: is this box ready? what is missing?
+./deploy/deploy.sh --dry-run   # print every command it would run, change nothing
+./deploy/deploy.sh             # update to this checkout's branch
+./deploy/deploy.sh --ref <sha> # pin exactly one commit
+```
+
+| Step | What happens | The rule that keeps you safe |
+|---|---|---|
+| 1 | preflight | a required failure stops it *before* anything is written |
+| 2 | `cli backup` | no backup, no deploy (safe while the worker is posting) |
+| 3 | `git fetch` + `git merge --ff-only` | never rewrites history, never discards a modified file |
+| 4 | `pip install` / `npm ci` | only when the locks changed — **`npm audit fix` never runs** |
+| 5 | `cli init` | new columns added; safe to re-run |
+| 6 | restart | systemd units, or `start_services.sh` (supervised) |
+| 7 | health | `/healthz` → `cli self-check` → `cli tag-proof` |
+| 8 | rollback | any failure: previous commit + the backup + restart, then a non-zero exit |
+
+`--check` prints one line per thing it looked at — branch and commit, whether the
+worktree has modified files, the venv and the real dependency versions, Node and
+the WhatsApp modules, **which `.env` keys exist** (names only, never values), the
+database and its schema, free disk, backup age, whether the systemd units are
+installed, and whether the dashboard and WhatsApp hub answer right now.
+
+```bash
+$ ./deploy/deploy.sh --check
+  [OK] branch        on main at 5b5696f (wanted main, remote 5b5696f)
+  [OK] worktree      0 modified file(s), 3 untracked (usually .env, a venv, logs)
+  [OK] python-deps   flask 3.1.3 | aiohttp 3.14.5 | telethon 1.45.0 | gunicorn 23.0.0
+  [XX] env:AMAZON_ASSOCIATE_TAG  missing — hub-wide Amazon fallback tag
+       fix: add AMAZON_ASSOCIATE_TAG=… to .env
+Verdict: ⛔ fix first: env:AMAZON_ASSOCIATE_TAG
+```
+
+Undoing is written down for you at the end of every deploy (the exact
+`--from-backup` and `git reset --hard <sha>` lines), and `deploy/DEPLOY.md` walks
+through the first install, the update, the two kinds of rollback, and the
+firewall. The same preflight is available in the CLI, so it can be called from
+your own scripts:
+
+```bash
+python -m influencer_hub.cli deploy-check --json | python -m json.tool | head -20
+```
+
 ### Setup password: asked once, then remembered
 
 Adding, saving and deleting channels (and every other sensitive setup change)

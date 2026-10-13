@@ -35,7 +35,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import db, link_router, vm_watch
+from . import db, deploy, link_router, vm_watch
 from . import config
 
 
@@ -256,6 +256,33 @@ def _cmd_vm_watch(args):  # pragma: no cover - side effect
     else:
         snap = asyncio.run(vm_watch.snapshot_and_report())
         print(snap)
+
+
+def _cmd_deploy_check(args):  # noqa: D401 - read-only by construction
+    """What this box has, and what the next deploy would do — changing nothing."""
+    report = deploy.preflight(
+        repo=Path(args.repo) if args.repo else None,
+        branch=args.branch or "",
+        backup_dir=Path(args.backups) if args.backups else None,
+    )
+    if args.json:
+        print(deploy.as_json(report))
+        return 0 if report["ok"] else 1
+    print(f"== Deploy preflight · {report['repo']} · branch {report['branch']} ==")
+    for check in report["checks"]:
+        mark = "OK" if check["ok"] else ("XX" if check["required"] else "--")
+        print(f"  [{mark}] {check['name']:<24} {check['detail']}")
+        if not check["ok"] and check["fix"]:
+            print(f"       fix: {check['fix']}")
+    print()
+    print(f"Verdict: {report['summary']}")
+    if args.show_plan:
+        print()
+        print("A deploy would run, in order:")
+        for step in report["next_deploy"]:
+            print(f"  {step['step']:>2}. {step['name']:<20} {step['command']}")
+            print(f"      {step['why']}")
+    return 0 if report["ok"] else 1
 
 
 def _cmd_run_pipeline(args):  # pragma: no cover - network
@@ -1239,6 +1266,18 @@ def build_parser() -> argparse.ArgumentParser:
     v = sub.add_parser("vm-watch", help="snapshot VM health (or loop)")
     v.add_argument("--loop", action="store_true")
     v.set_defaults(func=_cmd_vm_watch)
+
+    dc = sub.add_parser(
+        "deploy-check",
+        help="read-only preflight for a deploy: checkout, deps, .env keys, DB, services",
+    )
+    dc.add_argument("--branch", default="", help="the branch the hub should run (default: its upstream)")
+    dc.add_argument("--repo", default="", help="repository root (default: this checkout)")
+    dc.add_argument("--backups", default="", help="backup directory to look at (default ./backups)")
+    dc.add_argument("--plan", dest="show_plan", action="store_true",
+                    help="also print the ordered deploy steps")
+    dc.add_argument("--json", action="store_true", help="machine-readable output")
+    dc.set_defaults(func=_cmd_deploy_check)
 
     rp = sub.add_parser("run-pipeline", help="pull shared deals and dispatch to influencers")
     rp.add_argument("--id", type=int, default=None, help="limit to one influencer")

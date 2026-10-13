@@ -1218,8 +1218,9 @@ electronics. Two changes in `link_router`:
 
 ### Verified
 
-Full suite **697 passed** (`HUB_SKIP_DOTENV=1`), including
-`tests/test_text_fidelity.py` (19), `tests/test_sources.py` (21), the
+Full suite **709 passed** (`HUB_SKIP_DOTENV=1`), including
+`tests/test_text_fidelity.py` (19), `tests/test_sources.py` (21), `test_deploy.py`
+(12), the
 whole-journey test in `tests/test_guided_setup.py` (29) and the routing matrix in
 `tests/test_network_routing_matrix.py` (2): one four-link deal through three
 switch configurations — everything-on keeps all four products monetised
@@ -1247,3 +1248,61 @@ carried the `note` column (`network merchant: NIRLON Shirt at ₹399 — Sizes: 
 XL`); and a mixed source deal posted correctly for two creators (@both_on: Amazon
 with `tag=bothon-21` **plus** the `ekaro.in` conversion of the Flipkart product;
 @amz_only: Amazon only, with the Flipkart block recorded as removed).
+
+## 19. This session, part 14: deploying without surprises
+
+The operator asked to deploy. There is no route from this sandbox to their VM, so
+what was built is the thing that makes *their* deploy one command: a preflight, a
+deploy script with a real rollback, and a guide — all verified here, including a
+full rehearsal of the script in a throwaway copy of the repository.
+
+### `influencer_hub/deploy.py` + `cli deploy-check` (new)
+
+`preflight()` reads this box and prints it: the branch and commit and whether the
+*remote* has something newer, how many **tracked** files are modified (untracked
+`.env`/venv/logs are normal and never block), the venv and the real versions of
+the dependencies the hub imports (flask/aiohttp/telethon/psutil/gunicorn, so a
+stale venv is caught instead of guessed), Node and `wa_hub/node_modules`, whether
+`.env` exists and **which keys it defines** (names only — values are never read
+into the report), the database and its schema, free disk, backup freshness,
+whether the systemd units are installed, and whether the dashboard and WhatsApp
+hub answer today. Required failures stop a deploy; capability keys that are
+simply not used yet are warnings with the one command that fixes each.
+
+`deploy.plan()` returns the ordered steps as data (preflight → backup → fetch →
+ff-only merge → pip → npm ci → `cli init` → restart → `/healthz` + self-check +
+tag-proof → rollback-on-failure), and `cli deploy-check --plan` prints them with
+the reason for each. `--json` makes it usable from the operator's own scripts.
+
+### `deploy/deploy.sh` (new)
+
+`--check` (read-only) · `--dry-run` (print every command, change nothing) ·
+`--branch`/`--ref` (what to deploy) · `--no-restart` (code + DB only) ·
+`--from-backup <file>` (database-only rollback). It sources `.env` the way the
+services do, backs the database up through `cli backup` (SQLite online backup, so
+it is safe while the worker posts), fast-forwards only, installs dependencies
+only when the lock files changed (`npm ci --no-audit --no-fund` — `npm audit fix`
+appears in a comment saying it never runs, and a test enforces that no command
+line contains it), migrates, restarts (systemd when installed, otherwise the
+supervised `start_services.sh`), then health-checks and — on any failure — resets
+to the previous commit, restores the backup taken at step 2 and restarts, exiting
+non-zero. Every successful deploy ends with the receipt and the two exact
+rollback commands.
+
+### `deploy/DEPLOY.md` (new)
+
+First install → units → `.env` → `--check`; every later update; the two kinds of
+rollback (database only / code only / both, in the right order); ports and
+firewall; and the list of what a deploy never does.
+
+### Verified
+
+`tests/test_deploy.py` (12) pins the promises: valid bash, the plan order (backup
+before anything that changes code), `--dry-run` prints and does not act, the
+preflight is read-only and never prints a secret, a modified tracked file blocks a
+deploy while an untracked one does not, backups are reported by age, the four
+units cover dashboard/worker/wa-hub/vm-watch with `EnvironmentFile=.env`, and the
+guide documents the rollbacks. Full suite **709 passed**. The script was also
+rehearsed end to end in a throwaway copy of the repository with a real `.env` and
+a copy of the demo database: `--check` reported "✅ ready to deploy", `--dry-run`
+printed all eleven steps and left the database hash and the commit untouched.

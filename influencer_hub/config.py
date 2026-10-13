@@ -208,6 +208,22 @@ DUMMY_SOURCES = [s for s in _env("DUMMY_SOURCES", "").split(",") if s]
 WA_HUB_URL = _env("WA_HUB_URL", "http://127.0.0.1:8088")
 WA_HUB_TOKEN = _env("WA_HUB_TOKEN", "")  # required by the hub in production
 
+
+# ----- Ports (used by the deploy preflight and the health checks) -----
+def _port_from_url(url: str, fallback: int) -> int:
+    """The port inside a URL, so the preflight checks the port that is really used."""
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url if "//" in url else f"//{url}")
+        return int(parsed.port or fallback)
+    except (TypeError, ValueError):
+        return fallback
+
+
+DASHBOARD_PORT = _int("DASHBOARD_PORT", 5000)
+WA_HUB_PORT = _int("WA_HUB_PORT", _port_from_url(WA_HUB_URL, 8088))
+
 # ----- Ops / monitoring -----
 # Telegram channel (username or id) where VM/bot health is reported.
 OPS_TELEGRAM_CHANNEL = _env("OPS_TELEGRAM_CHANNEL", "")

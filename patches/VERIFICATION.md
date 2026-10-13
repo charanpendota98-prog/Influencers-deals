@@ -192,6 +192,46 @@ either way the delivery row says what happened. A creator with nothing selected
 posts from `LootZoneIndia11`; ticking several sources stores those tokens; the
 same product is never posted twice to one channel (the reason is in the log).
 
+## 0a. Deploying safely (this round)
+
+Read-only first, always. Nothing below sends a message or changes the hub.
+
+```bash
+# 1. what this box has (names of .env keys only — never a value)
+python -m influencer_hub.cli deploy-check --plan
+#    [OK] branch / worktree / virtualenv / python-deps / node / whatsapp-deps
+#    [OK] dotenv / env:<each required key> / env:optional
+#    [OK] database / schema / disk / backups / systemd / dashboard-today
+#    then the 11 ordered deploy steps with the reason for each
+
+# 2. the script itself: valid bash, and every command printed without running it
+bash -n deploy/deploy.sh
+./deploy/deploy.sh --check        # refuses (exit 1) while [XX] items remain
+./deploy/deploy.sh --dry-run      # ends with "DRY RUN · nothing was changed"
+git rev-parse HEAD                # unchanged after --dry-run
+sha256sum <the database>          # unchanged after --dry-run
+
+# 3. the tests that hold those promises
+HUB_ENV=development HUB_DB_PATH="$(mktemp /tmp/deploy.XXXXXX.sqlite3)" HUB_SKIP_DOTENV=1 \
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_deploy.py
+#   12 passed: bash syntax, the plan order (backup before anything that changes
+#   code), --dry-run prints and does not act, no `npm audit fix` in any command,
+#   the preflight is read-only and never prints a secret, a modified tracked file
+#   blocks a deploy while an untracked one does not, the units cover all four
+#   services, and the guide documents the rollbacks.
+
+# 4. on the VM, the real thing (operator):
+./deploy/deploy.sh --check          # then
+./deploy/deploy.sh                  # backup → fast-forward → migrate → restart → health
+#   ends with: DEPLOY OK · backup: …/hub-<ts>.sqlite3 · health: /healthz answered
+#   and prints the two rollback commands verbatim
+```
+
+**What is expected:** `--check` never writes anything; a required `[XX]` stops the
+deploy before the backup; the deploy ends with `DEPLOY OK` only after `/healthz`,
+the self-check and the fleet tag-proof pass; a failure rolls the code and the
+database back to exactly what they were and exits non-zero.
+
 ## 1. Code tests (services stopped, no credential read at all)
 
 ```bash
@@ -203,7 +243,7 @@ RC=$?; rm -f "$TEST_DB"; echo "pytest exit code: $RC"
 cd wa_hub && node --test
 ```
 
-**Expected:** `697 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
+**Expected:** `709 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
 the run ignore the VM's private `.env` entirely (`config._load_dotenv` returns
 before reading the file), so no real Telegram session, affiliate key, shortener
 token or bot credential exists for the duration of the run: no real post, no
