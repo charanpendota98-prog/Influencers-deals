@@ -1181,11 +1181,14 @@ instead of only implied by the returned status.
   that exist via a `<datalist>`, per creator and per channel.
 * The self-check's **Deal sources** line now also says how many creators post
   from the default and how many from every source.
+* `worker.ensure_default_source()` runs at worker startup (idempotent, logged,
+  and it never raises — a locked DB must not stop the pull loop), so the default
+  exists before the first deal is read on a fresh box.
 
 ### Verified
 
-Full suite **685 passed** (`HUB_SKIP_DOTENV=1`), including the new
-`tests/test_text_fidelity.py` (19) and `tests/test_sources.py` (14). Live on the
+Full suite **687 passed** (`HUB_SKIP_DOTENV=1`), including the new
+`tests/test_text_fidelity.py` (19) and `tests/test_sources.py` (16). Live on the
 demo hub (62 creators, 186 channels): the wizard's picker rendered
 `LootZoneIndia11` as the default and saved `powerloot, HUga1JTHwhBmNDE1` when two
 were ticked; `api/self-check` showed `ok | Source text & duplicates | Every post

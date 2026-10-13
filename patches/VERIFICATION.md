@@ -144,7 +144,7 @@ is unaffected, so EarnKaro/HYPD/Meesho posts keep flowing.
 # 1. the text rules, and the network filter, as code
 HUB_ENV=development HUB_DB_PATH="$(mktemp /tmp/fidelity.XXXXXX.sqlite3)" HUB_SKIP_DOTENV=1 \
 PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_text_fidelity.py tests/test_sources.py
-#   33 passed: a missing price line and an invented line are caught, a rewritten
+#   35 passed: a missing price line and an invented line are caught, a rewritten
 #   link is not a loss, the conservative render wins when text would be lost, a
 #   switched-off network takes its product's copy with it, the default source is
 #   LootZoneIndia11, the picker saves several tokens, and duplicates are blocked
@@ -190,7 +190,7 @@ RC=$?; rm -f "$TEST_DB"; echo "pytest exit code: $RC"
 cd wa_hub && node --test
 ```
 
-**Expected:** `685 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
+**Expected:** `687 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
 the run ignore the VM's private `.env` entirely (`config._load_dotenv` returns
 before reading the file), so no real Telegram session, affiliate key, shortener
 token or bot credential exists for the duration of the run: no real post, no

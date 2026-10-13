@@ -408,8 +408,9 @@ A creator's posts come from the sources **you** set beside their channels.
 * **Nothing selected** → the hub's default source, `https://t.me/LootZoneIndia11`
   (`DEFAULT_SOURCE_SPEC`), is used — a creator never quietly posts from every
   source in the hub. One click on `/setup → 📡 Source pool` adds it to the pool
-  (`/sources/ensure-default`), and the wizard does it automatically the first
-  time it is needed.
+  (`/sources/ensure-default`), the guided wizard does it the first time it is
+  needed, and the worker does it at startup — so a brand-new box posts from
+  LootZoneIndia11 even if nobody opened the dashboard yet.
 * **Tick as many as you want** in the guided wizard (step 2) — "pakka manam set
   chesina source channels pakkana multiple ga select cheskunelaga". What is
   stored is the plain token list the pipeline filters on

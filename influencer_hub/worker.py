@@ -13,7 +13,7 @@ import random
 import signal
 from collections import defaultdict
 
-from . import config, db, pipeline, polls, puller, scheduler
+from . import config, db, pipeline, polls, puller, scheduler, sources
 
 logger = logging.getLogger("influencer_hub.worker")
 
@@ -289,10 +289,33 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
     return {"pulled": len(records), "handled": handled, "retry_sources": retried}
 
 
+def ensure_default_source() -> dict | None:
+    """Make sure the hub default source exists before the first pull.
+
+    A creator with no source picked posts from the hub default; the worker is
+    often the only thing running on a fresh box, so it adds
+    ``https://t.me/LootZoneIndia11`` itself. Idempotent, and it never touches a
+    source the operator chose. A failure here must not stop the worker — the
+    affected creators are simply skipped until the pool can be written.
+    """
+    try:
+        state = sources.ensure_default()
+    except Exception:
+        logger.exception(
+            "Could not ensure the default deal source; creators with no source of "
+            "their own will be skipped until it can be added"
+        )
+        return None
+    if state.get("added"):
+        logger.info("Default deal source %s added to the pool", state.get("spec"))
+    return state
+
+
 async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     """Run continuously; recover from transient failures with capped backoff."""
     stop_event = stop_event or asyncio.Event()
     db.init()
+    ensure_default_source()
     _record_heartbeat("starting")
     heartbeat_task = asyncio.create_task(_heartbeat_loop(stop_event))
     poll_dispatch_task = asyncio.create_task(_poll_dispatch_loop(stop_event))

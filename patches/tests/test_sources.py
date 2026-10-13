@@ -260,3 +260,24 @@ def test_a_deal_from_a_source_the_creator_does_not_use_is_skipped(monkeypatch):
     mine = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[inf_id],
                                                     source_channel="LootZoneIndia11"))
     assert mine[inf_id][channel] == "posted" and len(posted) == 1
+
+def test_the_worker_adds_the_default_source_before_its_first_pull():
+    """A fresh box must post from the default even if nobody opened /setup."""
+    from influencer_hub import worker
+
+    state = worker.ensure_default_source()
+    assert state["added"] is True
+    assert state["spec"] == config.DEFAULT_SOURCE_SPEC
+    # Idempotent: the second (and every later) boot adds nothing and raises nothing.
+    assert worker.ensure_default_source()["added"] is False
+    assert [row["spec"] for row in db.list_sources()] == [config.DEFAULT_SOURCE_SPEC]
+
+
+def test_a_broken_source_pool_never_stops_the_worker(monkeypatch):
+    from influencer_hub import worker
+
+    def explode(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(worker.sources, "ensure_default", explode)
+    assert worker.ensure_default_source() is None      # logged, not raised
