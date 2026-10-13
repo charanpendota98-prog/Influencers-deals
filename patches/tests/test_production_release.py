@@ -2,12 +2,36 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sqlite3
 from unittest.mock import AsyncMock
 
 
 from influencer_hub import config, db, link_router, pipeline, puller, telegram_ops, worker
+
+
+def test_the_test_run_can_skip_the_dotenv_entirely(tmp_path, monkeypatch):
+    """The documented sanitized command reads no secret at all.
+
+    With ``HUB_SKIP_DOTENV=1`` a provisioned machine runs the suite on plain
+    code defaults, so the blanked-credential form is not the only safe option.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text("HUB_TEST_SKIPPED_KEY=from-file\nHUB_TEST_KEPT_KEY=from-file\n")
+    monkeypatch.delenv("HUB_TEST_SKIPPED_KEY", raising=False)
+    monkeypatch.setenv("HUB_TEST_KEPT_KEY", "already-here")
+
+    monkeypatch.setenv("HUB_SKIP_DOTENV", "1")
+    assert config._load_dotenv(env_file) == {}
+    assert "HUB_TEST_SKIPPED_KEY" not in os.environ           # nothing was read
+    assert os.environ["HUB_TEST_KEPT_KEY"] == "already-here"
+
+    monkeypatch.delenv("HUB_SKIP_DOTENV")
+    applied = config._load_dotenv(env_file)
+    assert applied == {"HUB_TEST_SKIPPED_KEY": "from-file"}   # the file is read again
+    assert os.environ["HUB_TEST_KEPT_KEY"] == "already-here"  # a real value still wins
+    monkeypatch.delenv("HUB_TEST_SKIPPED_KEY", raising=False)
 
 
 def test_official_defaults_and_compact_amazon_link():
@@ -102,8 +126,11 @@ def test_active_channel_and_all_toggles_do_not_drop_shopsy_deal(monkeypatch):
 
 def test_amazon_associate_links_are_not_sent_to_bitly(monkeypatch):
     db.init()
+    # A creator posts with their own Associate id: the hub-wide tag is only a
+    # fallback, and the pipeline holds a deal whose Amazon link would be signed
+    # with it (see tests/test_tag_proof.py).
     influencer_id = db.add_influencer(
-        "No Amazon Shortening", bitly_api_key="test-bitly-token"
+        "No Amazon Shortening", "noamz-21", bitly_api_key="test-bitly-token"
     )
     channel_id = db.add_channel(
         influencer_id, "telegram", "@no_amazon_shortening", status="ready"
@@ -129,7 +156,7 @@ def test_amazon_associate_links_are_not_sent_to_bitly(monkeypatch):
         ))
         assert result[influencer_id][channel_id] == "posted"
         assert calls == []
-        assert "https://www.amazon.in/dp/B0ABCDEFGH?tag=mama086-21" in sent[0]
+        assert "https://www.amazon.in/dp/B0ABCDEFGH?tag=noamz-21" in sent[0]
     finally:
         db.delete_influencer(influencer_id)
 

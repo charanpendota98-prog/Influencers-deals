@@ -7,9 +7,13 @@
 //   GET  /sessions/:key           -> { status, phone, hasQR }
 //   GET  /sessions/:key/qr        -> { qr }  (latest QR string; null if connected)
 //   GET  /sessions/:key/qr/stream -> SSE: pushes {type:'qr',qr} then {type:'status',...}
+//   POST /sessions/:key/pairing-code { phone } -> { code } (link by phone number, no QR)
+//   GET  /sessions/:key/pairing   -> { status, phone, hasCode, code } (read-only)
 //   POST /sessions/:key/send      { to, text }
 //   POST /sessions/:key/poll      { to, question, options, allow_multiple } (groups only)
 //   POST /sessions/:key/group     { subject, participant }
+//   GET  /sessions/:key/chats           — every chat the account knows
+//   GET  /sessions/:key/admin-chats     — groups/channels where this number is admin
 //   POST /sessions/:key/newsletter { name, description }
 //   POST /sessions/:key/resolve-newsletter { invite }
 //   POST /sessions/:key/stop
@@ -97,6 +101,27 @@ app.get('/sessions/:key/qr/stream', async (req, res) => {
   req.on('close', unsub)
 })
 
+// Phone-number linking: same result as scanning the QR, but the operator reads
+// an 8-character code on the influencer's phone (Linked devices -> Link with
+// phone number). Read-only GET so the dashboard can re-display a live code.
+app.post('/sessions/:key/pairing-code', async (req, res) => {
+  const { phone, influencer_id, label } = req.body || {}
+  if (!phone) return res.status(400).json({ ok: false, error: 'phone required' })
+  try {
+    const result = await hub.requestPairingCode(
+      req.params.key, phone, { influencer_id, label },
+    )
+    res.json(result)
+  } catch (e) {
+    const status = Number.isInteger(e?.status) ? e.status : 422
+    res.status(status).json({ ok: false, error: String(e?.message || e), code: '' })
+  }
+})
+
+app.get('/sessions/:key/pairing', (req, res) => {
+  res.json(hub.pairingState(req.params.key))
+})
+
 app.post('/sessions/:key/resolve-invite', async (req, res) => {
   const { invite } = req.body || {}
   if (!invite) return res.status(400).json({ ok: false, error: 'invite required' })
@@ -124,6 +149,15 @@ app.post('/sessions/:key/resolve-newsletter', async (req, res) => {
 app.get('/sessions/:key/chats', (req, res) => {
   try {
     const chats = hub.listChats(req.params.key)
+    res.json({ ok: true, chats })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+
+app.get('/sessions/:key/admin-chats', async (req, res) => {
+  try {
+    const chats = await hub.listAdminChats(req.params.key)
     res.json({ ok: true, chats })
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })

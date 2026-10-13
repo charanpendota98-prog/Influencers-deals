@@ -14,7 +14,7 @@ import os
 import re
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 from urllib.parse import parse_qs, parse_qsl, urlparse
@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS influencers (
     use_dummy_sources INTEGER NOT NULL DEFAULT 0,
     telegram_enabled  INTEGER NOT NULL DEFAULT 1,
     whatsapp_enabled  INTEGER NOT NULL DEFAULT 1,
+    added_by          TEXT NOT NULL DEFAULT '',   -- team member name / 'admin'
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -47,6 +48,8 @@ CREATE TABLE IF NOT EXISTS channels (
     bitly_api_key  TEXT NOT NULL DEFAULT '',        -- per-channel custom Bitly token
     categories    TEXT NOT NULL DEFAULT '',        -- e.g. 'clothing,electronics,home' (empty = all)
     posting_schedule TEXT NOT NULL DEFAULT '',     -- e.g. '06:00-09:00,18:00-23:00' (empty = 24/7)
+    mirror_whatsapp TEXT NOT NULL DEFAULT '',      -- '' inherit | '1' mirror main posts to this creator's WhatsApp | '0' never
+    title         TEXT NOT NULL DEFAULT '',        -- the channel's own name, as WhatsApp/Telegram shows it
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -55,7 +58,10 @@ CREATE TABLE IF NOT EXISTS wa_sessions (
     influencer_id INTEGER NOT NULL REFERENCES influencers(id) ON DELETE CASCADE,
     phone         TEXT NOT NULL DEFAULT '',
     session_key   TEXT NOT NULL,   -- key used by wa_hub
-    status        TEXT NOT NULL DEFAULT 'offline', -- offline|qr|connected|error
+    status        TEXT NOT NULL DEFAULT 'offline', -- offline|qr|pairing|connected|error
+    pairing_phone TEXT NOT NULL DEFAULT '',        -- number being linked by code (empty = none)
+    pairing_code  TEXT NOT NULL DEFAULT '',        -- live one-time code, cleared once linked
+    pairing_error TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -74,7 +80,18 @@ CREATE TABLE IF NOT EXISTS posts (
     deal_sig      TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'queued', -- queued|posted|failed|skipped
     error         TEXT NOT NULL DEFAULT '',
-    posted_at     TEXT
+    posted_at     TEXT,
+    -- Set on every attempt, including failed/skipped ones (posted_at stays NULL
+    -- unless the post succeeded), so "what happened in the last 24h" can count
+    -- failures too.
+    created_at    TEXT NOT NULL DEFAULT '',
+    -- 0 = posted by the normal deal flow; otherwise the id of the Telegram
+    -- channel whose successful post this WhatsApp destination mirrored.
+    mirror_source_id INTEGER NOT NULL DEFAULT 0,
+    -- Why this post differs from its source, when it does: the product blocks a
+    -- switched-off network removed, promo lines dropped, or a text-fidelity
+    -- warning. Empty for a clean copy, so an operator reads "unchanged".
+    note          TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS vm_stats (
@@ -207,9 +224,58 @@ CREATE TABLE IF NOT EXISTS poll_deliveries (
     UNIQUE(poll_id, channel_id)
 );
 
+-- Who did what: adds and edits (with the actor, their role and the IP). The
+-- team can add and the admin can change, so this is the record of both.
+CREATE TABLE IF NOT EXISTS team_audit (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at         TEXT NOT NULL,
+    actor      TEXT NOT NULL DEFAULT '',
+    role       TEXT NOT NULL DEFAULT '',
+    action     TEXT NOT NULL DEFAULT '',
+    target     TEXT NOT NULL DEFAULT '',
+    detail     TEXT NOT NULL DEFAULT '',
+    ip         TEXT NOT NULL DEFAULT ''
+);
+
+-- Failed sign-ins, counted in the database so a restart does not hand an
+-- attacker a fresh budget.
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope      TEXT NOT NULL DEFAULT '',
+    ip         TEXT NOT NULL DEFAULT '',
+    at         REAL NOT NULL,
+    ok         INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_login_attempts_scope ON login_attempts(scope, ip, at);
+CREATE INDEX IF NOT EXISTS idx_team_audit_at ON team_audit(at);
+
+-- One row per calendar day, written by `cli snapshot` (and by
+-- `cli digest --send`). This is the hub's memory: without it the dashboard can
+-- only ever show "right now", and nobody can tell whether delivery is getting
+-- better or worse.
+CREATE TABLE IF NOT EXISTS ops_snapshots (
+    day            TEXT PRIMARY KEY,          -- YYYY-MM-DD (UTC)
+    captured_at    TEXT NOT NULL,
+    posted         INTEGER NOT NULL DEFAULT 0,
+    failed         INTEGER NOT NULL DEFAULT 0,
+    skipped        INTEGER NOT NULL DEFAULT 0,
+    mirrored       INTEGER NOT NULL DEFAULT 0,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    ready          INTEGER NOT NULL DEFAULT 0,
+    blocked        INTEGER NOT NULL DEFAULT 0,
+    setup_percent  INTEGER NOT NULL DEFAULT 0,
+    verdict        TEXT NOT NULL DEFAULT 'unknown',
+    notes          TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_channels_influencer ON channels(influencer_id);
 CREATE INDEX IF NOT EXISTS idx_posts_sig ON posts(deal_sig, influencer_id);
 CREATE INDEX IF NOT EXISTS idx_wa_influencer ON wa_sessions(influencer_id);
+-- The dashboard reads mirror counts per channel for every creator; without
+-- this, a hub with a few hundred channels scans the whole posts table each
+-- time the command center refreshes.
+CREATE INDEX IF NOT EXISTS idx_posts_channel_status ON posts(channel_id, status, posted_at);
 CREATE INDEX IF NOT EXISTS idx_polls_creator_created ON polls(created_by_influencer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_poll_deliveries_poll ON poll_deliveries(poll_id);
 """
@@ -244,8 +310,31 @@ def _connect() -> sqlite3.Connection:
     return con
 
 
+# Path of the database whose schema this process has already ensured. Keyed by
+# path (not just a flag) because the tests - and a fresh deploy - point
+# config.DB_PATH at a different file within the same process.
+_SCHEMA_READY_PATH: str | None = None
+
+
+def ensure_schema() -> None:
+    """Run :func:`init` once per database file, not once per insert.
+
+    Importing an existing hub is a write-heavy path: without this, every
+    ``add_influencer``/``add_channel`` replayed the full schema script and the
+    whole migration list, which is the difference between a thousand-creator
+    paste taking seconds and taking half a minute.
+    """
+    global _SCHEMA_READY_PATH
+    resolved = str(config.DB_PATH)
+    if _SCHEMA_READY_PATH == resolved:
+        return
+    init()
+    _SCHEMA_READY_PATH = resolved
+
+
 def init() -> None:
     """Create the schema (idempotent). Call once at startup."""
+    global _SCHEMA_READY_PATH
     con = _connect()
     try:
         # WAL permits readers in the Flask UI while the worker records posts.
@@ -256,6 +345,7 @@ def init() -> None:
     finally:
         con.close()
     migrate()
+    _SCHEMA_READY_PATH = str(config.DB_PATH)
 
 
 def migrate() -> None:
@@ -264,6 +354,7 @@ def migrate() -> None:
     try:
         inf_cols = {r["name"] for r in con.execute("PRAGMA table_info(influencers)")}
         for col, ddl in (
+            ("added_by", "TEXT NOT NULL DEFAULT ''"),
             ("telegram_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("whatsapp_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("insta_id", "TEXT NOT NULL DEFAULT ''"),
@@ -313,6 +404,13 @@ def migrate() -> None:
             ("custom_button_text", "TEXT NOT NULL DEFAULT ''"),
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
             ("min_deal_tier", "TEXT NOT NULL DEFAULT ''"),
+            # '' = inherit the global setting, '1' = mirror this channel's posts
+            # into the creator's WhatsApp destinations, '0' = never mirror.
+            ("mirror_whatsapp", "TEXT NOT NULL DEFAULT ''"),
+            # The channel's own name ("LootZone Deals", "Ravi Loot Channel") as
+            # WhatsApp/Telegram shows it. Stored when a chat is picked from the
+            # paired phone's list, so every screen can show a name, not a JID.
+            ("title", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
                 try:
@@ -322,12 +420,33 @@ def migrate() -> None:
                         raise
 
         posts_cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
-        if "deal_text" not in posts_cols:
-            try:
-                con.execute("ALTER TABLE posts ADD COLUMN deal_text TEXT NOT NULL DEFAULT ''")
-            except sqlite3.OperationalError as exc:
-                if "duplicate column name" not in str(exc).lower():
-                    raise
+        for col, ddl in (
+            ("deal_text", "TEXT NOT NULL DEFAULT ''"),
+            ("mirror_source_id", "INTEGER NOT NULL DEFAULT 0"),
+            ("created_at", "TEXT NOT NULL DEFAULT ''"),
+            # Why a post differs from its source (dropped product blocks for a
+            # switched-off network, promo lines removed, a fidelity warning).
+            ("note", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if col not in posts_cols:
+                try:
+                    con.execute(f"ALTER TABLE posts ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+
+        wa_cols = {r["name"] for r in con.execute("PRAGMA table_info(wa_sessions)")}
+        for col, ddl in (
+            ("pairing_phone", "TEXT NOT NULL DEFAULT ''"),
+            ("pairing_code", "TEXT NOT NULL DEFAULT ''"),
+            ("pairing_error", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if col not in wa_cols:
+                try:
+                    con.execute(f"ALTER TABLE wa_sessions ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
         activity_cols = {r["name"] for r in con.execute("PRAGMA table_info(source_activity)")}
         if activity_cols and "source_name" not in activity_cols:
@@ -336,6 +455,16 @@ def migrate() -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+
+        # Same index for databases created before it existed in the schema.
+        try:
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_posts_channel_status "
+                "ON posts(channel_id, status, posted_at)"
+            )
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).lower():
+                raise
 
         con.commit()
     finally:
@@ -357,7 +486,20 @@ def _clean_deal_tier(value: str | None) -> str:
     return tier if tier in DEAL_TIERS else ""
 
 
+def _clean_mirror_flag(value: Any) -> str:
+    """Tri-state mirror switch: '' inherits the global setting, else '1'/'0'."""
+    raw = str(value if value is not None else "").strip().lower()
+    if raw in {"", "default", "inherit"}:
+        return ""
+    if raw in {"1", "true", "yes", "on", "enabled"}:
+        return "1"
+    if raw in {"0", "false", "no", "off", "disabled", "none"}:
+        return "0"
+    return ""
+
+
 def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
+                   added_by: str = "",
                    handle: str = "", notes: str = "",
                    use_dummy_sources: bool = False,
                    telegram_enabled: bool = True, whatsapp_enabled: bool = True,
@@ -370,7 +512,7 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
                    min_deal_tier: str = "") -> int:
     # Ensure schema exists for fresh DBs (pytest tmp_path without explicit init)
     try:
-        init()
+        ensure_schema()
     except Exception:
         pass
     con = _connect()
@@ -388,8 +530,8 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
         )
         cur = con.execute(
             "INSERT INTO influencers "
-            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, min_deal_tier) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, min_deal_tier, added_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), handle.strip(), (amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG,
              notes.strip(), 1 if _as_bool(use_dummy_sources) else 0,
              1 if _as_bool(telegram_enabled, default=True) else 0,
@@ -399,7 +541,8 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
              1 if _as_bool(allow_amazon, default=True, unrestricted=True) else 0,
              1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0,
              1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
-             effective_hypd_store_id, _clean_deal_tier(min_deal_tier)),
+             effective_hypd_store_id, _clean_deal_tier(min_deal_tier),
+             str(added_by or "").strip()[:60]),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -543,14 +686,26 @@ def get_influencer(influencer_id: int) -> Optional[dict]:
         con.close()
 
 
-def list_influencers(active_only: bool = False) -> list[dict]:
+def list_influencers(active_only: bool = False, added_by: str = "") -> list[dict]:
+    """All creators, or only the ones a given team member added.
+
+    ``added_by`` is how the team page answers "what did I add?" without giving
+    the team access to anything they did not create.
+    """
     con = _connect()
     try:
-        sql = "SELECT * FROM influencers"
+        clauses: list[str] = []
+        params: list[Any] = []
         if active_only:
-            sql += " WHERE active=1"
+            clauses.append("active=1")
+        if str(added_by or "").strip():
+            clauses.append("added_by=?")
+            params.append(str(added_by).strip())
+        sql = "SELECT * FROM influencers"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY id"
-        return [dict(r) for r in con.execute(sql).fetchall()]
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
     finally:
         con.close()
 
@@ -561,6 +716,33 @@ def set_influencer_active(influencer_id: int, active: bool) -> None:
         con.execute("UPDATE influencers SET active=? WHERE id=?",
                     (1 if _as_bool(active) else 0, influencer_id))
         con.commit()
+    finally:
+        con.close()
+
+
+def set_allowed_sources_for_unset(token: str) -> int:
+    """Point every creator with **no** source selection at ``token``.
+
+    An empty ``allowed_sources`` has always meant "every source in the hub"; the
+    operator's rule is that a creator with nothing chosen should read the hub
+    default instead. Because that flips a long-standing meaning, it only ever
+    happens through the one-click button on ``/setup`` — this function is that
+    click, and it touches nothing but rows that are still blank. A creator whose
+    value is ``all``/``any``/``*`` asked for every source on purpose and is left
+    alone.
+    """
+    value = str(token or "").strip()
+    if not value:
+        return 0
+    con = _connect()
+    try:
+        cursor = con.execute(
+            "UPDATE influencers SET allowed_sources=? "
+            "WHERE TRIM(COALESCE(allowed_sources, ''))=''",
+            (value,),
+        )
+        con.commit()
+        return int(cursor.rowcount or 0)
     finally:
         con.close()
 
@@ -596,7 +778,9 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 custom_button_enabled: bool = False,
                 custom_button_text: str = "",
                 custom_button_url: str = "",
-                min_deal_tier: str = "") -> int:
+                min_deal_tier: str = "",
+                mirror_whatsapp: str = "",
+                title: str = "") -> int:
     con = _connect()
     try:
         profile = con.execute(
@@ -611,8 +795,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
             or config.HYPD_STORE_ID
         )
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url, min_deal_tier) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url, min_deal_tier, mirror_whatsapp, title) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
              amazon_override_tag.strip(), 1 if _as_bool(strip_amazon, unrestricted=False) else 0, price_filter.strip(), allowed_sources.strip(),
              wa_session_key.strip(), bitly_api_key.strip(), categories.strip(), posting_schedule.strip(),
@@ -622,7 +806,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
              1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
              effective_hypd_store_id,
              1 if _as_bool(custom_button_enabled) else 0, custom_button_text.strip(), custom_button_url.strip(),
-             _clean_deal_tier(min_deal_tier)),
+             _clean_deal_tier(min_deal_tier), _clean_mirror_flag(mirror_whatsapp),
+             str(title or "").strip()[:120]),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -649,7 +834,9 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            custom_button_enabled: bool | None = None,
                            custom_button_text: str | None = None,
                            custom_button_url: str | None = None,
-                           min_deal_tier: str | None = None) -> None:
+                           min_deal_tier: str | None = None,
+                           mirror_whatsapp: str | None = None,
+                           title: str | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -717,6 +904,12 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if min_deal_tier is not None:
             updates.append("min_deal_tier=?")
             params.append(_clean_deal_tier(min_deal_tier))
+        if title is not None:
+            updates.append("title=?")
+            params.append(str(title).strip()[:120])
+        if mirror_whatsapp is not None:
+            updates.append("mirror_whatsapp=?")
+            params.append(_clean_mirror_flag(mirror_whatsapp))
         if updates:
             params.append(channel_id)
             con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)
@@ -1045,9 +1238,44 @@ def upsert_wa_session(influencer_id: int, session_key: str, phone: str = "") -> 
 
 
 def set_wa_session_status(session_key: str, status: str) -> None:
+    """Record the live session state; linking a number ends the pairing attempt."""
+    clean_status = str(status or "").strip() or "offline"
     con = _connect()
     try:
-        con.execute("UPDATE wa_sessions SET status=? WHERE session_key=?", (status, session_key))
+        if clean_status == "connected":
+            # The one-time code is spent the moment the phone is linked.
+            con.execute(
+                "UPDATE wa_sessions SET status=?, pairing_code='', pairing_phone='', "
+                "pairing_error='' WHERE session_key=?",
+                (clean_status, session_key),
+            )
+        else:
+            con.execute(
+                "UPDATE wa_sessions SET status=? WHERE session_key=?", (clean_status, session_key)
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
+def set_wa_session_pairing(session_key: str, phone: str = "", code: str = "",
+                           error: str = "") -> None:
+    """Store the phone-link (OTP) attempt so the dashboard survives a reload.
+
+    An empty code clears the attempt (finished, expired or failed). The code is
+    a one-time login credential: it is only ever shown to the authenticated
+    operator, and `set_wa_session_status(..., "connected")` clears it.
+    """
+    clean_code = str(code or "").strip().upper()
+    con = _connect()
+    try:
+        con.execute(
+            "UPDATE wa_sessions SET pairing_phone=?, pairing_code=?, pairing_error=?, "
+            "status=CASE WHEN ? <> '' THEN 'pairing' WHEN status='pairing' THEN 'offline' ELSE status END "
+            "WHERE session_key=?",
+            (str(phone or "").strip(), clean_code, str(error or "").strip()[:300],
+             clean_code, session_key),
+        )
         con.commit()
     finally:
         con.close()
@@ -1067,7 +1295,7 @@ def list_wa_sessions(influencer_id: Optional[int] = None) -> list[dict]:
 
 # ------------------------------- sources -------------------------------
 
-def add_bulk_influencers(records: list[dict]) -> int:
+def add_bulk_influencers(records: list[dict], added_by: str = "") -> int:
     """Batch insert profiles and any supplied channels in one transaction.
 
     Optional affiliate columns are ``allow_amazon``, ``allow_earnkaro``,
@@ -1077,7 +1305,7 @@ def add_bulk_influencers(records: list[dict]) -> int:
     """
     # Ensure schema exists for fresh DBs
     try:
-        init()
+        ensure_schema()
     except Exception:
         pass
     con = _connect()
@@ -1123,11 +1351,12 @@ def add_bulk_influencers(records: list[dict]) -> int:
                 "INSERT INTO influencers "
                 "(name, handle, amazon_tag, use_dummy_sources, telegram_enabled, whatsapp_enabled, "
                 "insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, "
-                "posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, "
+                "added_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (name, handle, tag, 0, 1, 1, insta, phone, price_filt, sources, bitly_key,
                  categories, schedule, int(only_amz), int(allow_amz), int(allow_ek),
-                 int(allow_hypd), hypd_store),
+                 int(allow_hypd), hypd_store, str(added_by or "").strip()[:60]),
             )
             iid = int(cur.lastrowid)
 
@@ -1378,6 +1607,36 @@ def delete_deferred_deal(deal_hash: str) -> None:
     try:
         con.execute("DELETE FROM deferred_deals WHERE deal_hash=?", (str(deal_hash),))
         con.commit()
+    finally:
+        con.close()
+
+
+def list_deferred_deals(limit: int = 20) -> list[dict]:
+    """The parked deals, soonest retry first — with the reason they were parked.
+
+    Read-only and bounded: the dashboard shows *why* the channels are quiet
+    (``no_own_amazon_tag`` means a creator is waiting for their own Amazon tag,
+    not that the source is broken).
+    """
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT * FROM deferred_deals ORDER BY not_before ASC, created_at ASC LIMIT ?",
+            (max(1, min(500, int(limit or 20))),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        con.close()
+
+
+def deferred_reasons() -> dict[str, int]:
+    """``{reason: count}`` for the parked queue — one query, no rows shipped."""
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT reason, COUNT(*) AS n FROM deferred_deals GROUP BY reason ORDER BY n DESC"
+        ).fetchall()
+        return {str(row["reason"] or "unconverted"): int(row["n"]) for row in rows}
     finally:
         con.close()
 
@@ -1839,17 +2098,76 @@ def get_lehlah_short_link(code: str) -> dict | None:
 # -------------------------------- posts --------------------------------
 
 def record_post(influencer_id: int, channel_id: int, deal_sig: str,
-                status: str = "queued", error: str = "", deal_text: str = "") -> int:
+                status: str = "queued", error: str = "", deal_text: str = "",
+                mirror_source_id: int = 0, note: str = "") -> int:
+    """Record one delivery attempt.
+
+    ``mirror_source_id`` is 0 for a normal deal post and otherwise the Telegram
+    channel id whose successful post this WhatsApp destination mirrored, so the
+    dashboard can show that a mirror happened instead of guessing.
+    """
     con = _connect()
     try:
-        # Check if deal_text column exists
+        now = _now()
         cur = con.execute(
-            "INSERT INTO posts (influencer_id, channel_id, deal_sig, status, error, posted_at, deal_text) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO posts (influencer_id, channel_id, deal_sig, status, error, "
+            "posted_at, created_at, deal_text, mirror_source_id, note) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, channel_id, deal_sig, status, error,
-             _now() if status == "posted" else None, deal_text))
+             now if status == "posted" else None, now, deal_text,
+             int(mirror_source_id or 0), str(note or "")[:400]))
         con.commit()
         return int(cur.lastrowid)
+    finally:
+        con.close()
+
+
+def mirrored_post_count(channel_id: int, hours: int = 24) -> int:
+    """How many of this channel's posts came from mirroring a main channel."""
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        window = max(1, int(hours))
+    except (TypeError, ValueError):
+        window = 24
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=window)
+    ).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM posts WHERE channel_id=? AND status='posted' "
+            "AND COALESCE(mirror_source_id,0) <> 0 AND posted_at >= ?",
+            (channel_id, cutoff)).fetchone()
+        return int(row["n"] if row else 0)
+    finally:
+        con.close()
+
+
+def mirrored_post_counts(hours: int = 24) -> dict[int, int]:
+    """Posted mirror counts for *every* channel, in one query.
+
+    The dashboard needs this for a hub with thousands of creators, so it must
+    not become one query per channel (see :func:`mirrored_post_count` for the
+    single-channel version used on a creator page).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        window = max(1, int(hours))
+    except (TypeError, ValueError):
+        window = 24
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=window)
+    ).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT channel_id, COUNT(*) AS n FROM posts "
+            "WHERE status='posted' AND COALESCE(mirror_source_id,0) <> 0 "
+            "AND posted_at >= ? GROUP BY channel_id",
+            (cutoff,)).fetchall()
+        return {int(row["channel_id"]): int(row["n"]) for row in rows}
     finally:
         con.close()
 
@@ -2015,6 +2333,55 @@ def get_recent_post_count_for_identifier(platform: str, identifier: str, hours: 
         con.close()
 
 
+def skip_reasons(hours: int = 24, limit: int = 8) -> list[dict]:
+    """Why posts were skipped recently: ``[{status, count}]``, biggest first.
+
+    The duplicate guards report themselves here (``skipped``,
+    ``skipped:content_dedup_24h``, ``skipped:near_duplicate_12h``), so an
+    operator can see the "no duplicates" rule working instead of trusting it.
+    """
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(hours=max(1, int(hours)))).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT COALESCE(NULLIF(TRIM(error), ''), status) AS reason, "
+            "COUNT(*) AS n FROM posts "
+            "WHERE (status LIKE 'skipped%' OR status='skipped') "
+            "AND COALESCE(NULLIF(posted_at, ''), created_at, '') >= ? "
+            "GROUP BY reason ORDER BY n DESC LIMIT ?",
+            (cutoff, max(1, min(50, int(limit or 8)))),
+        ).fetchall()
+        return [{"status": str(row["reason"]), "count": int(row["n"])} for row in rows]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+
+
+def posts_with_fidelity_notes(hours: int = 24, limit: int = 10) -> list[dict]:
+    """Posts whose recorded note mentions text the hub changed or nearly lost."""
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(hours=max(1, int(hours)))).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT p.id AS id, i.name AS creator, c.identifier AS identifier, "
+            "COALESCE(p.note, '') AS note FROM posts p "
+            "LEFT JOIN influencers i ON i.id = p.influencer_id "
+            "LEFT JOIN channels c ON c.id = p.channel_id "
+            "WHERE COALESCE(p.note, '') <> '' "
+            "AND COALESCE(NULLIF(p.posted_at, ''), p.created_at, '') >= ? "
+            "ORDER BY p.id DESC LIMIT ?",
+            (cutoff, max(1, min(200, int(limit or 10)))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+
+
 def post_stats(influencer_id: Optional[int] = None) -> dict:
     con = _connect()
     try:
@@ -2056,6 +2423,125 @@ def latest_vm() -> Optional[dict]:
 
 
 # --------------------------- global settings ---------------------------
+
+# --------------------------------------------------------------------------
+# Audit log and sign-in throttling (access control lives in security.py)
+# --------------------------------------------------------------------------
+def record_audit(*, actor: str, role: str, action: str, target: str = "",
+                 detail: str = "", ip: str = "") -> int:
+    """Append one line of the who-did-what log."""
+    ensure_schema()
+    con = _connect()
+    try:
+        cur = con.execute(
+            "INSERT INTO team_audit (at, actor, role, action, target, detail, ip) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (_now(), str(actor or "")[:60], str(role or "")[:20], str(action or "")[:60],
+             str(target or "")[:120], str(detail or "")[:400], str(ip or "")[:60]),
+        )
+        con.commit()
+        return int(cur.lastrowid)
+    finally:
+        con.close()
+
+
+def list_audit(limit: int = 100, actor: str = "", action: str = "") -> list[dict]:
+    """Newest first; ``actor``/``action`` narrow it (e.g. one team member)."""
+    con = _connect()
+    try:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if str(actor or "").strip():
+            clauses.append("actor=?")
+            params.append(str(actor).strip())
+        if str(action or "").strip():
+            clauses.append("action=?")
+            params.append(str(action).strip())
+        sql = "SELECT * FROM team_audit"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(2000, int(limit or 100))))
+        return [dict(row) for row in con.execute(sql, params).fetchall()]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+
+
+def count_audit_since(action: str, *, actor: str = "", hours: int = 1) -> int:
+    """How many times ``action`` happened recently (the team's hourly quota)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat(
+        timespec="seconds")
+    con = _connect()
+    try:
+        clauses = ["action=?", "at >= ?"]
+        params: list[Any] = [str(action), cutoff]
+        if str(actor or "").strip():
+            clauses.append("actor=?")
+            params.append(str(actor).strip())
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM team_audit WHERE " + " AND ".join(clauses), params
+        ).fetchone()
+        return int(row["n"] if row else 0)
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        con.close()
+
+
+def note_login_attempt(scope: str, ip: str, ok: bool) -> None:
+    con = _connect()
+    try:
+        con.execute("INSERT INTO login_attempts (scope, ip, at, ok) VALUES (?,?,?,?)",
+                    (str(scope or "")[:20], str(ip or "")[:60], time.time(), 1 if ok else 0))
+        con.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        con.close()
+
+
+def count_login_failures(scope: str, ip: str, *, window_seconds: int = 900) -> int:
+    cutoff = time.time() - max(30, int(window_seconds))
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM login_attempts "
+            "WHERE scope=? AND ip=? AND ok=0 AND at >= ?",
+            (str(scope or "")[:20], str(ip or "")[:60], cutoff),
+        ).fetchone()
+        return int(row["n"] if row else 0)
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        con.close()
+
+
+def clear_login_failures(scope: str, ip: str) -> None:
+    con = _connect()
+    try:
+        con.execute("DELETE FROM login_attempts WHERE scope=? AND ip=?",
+                    (str(scope or "")[:20], str(ip or "")[:60]))
+        con.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        con.close()
+
+
+def prune_login_attempts(days: int = 7) -> int:
+    cutoff = time.time() - max(1, int(days)) * 86400
+    con = _connect()
+    try:
+        cur = con.execute("DELETE FROM login_attempts WHERE at < ?", (cutoff,))
+        con.commit()
+        return int(cur.rowcount or 0)
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        con.close()
+
 
 def get_global_setting(key: str, default: str = "") -> str:
     con = _connect()
@@ -2106,6 +2592,130 @@ def purge_old_posts_and_stats(days_to_keep: int = 14) -> int:
         return deleted
     finally:
         con.close()
+
+
+# --------------------------------------------------------------------------
+# Ops history: the daily snapshot, rankings and the raw audit log
+# --------------------------------------------------------------------------
+def record_ops_snapshot(day: str, *, captured_at: str = "", posted: int = 0,
+                        failed: int = 0, skipped: int = 0, mirrored: int = 0,
+                        attempts: int = 0, ready: int = 0, blocked: int = 0,
+                        setup_percent: int = 0, verdict: str = "unknown",
+                        notes: str = "") -> str:
+    """Write (or refresh) one day's numbers. Same day twice = latest wins."""
+    ensure_schema()
+    day = str(day or "")[:10]
+    if not day:
+        raise ValueError("day must be YYYY-MM-DD")
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO ops_snapshots (day, captured_at, posted, failed, skipped, "
+            "mirrored, attempts, ready, blocked, setup_percent, verdict, notes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(day) DO UPDATE SET captured_at=excluded.captured_at, "
+            "posted=excluded.posted, failed=excluded.failed, skipped=excluded.skipped, "
+            "mirrored=excluded.mirrored, attempts=excluded.attempts, "
+            "ready=excluded.ready, blocked=excluded.blocked, "
+            "setup_percent=excluded.setup_percent, verdict=excluded.verdict, "
+            "notes=excluded.notes",
+            (day, captured_at or _now(), int(posted), int(failed), int(skipped),
+             int(mirrored), int(attempts), int(ready), int(blocked),
+             int(setup_percent), str(verdict or "unknown"), str(notes or "")[:400]),
+        )
+        con.commit()
+        return day
+    finally:
+        con.close()
+
+
+def list_ops_snapshots(days: int = 30) -> list[dict]:
+    """The most recent snapshots, oldest first (so a chart reads left→right)."""
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT * FROM ops_snapshots ORDER BY day DESC LIMIT ?",
+            (max(1, min(400, int(days or 30))),),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+    return [dict(row) for row in reversed(rows)]
+
+
+def prune_ops_snapshots(keep_days: int = 400) -> int:
+    """Drop snapshots older than ``keep_days``; returns how many were removed."""
+    con = _connect()
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(7, int(keep_days)))).strftime("%Y-%m-%d")
+        cur = con.execute("DELETE FROM ops_snapshots WHERE day < ?", (cutoff,))
+        con.commit()
+        return int(cur.rowcount or 0)
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        con.close()
+
+
+def top_posting_creators(hours: int = 24, limit: int = 5) -> list[dict]:
+    """Who actually delivered in the window — the leaderboard for the digest."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT i.name AS name, COUNT(*) AS posted, "
+            "SUM(CASE WHEN COALESCE(p.mirror_source_id, 0) <> 0 THEN 1 ELSE 0 END) AS mirrored "
+            "FROM posts p JOIN influencers i ON i.id = p.influencer_id "
+            "WHERE p.status='posted' "
+            "AND COALESCE(NULLIF(p.posted_at, ''), p.created_at, '') >= ? "
+            "GROUP BY p.influencer_id ORDER BY posted DESC, i.name LIMIT ?",
+            (cutoff, max(1, min(50, int(limit or 5)))),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+    return [{"name": str(row["name"]), "posted": int(row["posted"] or 0),
+             "mirrored": int(row["mirrored"] or 0)} for row in rows]
+
+
+def list_recent_posts(hours: int = 24, limit: int = 2000) -> list[dict]:
+    """Every attempt in the window, newest first — the audit log behind the CSVs."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat(timespec="seconds")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT p.id AS id, p.created_at AS created_at, p.posted_at AS posted_at, "
+            "i.name AS creator, c.platform AS platform, c.identifier AS identifier, "
+            "p.status AS status, p.deal_sig AS deal_sig, p.error AS error, "
+            "COALESCE(p.note, '') AS note, "
+            "COALESCE(p.mirror_source_id, 0) AS mirror_source_id "
+            "FROM posts p LEFT JOIN influencers i ON i.id = p.influencer_id "
+            "LEFT JOIN channels c ON c.id = p.channel_id "
+            "WHERE COALESCE(NULLIF(p.posted_at, ''), p.created_at, '') >= ? "
+            "ORDER BY p.id DESC LIMIT ?",
+            (cutoff, max(1, min(20000, int(limit or 2000)))),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+    return [dict(row) for row in rows]
+
+
+def snapshot_table_exists() -> bool:
+    """True when the ops history table is present (used by the self-check)."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ops_snapshots'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        con.close()
+    return bool(row)
 
 
 def get_live_deal_insights() -> dict:

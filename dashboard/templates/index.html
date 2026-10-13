@@ -95,6 +95,355 @@
   </article>
 </section>
 
+{% if plan %}
+<section class="card command-center" style="margin-top:18px; border-color:#1e3a8a;" id="command-center"
+         data-live-src="{{ url_for('api_readiness') }}?live=1&limit={{ paging.page_size }}&offset={{ paging.offset }}&amp;q={{ query|urlencode }}&amp;state={{ state|urlencode }}">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div>
+      <h2>🚀 Setup command center</h2>
+      <p class="hint">Every creator, every step, and the one action that unblocks the most — read live from the database{% if plan.live_error %} · hub unreachable, showing saved state{% endif %}.</p>
+    </div>
+    <div class="command-headline">
+      <strong>{{ plan.summary.percent }}%</strong>
+      <span>setup complete<small data-live-updated>checked {{ plan.generated_at }}</small></span>
+    </div>
+  </div>
+
+  <div class="command-bar" role="img" aria-label="{{ plan.summary.percent }}% of setup steps complete">
+    <span style="width: {{ plan.summary.percent }}%"></span>
+  </div>
+
+  <div class="command-chips">
+    <span class="command-chip is-ok">👥 {{ plan.summary.ready }} ready to post</span>
+    <span class="command-chip {{ 'is-warn' if plan.summary.blocked else 'is-ok' }}">⚠️ {{ plan.summary.blocked }} still blocked</span>
+    <span class="command-chip is-info">🔁 {{ plan.summary.mirroring }} mirroring to WhatsApp</span>
+    <span class="command-chip {{ 'is-ok' if plan.globals.worker.done else 'is-warn' }}" data-live-worker>
+      {{ '🟢' if plan.globals.worker.done else '🔴' }} worker {{ 'running' if plan.globals.worker.done else 'not running' }}
+    </span>
+    <span class="command-chip {{ 'is-ok' if plan.globals.sources.done else 'is-warn' }}">📡 {{ 'sources active' if plan.globals.sources.done else 'no active source' }}</span>
+    {% if plan.summary.shared_tag %}
+      <span class="command-chip is-warn" data-live-chip="shared-tag">🏷️ {{ plan.summary.shared_tag }} still on the shared Amazon tag</span>
+    {% endif %}
+    {% if hub_age and hub_age.count %}
+      <span class="command-chip is-info" title="Oldest {{ hub_age.oldest }} · newest {{ hub_age.newest }}">
+        🕒 oldest {{ age_phrase(hub_age.oldest) }} · newest {{ age_phrase(hub_age.newest) }}
+      </span>
+    {% endif %}
+    {% if recent_creators and recent_creators.count %}
+      <span class="command-chip is-ok" title="{% for row in recent_creators.rows %}{{ row.name }} — {{ age_phrase(row.age) }}{% if row.added_by %} by {{ row.added_by }}{% endif %}&#10;{% endfor %}">
+        ➕ {{ recent_creators.count }} added in the last {{ recent_creators.window_days }} days
+      </span>
+    {% endif %}
+    {% if tag_fleet and tag_fleet.fallback %}
+      <a class="command-chip is-warn" href="{{ url_for('setup') }}#tag-proof"
+         title="{{ tag_fleet.fix }}">🏷️ {{ tag_fleet.fallback }} channel(s) held — no own Amazon tag</a>
+    {% elif tag_fleet and tag_fleet.channels %}
+      <a class="command-chip is-ok" href="{{ url_for('setup') }}#tag-proof">🏷️ every channel on its own Amazon tag</a>
+    {% endif %}
+    <a class="command-chip is-info" href="{{ url_for('guided_setup') }}">🧭 Guided setup — one creator in four steps</a>
+  </div>
+
+  {% if recent_creators and recent_creators.count %}
+    <p class="hint" style="margin-top:6px;">
+      Set up in the last {{ recent_creators.window_days }} days:
+      {% for row in recent_creators.rows %}<a class="text-link" href="{{ url_for('influencer_detail', inf_id=row.id) }}">{{ row.name }}</a> ({{ age_phrase(row.age) }}{% if row.added_by %}, by {{ row.added_by }}{% endif %}){{ ' · ' if not loop.last }}{% endfor %}{% if recent_creators.count > recent_creators.rows | length %} · and {{ recent_creators.count - recent_creators.rows | length }} more{% endif %}.
+    </p>
+  {% endif %}
+
+  {% if plan.warnings %}
+    <ul class="command-warnings">
+      {% for warning in plan.warnings[:4] %}
+        <li>⚠️ <a href="{{ warning.url }}">{{ warning.message }}</a></li>
+      {% endfor %}
+      {% if plan.warnings | length > 4 %}<li>… and {{ plan.warnings | length - 4 }} more.</li>{% endif %}
+    </ul>
+  {% endif %}
+
+  {% if plan.actions %}
+    <form method="get" action="{{ url_for('index') }}#command-center" class="command-filter" role="search">
+    <label class="sr-only" for="command-q">Search creators</label>
+    <input id="command-q" name="q" value="{{ query }}" placeholder="Search name, #id, tag or channel" />
+    <label class="sr-only" for="command-state">Filter by state</label>
+    <select id="command-state" name="state">
+      {% for value, label in [('', 'All creators'), ('blocked', '⚠️ Blocked'), ('ready', '✅ Ready to post'),
+                              ('mirroring', '🔁 Mirroring'), ('no_phone', '📵 Phone not linked'),
+                              ('no_whatsapp', '💬 No WhatsApp link'), ('shared_tag', '🏷️ Shared Amazon tag'),
+                              ('warning', '❗ With warnings'), ('paused', '⏸️ Paused')] %}
+        <option value="{{ value }}" {{ 'selected' if state == value else '' }}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn btn-secondary">Filter</button>
+    {% if query or state %}<a class="text-link" href="{{ url_for('index') }}#command-center">Clear</a>{% endif %}
+    <span class="command-count">
+      {% if query or state %}
+        {{ plan.matched }} of {{ plan.total }} creators match
+      {% else %}
+        {{ plan.total }} creator{{ '' if plan.total == 1 else 's' }} in this hub
+      {% endif %}
+      {% if plan.actions_total > plan.actions | length %}· {{ plan.actions_total }} step(s) waiting{% endif %}
+      {% if plan.warnings %}· {{ plan.warnings | length }} warning(s){% endif %}
+    </span>
+  </form>
+
+  <h3 class="command-subhead">🎯 Do this next ({{ plan.actions_total }})</h3>
+    <ol class="command-actions">
+      {% for action in plan.actions[:6] %}
+        <li class="command-action is-{{ action.state }}">
+          <div>
+            <strong>{{ action.creator }}</strong>
+            <span class="command-action-step">{{ action.label }}</span>
+            <p>{{ action.action }}</p>
+          </div>
+          {% if action.url %}<a class="btn btn-secondary" href="{{ action.url }}">Open →</a>{% endif %}
+        </li>
+      {% endfor %}
+    </ol>
+    {% if plan.actions | length > 6 %}<p class="hint">… and {{ plan.actions | length - 6 }} more creator step(s) below.</p>{% endif %}
+  {% else %}
+    <p class="routing-note">✅ Every creator is ready and the worker is running. Nothing needs a human right now.</p>
+  {% endif %}
+
+  <h3 class="command-subhead">👥 Creator readiness</h3>
+  <div class="command-table-wrap">
+    <table class="routing-table command-table">
+      <thead>
+        <tr>
+          <th>Creator</th><th>Set up</th><th>Own Amazon tag</th><th>Approval</th><th>Main</th>
+          <th>WhatsApp</th><th>Phone</th><th>Live</th><th>Mirror · 24h</th><th>Next action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for creator in plan.creators %}
+          {% set steps = {} %}
+          {% for step in creator.steps %}{% set _ = steps.update({step.id: step}) %}{% endfor %}
+          {% macro stepcell(step) %}
+            <td class="command-step is-{{ step.state }}" title="{{ step.detail }}">
+              {% if step.done %}✅{% elif step.state == 'blocked' %}⛔{% elif step.state == 'pending' %}·{% else %}➡️{% endif %}
+              <span class="command-step-text">{{ step.label if not step.done else (creator.channels.get(step.id) or 'on') }}</span>
+            </td>
+          {% endmacro %}
+          <tr class="{{ '' if creator.ready else 'is-warn' }}" data-creator-row="{{ creator.id }}">
+            <td>
+              <strong>{{ creator.name }}</strong>
+              <code>#{{ creator.id }}{% if not creator.active %} · paused{% endif %}</code>
+            </td>
+            <td class="command-step" title="{{ creator.setup_label or 'Set up date unknown' }}">
+              {{ creator.age or 'unknown' }}
+              {% if creator.created_date %}<br /><code>{{ creator.created_date }}</code>{% endif %}
+              {% if creator.added_by %}<br /><span class="routing-note">by {{ creator.added_by }}</span>{% endif %}
+            </td>
+            <td class="command-step is-{{ steps.tag.state }}" title="{{ steps.tag.detail }}">
+              {% if creator.tag_is_shared_default %}⚠️ <code>{{ creator.amazon_tag }}</code>
+              {% elif creator.own_tag %}✅ <code>{{ creator.amazon_tag }}</code>
+              {% else %}➡️ <span class="routing-note">needs own tag</span>{% endif %}
+            </td>
+            {{ stepcell(steps.approval) }}
+            {{ stepcell(steps.main) }}
+            {{ stepcell(steps.whatsapp) }}
+            <td class="command-step is-{{ steps.phone.state }}" data-live-cell="phone-{{ creator.id }}" title="{{ steps.phone.detail }}">
+              {% if steps.phone.done %}✅ linked{% elif creator.wa_status and creator.wa_status != 'not_paired' %}⛔ {{ creator.wa_status }}{% else %}➡️ not linked{% endif %}
+            </td>
+            <td class="command-step is-{{ steps.activate.state }}" data-live-cell="live-{{ creator.id }}" title="{{ steps.activate.detail }}">
+              {% if steps.activate.done %}🟢 live{% else %}· pending test{% endif %}
+            </td>
+            <td class="command-step {{ 'is-done' if creator.mirror_active else 'is-pending' }}" title="{{ steps.mirror.detail }}">
+              {% if creator.mirror_active %}🔁 active · {{ creator.mirrored_posts_24h }}{% else %}— off{% endif %}
+            </td>
+            <td>
+              {% if creator.next_step %}
+                {% if creator.next_step.url %}<a class="text-link" href="{{ creator.next_step.url }}">{{ creator.next_step.action or creator.next_step.label }} →</a>
+                {% else %}<span class="routing-note">{{ creator.next_step.action or creator.next_step.detail }}</span>{% endif %}
+              {% else %}<span class="command-ok">✅ nothing to do</span>{% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="10">No creators yet. <a class="text-link" href="{{ url_for('guided_setup') }}">Set up the first one with the guided flow →</a> or <a class="text-link" href="{{ url_for('easy_setup') }}">the one-line Easy Setup</a>.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if plan.matched > paging.page_size or paging.offset %}
+    <nav class="command-paging" aria-label="Creator list pages">
+      {% if paging.prev is not none %}
+        <a class="btn btn-secondary" href="{{ url_for('index', q=query or None, state=state or None, offset=paging.prev) }}#command-center">← Previous</a>
+      {% endif %}
+      <span class="hint">showing {{ paging.first_shown }}–{{ paging.last_shown }} of {{ plan.matched }}</span>
+      {% if paging.next is not none %}
+        <a class="btn btn-secondary" href="{{ url_for('index', q=query or None, state=state or None, offset=paging.next) }}#command-center">Next →</a>
+      {% endif %}
+    </nav>
+  {% endif %}
+  <p class="hint" style="margin-top:10px;">
+    This panel re-checks itself every 20 seconds (live WhatsApp state included) without reloading the page — only the
+    rows on screen are refreshed, so a hub with thousands of creators stays fast.
+    Machine-readable: <code>/api/readiness?live=1&amp;state=blocked&amp;limit=50</code> ·
+    one creator: <code>/api/readiness?inf_id=&lt;id&gt;</code>.
+  </p>
+</section>
+{% endif %}
+
+{% if report %}
+<section class="card selfcheck" id="self-check" style="margin-top:18px; border-color:{{ '#166534' if report.verdict == 'ready' else ('#7c2d12' if report.verdict == 'fail' else '#78350f') }};"
+         data-live-src="{{ url_for('api_self_check') }}?live=1">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div>
+      <h2>🧪 Self-check — does everything really work?</h2>
+      <p class="hint">Read-only checks on this VM: database, Telegram, dashboard, worker, sources, Amazon tag, central EarnKaro/HYPD, creators, mirror and the WhatsApp hub. No key or token is ever shown.</p>
+    </div>
+    <span class="selfcheck-verdict is-{{ report.verdict }}" data-live-verdict>
+      {% if report.verdict == 'ready' %}✅ READY{% elif report.verdict == 'fail' %}⛔ PROBLEMS{% else %}⚠️ ATTENTION{% endif %}
+    </span>
+  </div>
+
+  <div class="selfcheck-grid" data-live-checks>
+    {% for check in report.checks %}
+      <div class="selfcheck-item is-{{ check.state }}" data-check="{{ check.id }}" title="{{ check.detail }}{% if check.fix %} — fix: {{ check.fix }}{% endif %}">
+        <span class="selfcheck-mark">
+          {% if check.state == 'ok' %}✅{% elif check.state == 'warn' %}⚠️{% elif check.state == 'fail' %}⛔{% else %}·{% endif %}
+        </span>
+        <span class="selfcheck-body">
+          <strong>{{ check.label }}</strong>
+          <small>{{ check.detail }}</small>
+        </span>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if report.next %}
+    <h3 class="command-subhead">🔧 What to fix, in order</h3>
+    <ul class="selfcheck-fixes" data-live-fixes>
+      {% for check in report.next %}
+        <li class="is-{{ check.state }}">
+          <strong>{{ check.label }}:</strong> {{ check.detail }}
+          {% if check.fix %}<span class="routing-note">{{ check.fix }}</span>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="routing-note" data-live-fixes>✅ Nothing to fix — every check passed.</p>
+  {% endif %}
+  <p class="hint" style="margin-top:10px;">
+    Last full check: {{ report.generated_at }} · re-runs every 30 seconds (the WhatsApp hub ping stays on the read-only
+    <code>/api/self-check?live=1</code>) · one creator at a time: <code>/api/self-check?inf_id=&lt;id&gt;</code>.
+    VM runbook with the same checks: <code>VERIFICATION.md</code>.
+  </p>
+</section>
+{% endif %}
+
+{% if digest %}
+<section class="card ops-card" id="ops-digest" style="margin-top:18px; border-color:#0f766e;"
+         data-live-src="{{ url_for('api_digest') }}?hours=24">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div>
+      <h2>📈 Ops digest — last {{ digest.hours }}h</h2>
+      <p class="hint">The same card <code>python -m influencer_hub.cli digest --send</code> posts to the ops Telegram channel — with the two spreadsheets below for planning offline.</p>
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+      <a class="btn btn-secondary" href="{{ url_for('api_readiness_csv') }}">⬇️ Creator checklist (CSV)</a>
+      <a class="btn btn-secondary" href="{{ url_for('api_easy_setup_template') }}">⬇️ Bulk template (CSV)</a>
+      <a class="btn btn-secondary" href="{{ url_for('api_posts_csv') }}?hours=24">⬇️ Posts log (CSV)</a>
+      <a class="btn btn-secondary" href="{{ url_for('api_inventory_csv') }}">⬇️ Full inventory (CSV)</a>
+      <a class="text-link" href="{{ url_for('api_metrics') }}">metrics</a>
+    </div>
+  </div>
+
+  <div class="ops-grid">
+    <div class="ops-metric"><span>Delivered</span><strong data-live-ops="posted">{{ digest.posts.posted }}</strong><small data-live-ops-note="posted">delivery {{ digest.delivery_rate_pct if digest.delivery_rate_pct is not none else '—' }}% · {{ digest.posts.mirrored }} mirrored</small></div>
+    <div class="ops-metric"><span>Failed</span><strong class="{{ 'is-bad' if digest.posts.failed else '' }}" data-live-ops="failed">{{ digest.posts.failed }}</strong><small data-live-ops-note="failed">{{ digest.posts.skipped }} skipped · {{ digest.posts.attempts }} attempts</small></div>
+    <div class="ops-metric"><span>Retry queue</span><strong data-live-ops="retry">{{ digest.retry_queue }}</strong><small>deals parked for a conversion retry</small></div>
+    <div class="ops-metric"><span>Worker</span><strong data-live-ops="worker">{{ '🟢' if digest.worker.state in ['running', 'idle', 'polling', 'healthy'] else '🔴' }} {{ digest.worker.state }}</strong><small data-live-ops-note="worker">sources {{ digest.sources.active }}/{{ digest.sources.total }} active</small></div>
+    <div class="ops-metric"><span>Creators</span><strong data-live-ops="ready">{{ digest.creators.ready }} / {{ digest.creators.total }}</strong><small data-live-ops-note="ready">{{ digest.creators.blocked }} blocked · {{ digest.creators.mirroring }} mirroring</small></div>
+    <div class="ops-metric"><span>Setup</span><strong data-live-ops="percent">{{ digest.creators.setup_percent }}%</strong><small>of all setup steps done</small></div>
+  </div>
+
+  <p class="hint ops-trend" style="margin-top:10px;" data-live-ops="trend">
+    {% if digest.trend and digest.trend.captured_days %}
+      <span class="ops-spark">{{ digest.trend.sparkline or '·' }}</span>
+      last {{ digest.trend.captured_days }} day(s) of delivery{% if digest.trend.green_streak %} · 🟢 green {{ digest.trend.green_streak }} day(s) in a row{% elif digest.trend.delta_pct is not none %} · {{ '%+d'|format(digest.trend.delta_pct) }}% vs the previous day{% endif %}
+      <small>· history is one row per day: <code>python -m influencer_hub.cli snapshot</code></small>
+    {% else %}
+      No history yet — one cron line (<code>cli snapshot</code>) turns this into a trend.
+    {% endif %}
+  </p>
+
+  {% if digest.trend and digest.trend.points|length >= 2 %}
+  <div class="ops-chart" data-live-ops="chart" title="Delivery per day (oldest → today)">
+    {% for point in digest.trend.points %}
+      <span class="ops-bar {{ 'is-green' if point.verdict == 'ready' else ('is-warn' if point.verdict == 'attention' else 'is-bad') }}"
+            style="height: {{ [point.delivery_pct or 0, 6]|max }}%"
+            title="{{ point.day }} · {{ point.posted }} posted · {{ point.failed }} failed{% if point.delivery_pct is not none %} · {{ point.delivery_pct }}% delivered{% endif %}"></span>
+    {% endfor %}
+  </div>
+  <p class="hint ops-chart-key">{{ digest.trend.points[0].day }} → today · each bar is one day's delivered share (green = the self-check was ready that day).</p>
+  {% endif %}
+
+  <p class="hint" style="margin-top:6px;">
+    <span data-live-ops="blocker">
+      {% if digest.creators.biggest_blocker %}
+        Biggest blocker: <strong>{{ {'tag': 'their own Amazon tag', 'approval': 'the approval channel', 'main': 'the main channel', 'whatsapp': 'the WhatsApp channel', 'phone': 'phone pairing', 'activate': 'activation', 'mirror': 'WhatsApp mirroring'}.get(digest.creators.biggest_blocker['step'], digest.creators.biggest_blocker['step']) }}</strong>
+        — {{ digest.creators.biggest_blocker['count'] }} creator(s) are waiting on it{% if digest.creators.blocked_by_step.keys()|list|length > 1 %} ({{ digest.creators.blocked_by_step.keys()|list|length }} different steps in total){% endif %}.
+      {% else %}
+        Nobody is blocked — every creator is ready to post.
+      {% endif %}
+    </span>
+    {% if digest.creators.top %}
+      <br>Top creator in the window: <strong>{{ digest.creators.top[0].name }}</strong> ({{ digest.creators.top[0].posted }} posted{% if digest.creators.top[0].mirrored %} · {{ digest.creators.top[0].mirrored }} mirrored{% endif %}).
+    {% endif %}
+  </p>
+
+  <p class="hint" style="margin-top:10px;" data-live-ops="amazon">
+    {% if digest.amazon and digest.amazon.links %}
+      {% if digest.amazon.foreign_tag %}<strong class="is-bad">⛔ {{ digest.amazon.foreign_tag }} Amazon link(s) carried someone else's tag.</strong>
+      {% else %}✅ Amazon: {{ digest.amazon.own_tag }} link(s) in {{ digest.amazon.posts_with_amazon }} post(s) carry the creator's <strong>own tag</strong>{% if digest.amazon.short_links %} · {{ digest.amazon.short_links }} short code(s) resolved before sending{% endif %}.{% endif %}
+      <small>· read from the posts we really sent · <a class="text-link" href="{{ url_for('api_amazon_report') }}?hours=24">report</a></small>
+    {% else %}
+      Amazon: no Amazon deal in the last {{ digest.hours }}h — long links are retagged with each creator's own tag, and amzn.to/a.co short codes are resolved before sending.
+    {% endif %}
+  </p>
+
+  <details class="easy-advanced" id="amazon-preview">
+    <summary>Which Amazon links does a source post carry — and what would each creator post?</summary>
+    <p class="hint">Paste a source deal (or open it with <code>?text=…</code> in the URL) — read-only:
+      the hub names every Amazon link, whose tag is on it now, and what it will do with it.</p>
+    <textarea id="amazon-scan-text" rows="4" placeholder="boAt Airdrops ₹999&#10;Buy: https://www.amazon.in/dp/B09N3ZNHTY?tag=someoneelse-21&#10;Short: https://amzn.to/3xYzAbC"></textarea>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
+      <button type="button" class="btn btn-secondary" data-amazon-scan="creator">Check the first creator</button>
+      <button type="button" class="btn btn-secondary" data-amazon-scan="fleet">Check every creator (fleet)</button>
+    </div>
+    <pre class="ops-pre" data-live-ops="amazon-scan">Nothing scanned yet.</pre>
+  </details>
+
+  <p class="hint" style="margin-top:10px;{{ '' if digest.posts.top_failures else ' display:none;' }}" data-live-ops="failures">
+    Top failures: <span data-live-ops-note="failures">{% for failure in digest.posts.top_failures %}{{ failure.count }}× {{ failure.reason }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
+    — the reasons name the fix (credentials, permissions, pacing).
+  </p>
+
+  <details class="easy-advanced" id="ops-alert-preview">
+    <summary>What would the ops alert say right now?</summary>
+    <p class="hint">Read-only: this asks <code>/api/self-check?preview_alert=1</code>, which runs the same
+      policy without sending anything or moving the cooldown.</p>
+    <pre class="ops-pre" data-live-ops="alert-preview">Open this block while signed in to load the message…</pre>
+  </details>
+
+  <details class="easy-advanced">
+    <summary>Run it yourself, on the VM</summary>
+    <pre class="ops-pre">python -m influencer_hub.cli self-check --live        # same checks as the panel above
+python -m influencer_hub.cli self-check --alert       # posts to OPS_TELEGRAM_CHANNEL only when it got worse
+python -m influencer_hub.cli digest --send           # this card, to the ops channel (also stores today's history row)
+python -m influencer_hub.cli digest --json --hours 6 # any window, machine-readable
+python -m influencer_hub.cli snapshot --days 30      # store today + read the trend back
+python -m influencer_hub.cli backup --out /var/backups/hub --keep 14
+python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --fleet --check   # every creator, own tag
+python -m influencer_hub.cli restore /var/backups/hub/hub-20261011-0900.sqlite3   # asks first; --yes to do it
+
+curl -u admin:$DASHBOARD_ADMIN_PASSWORD /api/metrics   # Prometheus text for the VM's monitor</pre>
+    <p class="hint">Cron-friendly (each run is read-only apart from the optional ops post): use a systemd timer or crontab entry with
+      <code>PYTHONPATH=.</code> — the alert policy is in <code>influencer_hub/ops.py</code> and only speaks when the verdict
+      gets worse, when it is still broken after the cooldown, or once when it recovers.</p>
+  </details>
+</section>
+{% endif %}
+
 <section class="card" style="margin-top:18px;">
   <div class="setup-section-title" style="margin-top:0;">
     <div><h2>🧭 Routing summary</h2><p class="hint">Network settings live in Setup. Selected matching routes can operate together.</p></div>

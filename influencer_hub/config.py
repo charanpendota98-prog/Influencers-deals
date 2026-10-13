@@ -10,16 +10,30 @@ import os
 from pathlib import Path
 
 
-def _load_dotenv() -> None:
+def _dotenv_is_skipped() -> bool:
+    """``HUB_SKIP_DOTENV=1`` means "do not read .env at all".
+
+    Test and audit runs use it so a machine with a provisioned .env still runs
+    with plain code defaults: no real Telegram session, affiliate key,
+    shortener token or bot credential is ever touched.
+    """
+    return os.getenv("HUB_SKIP_DOTENV", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_dotenv(path: "Path | None" = None) -> dict[str, str]:
     """Minimal .env loader (no python-dotenv dependency).
 
     Reads <repo>/.env so `python -m influencer_hub.cli` and the dashboard pick
-    up secrets without manual `export`. Already-set env vars win. Kept out of
-    git via .gitignore.
+    up secrets without manual `export`. Already-set env vars win, and
+    ``HUB_SKIP_DOTENV=1`` skips the file entirely. Kept out of git via
+    .gitignore. Returns the values it actually applied.
     """
-    p = Path(__file__).resolve().parent.parent / ".env"
+    if _dotenv_is_skipped():
+        return {}
+    p = path or Path(__file__).resolve().parent.parent / ".env"
     if not p.exists():
-        return
+        return {}
+    applied: dict[str, str] = {}
     for line in p.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -28,6 +42,8 @@ def _load_dotenv() -> None:
         key, val = key.strip(), val.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = val
+            applied[key] = val
+    return applied
 
 
 _load_dotenv()
@@ -69,6 +85,32 @@ DB_PATH = Path(_env("HUB_DB_PATH", str(BASE_DIR / "influencer_hub" / "hub.sqlite
 # supplied tag whenever one is available.
 AMAZON_ASSOCIATE_TAG = _env("AMAZON_ASSOCIATE_TAG", "mama086-21")
 DEFAULT_AMAZON_TAG = AMAZON_ASSOCIATE_TAG
+# The owner's rule: "akkada tag lo em tag isthe, valla channel aa channels loney
+# valla tag tho links cheyali" — Amazon links on a creator's channels are signed
+# with that creator's own Associate id. When a creator or channel has none (the
+# hub-wide tag would be used instead), the Amazon deal is held and reported
+# instead of paying the wrong account. Set REQUIRE_OWN_AMAZON_TAG=off only to run
+# one deliberately shared account for everybody.
+REQUIRE_OWN_AMAZON_TAG = _bool("REQUIRE_OWN_AMAZON_TAG", True)
+
+# ----- Deal sources -----
+# The source channel the owner named ("em select cheyakapothe defaults gaa
+# https://t.me/LootZoneIndia11"): when a creator (or a channel) is saved without
+# a source selection, this is the source their posts come from instead of
+# "every source in the hub". Configurable, and overridable per creator/channel
+# with the source picker on the creator page and in the guided wizard.
+DEFAULT_SOURCE_SPEC = _env("DEFAULT_SOURCE_SPEC", "https://t.me/LootZoneIndia11")
+DEFAULT_SOURCE_NAME = _env("DEFAULT_SOURCE_NAME", "LootZoneIndia11")
+
+# ----- Category filter -----
+# A creator can be narrowed to chosen categories ("this one posts electronics").
+# The filter is keyword based, so a real deal can use words it does not know —
+# "🔥 BOAT AIRDOPES at ₹1299" matches no electronics keyword at all. Dropping it
+# would be a lost sale caused by our vocabulary, so by default a deal the hub
+# cannot place anywhere passes the filter; only a deal it is sure belongs to a
+# *different* category is dropped. Set CATEGORY_FILTER_STRICT_UNKNOWN=on to drop
+# unrecognised deals as well (the old behaviour, for a strictly curated feed).
+CATEGORY_FILTER_STRICT_UNKNOWN = _bool("CATEGORY_FILTER_STRICT_UNKNOWN", False)
 AMAZON_CREATORS_API_CLIENT_ID = _env(
     "AMAZON_CREATORS_API_CLIENT_ID",
     "amzn1.application-oa2-client.83229d9d14664351be9fc2059038a4f2",
@@ -140,6 +182,14 @@ ONLY_EARNING_DEALS = _bool("ONLY_EARNING_DEALS", False)
 # this cycle instead of spending a post — the worker re-reads the source post,
 # so it goes out as soon as EarnKaro converts it. Set to 1 to post anyway.
 ALLOW_UNCONVERTED_POSTS = _bool("ALLOW_UNCONVERTED_POSTS", False)
+# Mirror a creator's Telegram main-channel posts into that creator's WhatsApp
+# destinations (Channel/group). The main channel has already decided the deal is
+# worth posting, so the WhatsApp side receives the same offer — rendered for
+# WhatsApp and signed with the creator's own Amazon tag. Every affiliate switch,
+# commission guard, dedup and rate limit still runs, so a mirror can never
+# publish an unverified link. Per-channel 'mirror_whatsapp' (1/0) overrides this
+# default, and the dashboard's Mirror switch writes that value.
+MIRROR_MAIN_TO_WHATSAPP = _bool("MIRROR_MAIN_TO_WHATSAPP", True)
 
 # ----- EarnKaro (optional configured network for eligible non-Amazon links) -----
 EARNKARO_API_KEY = _env("EARNKARO_API_KEY")
@@ -157,6 +207,35 @@ DUMMY_SOURCES = [s for s in _env("DUMMY_SOURCES", "").split(",") if s]
 # ----- WhatsApp hub (Node/Baileys multi-session service) -----
 WA_HUB_URL = _env("WA_HUB_URL", "http://127.0.0.1:8088")
 WA_HUB_TOKEN = _env("WA_HUB_TOKEN", "")  # required by the hub in production
+
+
+# ----- Ports (used by the deploy preflight and the health checks) -----
+def _port_from_url(url: str, fallback: int) -> int:
+    """The port inside a URL, so the preflight checks the port that is really used."""
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url if "//" in url else f"//{url}")
+        return int(parsed.port or fallback)
+    except (TypeError, ValueError):
+        return fallback
+
+
+DASHBOARD_PORT = _int("DASHBOARD_PORT", 5000)
+WA_HUB_PORT = _int("WA_HUB_PORT", _port_from_url(WA_HUB_URL, 8088))
+
+
+# ----- WhatsApp send pacing (anti-ban) -----
+# "60-80 seconds random gaps tho okaynaa" — consecutive sends on one session are
+# separated by a random gap inside this window, plus a longer rest at the hourly
+# boundary. Every send on a session shares the same durable slot (SQLite), so the
+# gap holds across the worker, the dashboard and restarts. These defaults are
+# deliberately conservative; they reduce send frequency but cannot guarantee that
+# an unofficial WhatsApp integration is never limited by the platform.
+WA_SEND_GAP_MIN = _int("WA_SEND_GAP_MIN", 60)      # seconds, inclusive
+WA_SEND_GAP_MAX = _int("WA_SEND_GAP_MAX", 80)      # seconds, inclusive
+WA_HOURLY_REST_MIN = _int("WA_HOURLY_REST_MIN", 120)
+WA_HOURLY_REST_MAX = _int("WA_HOURLY_REST_MAX", 150)
 
 # ----- Ops / monitoring -----
 # Telegram channel (username or id) where VM/bot health is reported.
@@ -208,6 +287,17 @@ DASHBOARD_SECRET_KEY_FILE = Path(
 # The window is idle-based: every confirmed change renews it, so an active
 # operator is never interrupted, while an idle dashboard locks itself again.
 DASHBOARD_SETUP_UNLOCK_SECONDS = _int("DASHBOARD_SETUP_UNLOCK_SECONDS", 1800)
+# ----- Team access (add-only) and admin two-factor -----
+# Team members sign in on /team with THIS password (never the admin one) and can
+# only add creators and look at what they added. Leave it blank to keep the hub
+# single-operator.
+DASHBOARD_TEAM_PASSWORD = _env("DASHBOARD_TEAM_PASSWORD")
+# When set, the admin sign-in also asks for the six-digit code from an
+# authenticator app (RFC 6238). Generate one with `cli totp --new`.
+ADMIN_TOTP_SECRET = _env("ADMIN_TOTP_SECRET")
+# How many creators one team member may add per hour (a typo loop should not
+# fill the hub; the admin is never limited).
+TEAM_ADDS_PER_HOUR = _int("TEAM_ADDS_PER_HOUR", 120)
 # Bind the unlock to the IP that confirmed it, so a stolen cookie cannot be
 # replayed from another machine. Disable only behind a fixed-IP tunnel.
 DASHBOARD_SETUP_UNLOCK_BIND_IP = _bool("DASHBOARD_SETUP_UNLOCK_BIND_IP", True)

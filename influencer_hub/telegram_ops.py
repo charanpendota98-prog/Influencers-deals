@@ -44,6 +44,83 @@ def _session_base_path() -> Path:
     return configured
 
 
+def session_ready() -> bool:
+    """True when an authorized Telethon session file exists on this box.
+
+    A pure filesystem check (no network): the dashboard uses it to decide
+    whether asking Telegram for a channel's real name is even possible. On a
+    fresh box with no session yet, that is a no instead of a timeout.
+    """
+    base = _session_base_path()
+    try:
+        return base.is_file() and base.stat().st_size > 0
+    except OSError:  # pragma: no cover - unreadable session path
+        return False
+
+
+async def inspect_channel(identifier: str, timeout: float = 8.0) -> dict:
+    """Read-only peek at a Telegram destination: real name, and can we post?
+
+    Returns ``{ok, title, username, chat_id, kind, can_post, is_admin, error}``.
+
+    * Never joins, never posts, never writes anything — only ``get_entity`` and
+      ``get_permissions``, so a typo cannot leave us inside a stranger's group;
+    * never raises: an unreachable network, a private invite we are not in, or a
+      missing session all come back as ``ok=False`` with the reason, because the
+      caller still wants to save what the operator pasted;
+    * ``can_post`` answers the operator's real question for a destination they
+      are adding ("am I actually an admin here?") with what Telegram itself
+      reports, instead of us guessing from the link shape.
+    """
+    wanted = str(identifier or "").strip()
+    if not wanted:
+        return {"ok": False, "error": "no channel given"}
+
+    async def _look() -> dict:
+        from telethon.tl.types import Channel as TgChannel, Chat as TgChat, User as TgUser
+
+        client = _client()
+        if not client.is_connected():
+            await client.connect()
+        entity = await client.get_entity(
+            int(wanted) if wanted.lstrip("-").isdigit() else wanted
+        )
+        title = str(getattr(entity, "title", "") or "").strip()
+        username = str(getattr(entity, "username", "") or "").strip()
+        if isinstance(entity, TgUser):
+            title = title or " ".join(
+                part for part in (getattr(entity, "first_name", ""),
+                                  getattr(entity, "last_name", "")) if part
+            ).strip()
+            kind = "user"
+        elif isinstance(entity, TgChannel):
+            kind = "channel" if getattr(entity, "broadcast", False) else "supergroup"
+        else:
+            kind = "group" if isinstance(entity, TgChat) else "unknown"
+        can_post: bool | None = None
+        is_admin: bool | None = None
+        try:
+            permissions = await client.get_permissions(entity)
+            is_admin = bool(getattr(permissions, "is_admin", False)
+                            or getattr(permissions, "is_creator", False))
+            can_post = bool(getattr(permissions, "post_messages", False)
+                            or getattr(permissions, "send_messages", False))
+        except Exception as exc:  # permissions are advisory, never fatal
+            print(f"Telegram permissions check failed for {wanted}: {exc}")
+        return {
+            "ok": True, "title": title, "username": username,
+            "chat_id": str(getattr(entity, "id", "") or ""), "kind": kind,
+            "is_admin": is_admin, "can_post": can_post, "error": "",
+        }
+
+    try:
+        return await asyncio.wait_for(_look(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": f"Telegram did not answer within {timeout:.0f}s"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200]}
+
+
 def _isolated_slot(loop: asyncio.AbstractEventLoop) -> str:
     global _SLOT_COUNTER
     with _CLIENTS_LOCK:

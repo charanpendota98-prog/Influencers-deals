@@ -1,0 +1,36 @@
+{% extends "layout.html" %}
+{% block title %}Team Sign In · Influencer Hub{% endblock %}
+{% block content %}
+<section class="auth-shell" aria-labelledby="team-login-title">
+  <div class="auth-card">
+    <div class="auth-mark" aria-hidden="true">👥</div>
+    <p class="eyebrow">TEAM ACCESS · ADD CREATORS</p>
+    <h1 id="team-login-title">Add creators for the hub</h1>
+    <p class="auth-copy">
+      Sign in with your own name and the team password. You can add creators and
+      see the ones you added. Editing anything that is already saved needs the
+      owner's admin sign-in — this page cannot do it.
+    </p>
+    {% if not team_configured %}
+      <div class="alert alert-error" role="alert">{{ login_error }}</div>
+    {% else %}
+      {% if login_error %}<div class="alert alert-error" role="alert">{{ login_error }}</div>{% endif %}
+      <form method="post" action="{{ url_for('team_login') }}" class="auth-form">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+        <input type="hidden" name="next" value="{{ next_url or '' }}" />
+        <label for="member-name">Your name</label>
+        <input id="member-name" type="text" name="name" required autofocus
+               autocomplete="name" maxlength="40" placeholder="e.g. Ravi" />
+        <label for="team-password">Team password</label>
+        <input id="team-password" type="password" name="password" required
+               autocomplete="current-password" />
+        <button type="submit" class="button-primary">Enter the team dashboard</button>
+      </form>
+      <p class="auth-footnote">
+        Every creator you add is stamped with your name, so the owner sees who
+        added what. Five wrong passwords block this IP for 15 minutes.
+      </p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

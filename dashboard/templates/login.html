@@ -15,9 +15,20 @@
       <input type="hidden" name="next" value="{{ next_url or '' }}" />
       <label for="password">Admin password</label>
       <input id="password" type="password" name="password" required autofocus autocomplete="current-password" />
+      {% if totp_required %}
+        <label for="totp">Six-digit code</label>
+        <input id="totp" type="text" name="totp" required inputmode="numeric" pattern="[0-9 ]{6,8}"
+               autocomplete="one-time-code" maxlength="8" placeholder="123 456" />
+        <p class="auth-copy" style="margin-top:-4px;">From your authenticator app. Codes change every 30 seconds.</p>
+      {% endif %}
       <button type="submit" class="button-primary">Sign in securely</button>
     </form>
-    <p class="auth-footnote">Protected with a server-side session, CSRF checks, and secure cookie settings.</p>
+    <p class="auth-footnote">Protected with a server-side session, CSRF checks, and secure cookie settings.
+      {% if totp_required %}Two-factor sign-in is on for this hub.{% endif %}</p>
+    {% if team_access_configured %}
+      <p class="auth-footnote">Team members add creators on their own page:
+        <a class="text-link" href="{{ url_for('team_login') }}">team sign-in</a>.</p>
+    {% endif %}
   </div>
 </section>
 {% endblock %}

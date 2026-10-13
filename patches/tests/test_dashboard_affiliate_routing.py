@@ -561,6 +561,9 @@ def test_influencer_detail_renders_network_status_and_static_preview(
     monkeypatch.setattr(
         dashboard_module.whatsapp_client, "session_status", lambda _key: None
     )
+    monkeypatch.setattr(
+        dashboard_module.whatsapp_client, "pairing_state", lambda _key: None
+    )
     monkeypatch.setattr(dashboard_module, "_run", lambda _coro: {"status": "offline"})
 
     response = dashboard_client.get(f"/influencer/{influencer_id}")

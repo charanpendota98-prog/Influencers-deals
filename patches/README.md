@@ -1,230 +1,1349 @@
-# `patches/` — verified, replayable fixes
+# Influencer Hub — multi-tenant affiliate/loot deals system
 
-The first five patches reproduce the earlier release on its historical base.
-`private-source-fallback.patch` is the source-visibility follow-up for the
-current `c6fa901` release, and `link-conversion-fixes.patch` (diffed against that
-state, so apply it **second**) carries the link-conversion audit fixes and the
-conversion retry queue. Each applier validates its own patch before writing.
+> **Telugu (summary):** Bestgaa loot bot meeda okka **influencer layer** add
+> chesaamu. Prathi influencer ki separate **Telegram channel** (mana bot account
+> tho create cheyyam) + **WhatsApp** (vaala number QR tho pair — group feed +
+> official Channel). Strategy: Amazon links use each influencer's saved tag;
+> other merchant links follow that profile's enabled, configured affiliate
+> networks. One shared deal pool serves all profiles. Dashboard features include
+> influencer setup, QR display, stats, and VM health. Commission attribution is
+> controlled by the affiliate networks and is not guaranteed by this app.
 
-| # | path | use it when |
-| --- | --- | --- |
-| 1 | `patches/*.patch` | replaying the earlier release, then applying the source-fallback patch |
-| 2 | `patches/apply-*.py` | a VM that already has part of the work (exact-match appliers) |
-| 3 | `patches/tests/` | the verified test files and DB-isolating conftest `--with-tests` installs |
-| 4 | `patches/HANDOFF.md` | a byte-identical copy of the root handoff, so the bundle is self-contained (guarded by `tests/test_patch_bundle.py`) |
+This repo extends your existing `bestgaa` loot-deals bot with an **influencer
+scheme**: you recruit influencers, configure per-profile Telegram and WhatsApp
+destinations, and apply each profile's enabled affiliate-routing settings:
 
-## 1. Earlier release patches + the current source fix
+| Link type | Routing behavior |
+|-----------|------------------|
+| Amazon ON | Amazon links are posted with the influencer's saved tag or channel override. |
+| EarnKaro ON | Supported non-Amazon merchant URLs other than Meesho are sent to the configured EarnKaro account when credentials and merchant support are available. Amazon is routed separately through its Associates tag. |
+| HYPD ON | HYPD is reserved for Meesho. Existing valid HYPD affiliate links can be retagged to the configured store ID; raw Meesho URLs stay unchanged until HYPD's official generator is configured. |
+| Only Amazon | Explicit exclusive mode: suppress non-Amazon affiliate categories, regardless of the other toggles. |
 
-On a clean historical `0bf913f` checkout, replay the original five patches in
-order, then apply the new source fix:
+Amazon, EarnKaro, and HYPD switches are independent, and selected networks can route together: Amazon uses its Associates tag, EarnKaro handles supported merchants except Meesho, and HYPD is reserved for Meesho. Profile and channel settings combine; `only_amazon` is the exclusive override. The override does not clear saved switches, so turning it off restores their selected behavior. These controls determine routing, not external approval, successful conversion, or commission attribution.
+
+---
+
+## Per-Influencer Destinations (Approval Preview + Broadcast + WhatsApp)
+
+Each profile can use an Amazon-only Telegram preview, a broadcast Telegram channel, and WhatsApp destinations. Onboarding attempts to create the two Telegram channels and starts a WhatsApp QR session when those platforms are enabled; pair WhatsApp, then connect or create its group/channel from the profile page.
+
+| Channel | Platform | Content & Link Strategy | Purpose |
+|---|---|---|---|
+| **Channel 1: Amazon Approval Channel** | Telegram | Amazon URLs use the influencer's saved tag and stay native (not shortened), with `#ad (paid link)` disclosure. Non-Amazon affiliate links are removed. | Approval-oriented preview only; Amazon review outcomes are not guaranteed. |
+| **Channel 2: Real / Broadcast Channel** | Telegram | Amazon, EarnKaro, and HYPD links follow their independent selected toggles; the explicit Only Amazon mode suppresses non-Amazon affiliate links. | Per-profile and per-channel routing controls. |
+| **Channel 3: WhatsApp Feed** | WhatsApp | Same independent network routing as its profile/channel settings; the explicit Only Amazon mode remains exclusive. | Per-profile and per-channel routing controls. |
+
+### Main channel → WhatsApp mirror ("main lo vachinavi WhatsApp lo raval")
+
+A deal that really went out on a creator's ready **main Telegram channel** is
+also delivered to that creator's ready **WhatsApp destinations** (Channel or
+group). The mirror is one click in Easy Setup and one switch in the Setup
+Center (global) or per main channel (`Mirror: inherit / ON / OFF`).
+
+The copy is not a second-class renderer. It runs the **same** delivery path as
+a direct post — the same WhatsApp rendering, the creator's **own** Amazon tag
+(channel override → creator tag → configured fallback, never another creator's
+tag), the same earned-link checks (`commission guard`), the same dedup layers
+(signature, physical identifier, 24h content hash, 12h near-duplicate), the
+same 20/hour + 5/10min rate limits and the same random 60–80s WhatsApp safety pacing (`WA_SEND_GAP_MIN`/`WA_SEND_GAP_MAX`).
+A mirrored post is stored with its source channel, so
+`pipeline.mirror_plan()` (and the creator page) can state exactly which main
+channel feeds which WhatsApp destination and how many posts were mirrored in
+the last 24h.
+
+The only thing the mirror does not re-apply is the *display* filtering the main
+channel already decided — source label, posting window, category, price and
+quality tier. The WhatsApp destination keeps its **own affiliate policy**: an
+Amazon-only destination still refuses a non-Amazon deal instead of publishing a
+link that earns nothing, and `strip_amazon` is respected. Mirroring never
+happens from a channel that did not actually post the deal, never double-posts
+a deal a destination already received, and is off entirely until that creator
+has a **ready** WhatsApp destination (paired phone + one successful test post).
+
+### Native engagement polls (manual + no-repeat)
+The influencer detail page includes an explicit poll composer for native Telegram
+polls and WhatsApp **groups**. Questions and answer options are validated,
+Telegram/WhatsApp supports single- or multiple-answer voting, and selected
+ready destinations are sent once. WhatsApp newsletters/Channels are excluded:
+poll delivery is not verified in the pinned unofficial Baileys integration.
+
+Poll questions are recorded in a global SQLite history. Case, punctuation, and
+spacing variants—and high-confidence near-duplicate long questions—are blocked
+across profiles and platforms, even if a profile or channel is later removed.
+The dashboard queues sends durably and the background worker drains one poll
+destination per cycle, so conservative WhatsApp pacing cannot hold an admin web
+request open. Destinations are reserved before network I/O; failures or uncertain
+sends are recorded and are not blindly retried because a timeout may occur after
+a platform accepted the poll. Poll creation is manual and requires fresh
+password confirmation; no AI prompt generator or automatic poll
+schedule runs in the background.
+
+### Pairing a creator's phone: QR or login code
+
+1. Open the creator page → **💬 Dedicated WhatsApp Account & Channel Linker**.
+2. **QR path:** click *Generate Live QR Code* and scan it on the influencer's
+   phone (WhatsApp → Linked devices).
+3. **Code path (no camera):** type the full international number
+   (`919876543210`, country code included) and click *🔢 Get Login Code*. The
+   dashboard shows the live 8-character code; on the phone open
+   *Linked devices → Link with phone number* and type it. Status and code are
+   polled read-only — the browser never creates a session or sends a message.
+4. **Pick the channel by name.** Once the phone is connected the card fetches
+   the chats where that number is **admin or owner** and lists them under
+   *⭐ Channels / Groups where +<number> is ADMIN* — name, kind and size
+   (`Ravi Loot Deals · channel · owner · 4.2k`). Tick *Mirror main-channel
+   posts here* if the WhatsApp destination should also receive everything the
+   main Telegram channel posts. Pasting a
+   `https://whatsapp.com/channel/…` link or a group invite still works, and is
+   what you use for a destination the account is not an admin of yet; every
+   other chat the account can see stays in the collapsed *see all chats* list.
+5. Press **Test** once. Only a successful visible test activates the
+   destination (the saved name is kept either way); after that, deals post
+   there — including mirrored main-channel deals. The stored name is editable
+   in the channel row on the creator page.
+6. **Rehearse it first, without a phone.** `python3 tools/demo_wa_hub.py`
+   answers the dashboard with a pretend paired number and three channels it is
+   admin of, so the whole click-through (status → pick by name → test → a deal
+   landing in it) can be exercised against a scratch database without logging
+   in a real WhatsApp account. See `tools/DEMO_WHATSAPP.md`.
+
+### 🅱️ Telegram gets the same smart handling
+
+A Telegram destination is now treated like the WhatsApp one: you paste whatever
+you were given (`@ravi_loots`, `https://t.me/ravi_loots`, `-1001234567890`) and
+the hub **asks Telegram for the truth — read-only** (`get_entity` +
+`get_permissions`; it never joins a group, never posts, never writes anything):
+
+* the destination's **real name** is saved on the channel, so the creator page,
+  the channel rows and the lists show `Ravi Loot Deals` instead of a JID;
+* the hub also reports whether the account it would post with is **allowed to
+  post there**. If not, the destination is still saved — an approval/preview
+  channel where we only read is perfectly valid — with a warning that says
+  exactly that instead of leaving you to discover it on delivery day;
+* on a box with **no Telegram session yet**, nothing changes: what you pasted is
+  saved exactly as pasted, and nothing waits on the network. The same is true if
+  Telegram cannot be reached or the channel is private and unjoined.
+
+This happens on the creator page, in the guided wizard's channel step and in the
+one-screen **Add Influencer** form (where a channel we cannot post to is flashed as
+a warning). Channels saved **before** this existed can be named in one read-only
+pass:
 
 ```bash
-cd ~/Influencers-deals
-git apply patches/commission-leaks.patch
-git apply patches/password-policy.patch
-git apply patches/tests.patch
-git apply patches/deal-flow.patch
-git apply patches/docs.patch
-git apply patches/private-source-fallback.patch
-git apply patches/link-conversion-fixes.patch
-python3 patches/apply-private-source-fallback.py --with-tests
-python3 patches/apply-link-conversion-fixes.py --with-tests
-python3 -m pytest -q                         # 380 passed on this revision
+python -m influencer_hub.cli channel-names            # what it would name, and who can post
+python -m influencer_hub.cli channel-names --apply     # save the names it found
+python -m influencer_hub.cli channel-names --id 62 --all --json
 ```
 
-On a VM already at the merged `c6fa901` release, only the two appliers are
-needed, in this order: `apply-private-source-fallback.py` then
-`apply-link-conversion-fixes.py`. Each one validates its exact patch first and
-writes nothing on mismatch; the second one tells you if the first is missing.
+### ✅ Proving it works: the self-check panel
 
-| patch | lines | covers |
-| --- | --- | --- |
-| `commission-leaks.patch` | 681 | `influencer_hub/` — the three leaks **plus** the account model |
-| `password-policy.patch` | 666 | `dashboard/` — password only for removals + the who-earns table |
-| `tests.patch` | 1524 | `tests/` — every changed and new test file, at this revision |
-| `deal-flow.patch` | 474 | `influencer_hub/` + `dashboard/` — per-source deal flow, `/api/flow`, the Easy Setup card |
-| `docs.patch` | 217 | `HANDOFF.md` — the historical handoff at the previous release |
-| `private-source-fallback.patch` | follow-up | named private-invite fallback, diagnostics and current handoff updates |
-| `link-conversion-fixes.patch` | follow-up 2 | Amazon wrapper coverage + verified compact branded `/a/` links, conversion retry queue, approval dedup, strict guard/Money-Radar proof, flow-board/docs |
+The dashboard's **🧪 Self-check** card (and the read-only
+`GET /api/self-check?live=1`, per creator `?inf_id=<id>`) answers one question
+plainly: *does everything really work right now?* Ten checks — database &
+schema, Telegram session, dashboard access, worker heartbeat, deal sources,
+Amazon attribution (including "nobody is still on the shared tag"), central
+EarnKaro/HYPD accounts, creator readiness, the main → WhatsApp mirror, and a
+live ping to the WhatsApp hub — each with a ✅ / ⚠️ / ⛔ state and, when
+something is off, the exact command or screen that fixes it. It is read-only and
+prints booleans, counts and short messages only: never a key, token or session
+string. The panel re-runs itself every 30 seconds.
 
-The first five patch files are the historical replay path (`0bf913f` to the
-merged pre-fallback release). The source-fallback patch is based on that merged
-release (`c6fa901`); the conversion patch is based on the source-fallback state
-and must be applied after it. The live repo's guard tests verify that every
-patch exists, that every applier reports the branch as patched, and that every
-copied test stays byte-identical.
+The same checks, in VM order, live in **[VERIFICATION.md](VERIFICATION.md)** —
+the copy-paste runbook (blanked-credential test run, schema, stack, per-creator
+proof, worker start, and what each red check means).
 
-## 2. Appliers
+### 👥 Two sign-ins: the team adds, the owner edits
+
+The hub has two doors, and the second one is deliberately narrow.
+
+| | Admin (you) | Team member |
+|---|---|---|
+| Sign in at | `/login` — admin password **+ 6-digit code** | `/team/login` — their name + **team password** |
+| Can do | everything: edit profiles, channels, money switches, vault, deletes | **add** creators and read the ones they added |
+| Cannot | — | open `/`, `/setup`, `/money`, every admin API, edit, delete, change settings |
 
 ```bash
-python3 patches/apply-private-source-fallback.py --check
-python3 patches/apply-private-source-fallback.py --dry-run
-python3 patches/apply-private-source-fallback.py --with-tests
-python3 patches/apply-link-conversion-fixes.py --check
-python3 patches/apply-link-conversion-fixes.py --dry-run
-python3 patches/apply-link-conversion-fixes.py --with-tests
-python3 -m influencer_hub.cli doctor --telegram-sources --short-links
-python3 -m pytest -q                          # 380 passed
-sudo systemctl restart influencer-deal-worker influencer-dashboard
-systemctl is-active influencer-deal-worker influencer-dashboard
-curl -s localhost:5000/api/flow | head -c 400
+# .env on the server
+DASHBOARD_TEAM_PASSWORD=<a long password you give only to the team>
+ADMIN_TOTP_SECRET=<printed by the command below>      # optional but recommended
+TEAM_ADDS_PER_HOUR=120                                 # per member; the admin is unlimited
 ```
 
-### Compact branded links after applying the bundle
+```bash
+# switch on two-factor for the admin sign-in (30 seconds, stdlib only)
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp --new    # prints secret + otpauth URL
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp --check 123456   # verify before you rely on it
+```
 
-The code is ready by default, but a public short URL requires a domain you own.
-Point one HTTPS hostname at the dashboard's reverse proxy and add this only to
-the VM's private `.env` (never commit it):
+What makes the boundary real rather than cosmetic:
+
+* **Refused, not hidden.** The team's session is checked *before any view runs*:
+  every endpoint outside the team page is refused — a bookmarked admin URL, a
+  hand-crafted form post and an API call all fail. Attempts are recorded as
+  `team_blocked_route`.
+* **Add is add.** A name that already exists is reported back ("already in the
+  hub — ask the owner"), never silently updated, so the team cannot edit through
+  the add form.
+* **Named, stamped, audited.** Team members type their own name at sign-in; every
+  creator they add is stamped with it (`added_by`) and every add/change is written
+  to the audit log with actor, role, action, target and IP. `/setup` has a
+  **👥 Team access & audit** card showing the team link, who added what, an
+  hourly-limit status and the last 40 log lines.
+* **Hard limits.** Five wrong passwords block that IP for 15 minutes — counted in
+  the database, so a restart is not a fresh budget. Each member may add
+  `TEAM_ADDS_PER_HOUR` creators per hour; the admin is never throttled.
+* **The team only ever sees its own work.** `/team` and `/api/team/creators` read
+  `list_influencers(added_by=…)`, so nothing the owner added is exposed there.
+
+### 🅰️ Amazon deals from our sources: detected, re-signed, posted
+
+When a source post carries an Amazon link, the hub finds it, works out which
+Amazon page it really is, and re-signs it with **that creator's own Associates
+tag** before the post goes to their channel. Nothing else is invented: a link
+the hub cannot vouch for is reported, never faked.
+
+| What the source wrote | What the creator's channel receives |
+|---|---|
+| `https://www.amazon.in/dp/B09N3ZNHTY/ref=sr_1_3?tag=someoneelse-21&th=1` | `https://www.amazon.in/dp/B09N3ZNHTY?th=1&tag=ravi-21` |
+| `amazon.in/dp/B0BDHWDR12` (no `https://`) | `https://www.amazon.in/dp/B0BDHWDR12?tag=ravi-21` |
+| `https://amzn.to/3xYzAbC` (opaque short code) | resolved to the product page, then `/dp/<ASIN>?tag=ravi-21` |
+| `https://www.amazon.in/s?k=earbuds` (search page) | route kept, `tag=ravi-21` added |
+
+Read it before it goes out, and audit it after:
+
+```bash
+# what does this source post carry, and what will the hub do with each link?
+python -m influencer_hub.cli amazon-scan --file /tmp/post.txt
+
+# one creator's exact post (any role: broadcast / whatsapp / approval)
+python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --creator 7
+
+# all 1000+ creators in one pass: does each one get their OWN tag?
+python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --fleet --check   # exit 1 on any problem
+
+# the posts we really sent: whose tag is on them? (cron-safe, read-only)
+python -m influencer_hub.cli amazon-scan --report --hours 48 --check
+```
+
+`--fleet` is pure text work (about 0.8 s for a thousand creators on the demo
+hub) and writes nothing, so it is safe as a preflight before a big paste is
+switched on. `--report` reads `posts.deal_text` — the message the subscriber
+actually received — and names any link that carried **someone else's** tag, so
+the mistake is impossible to miss instead of hidden in a log line. The
+dashboard's 📈 Ops digest card shows the same proof live
+(`GET /api/amazon-report`), the 🔎 block under it lets you paste a source post
+and scan it in place (`GET /api/amazon-scan?text=…&fleet=1`), and the self-check
+has a twelfth check — **Amazon links in real posts** — that fails loudly when a
+post went out paying the wrong person.
+
+### 📈 Ops: the digest, the alerts, and the exports
+
+Three things make a 1000-creator hub something you *operate* rather than watch.
+
+**The digest** — one card, on the dashboard (📈 Ops digest, refreshed live at
+`/api/digest?hours=24`) and on the command line:
+
+```bash
+python -m influencer_hub.cli digest                 # print the 24h card
+python -m influencer_hub.cli digest --send          # ...to OPS_TELEGRAM_CHANNEL
+python -m influencer_hub.cli digest --json --hours 6
+```
+
+It reports delivered / failed / skipped / mirrored posts, the conversion-retry
+queue, worker state, active sources, creator readiness (ready · blocked ·
+mirroring · setup %), the current self-check verdict and the two most common
+failure reasons. Failure counting uses each attempt's own timestamp
+(`posts.created_at`), so a bad hour can never look like a quiet one.
+
+**The alert policy** — `python -m influencer_hub.cli self-check --alert` (cron
+or a systemd timer) speaks to the ops channel only when it matters:
+
+| Situation | What happens |
+|---|---|
+| verdict got worse (e.g. `attention` → `fail`) | alerts immediately |
+| same verdict still not green | re-alerts once the cooldown (default 3h) passes |
+| everything is green again after being broken | one “recovered” message |
+| green and was green | silence |
+
+The message names the failing checks **and the fix** (`systemctl start …`,
+“save each creator's own tag”, …). Without `OPS_TELEGRAM_CHANNEL` nothing is
+sent and nothing is recorded, so a hub that has not opted in gets no surprise
+messages. State lives in global settings, so a restart does not re-alert.
+
+**The history** — one row per day in `ops_snapshots` (`python -m influencer_hub.cli
+snapshot`, or automatically whenever the daily digest is sent). From it the card
+draws a delivery trend: `7d: ▁▅▇█ · green 2d`, plus "±N% vs the previous day".
+Without history a hub can only ever say how it is *right now*; with it you can
+tell a slow week from a bad afternoon. The self-check has an eleventh check for
+it ("Ops history") that names the cron line when the row is not being written.
+
+**One story per outage** — alerts carry the incident with them: the first
+"got worse" message opens an incident, repeat messages say `(open 4h · alert #2)`
+instead of pretending it is new, and the recovery message closes it with the
+duration ("it was broken for 1d · 3 alert(s)").
+
+**The chart** — the ops card draws one bar per stored day (height = delivered
+share, colour = that day's verdict), so a slow week is visible at a glance, and
+**“What would the ops alert say right now?”** previews the exact message the ops
+channel would get — computed with the pure policy, so it neither sends anything
+nor moves the cooldown.
+
+**Metrics and the audit log** — `GET /api/metrics` is Prometheus text
+(`hub_posts_attempts{status="failed"}`, `hub_worker_up`, `hub_creators{state=…}`,
+`hub_selfcheck_state{verdict=…}`, `hub_green_streak_days`), so whatever already
+watches the VM can watch the hub too. `GET /api/posts.csv?hours=24` (the
+**⬇️ Posts log (CSV)** button) is every attempt with creator, channel, status and
+reason — the audit trail behind the counts.
+
+**Backup and restore** — `python -m influencer_hub.cli backup --out /var/backups/hub
+--keep 14` takes a *consistent* copy with SQLite's online backup API (safe while
+the worker is posting; a plain `cp` of a WAL database is not) plus a JSON sidecar
+saying what is inside. `cli restore <file>` refuses anything that is not a hub
+database, asks before doing anything (`--yes`), and keeps the previous file as
+`*.pre-restore-<timestamp>`. Secrets live in `.env` and are deliberately **not**
+in a backup, so a copy is safe to move to another machine.
+
+**The exports** — the checklist and the bulk template as spreadsheets:
+
+* `GET /api/readiness.csv` — one row per creator (same `q`/`state` filters as
+  the API): ready, tag + where it came from, the three channels, phone status,
+  next step + action, mirror state, warnings and the per-step track.
+* `GET /api/easy-setup/template.csv` — the exact columns the bulk paste accepts
+  with three example rows (the template is parsed by the same code that imports
+  it, so a filled-in spreadsheet always loads).
+
+### 🛡️ The money map: one Amazon tag belongs to one creator
+
+Two mistakes cost real money and are invisible until the payout report: two
+creators posting with **one** Amazon tag (Amazon pays one account for both
+people's clicks), and one destination saved on **two** creators (every deal
+posted twice, each copy signed with a different tag). The hub now looks for both
+everywhere — and refuses them at the door.
+
+```bash
+python -m influencer_hub.cli assignments             # exit 1 when money is mixed
+python -m influencer_hub.cli assignments --json
+python -m influencer_hub.cli assignments --fix-hint
+curl -s http://127.0.0.1:5000/api/assignments        # admin only
+```
+
+`/setup → 🛡️ Money map` lists every finding with the creators (linked) and the
+fix, and the self-check has a **Money map (tags & channels)** item that turns
+amber the moment anything would pay the wrong person. A scan of 1000 creators +
+1000 channels takes ~45 ms, so it is cheap enough for a card and a cron.
+
+| Finding | Severity | Why it matters |
+|---|---|---|
+| Two creators share one Amazon tag | ⛔ high | the clicks earn for one account only |
+| One destination saved on two creators | ⛔ high | the deal is posted twice, signed differently |
+| A saved tag that is not usable | ⛔ high | the links fall back to the hub-wide tag |
+| Creator still on the hub-wide tag | ⚠️ medium | earns, but under the shared id |
+| Same channel as preview **and** main | ⚠️ medium | the preview is the broadcast |
+| Two profiles with one name | ⚠️ medium | a paste could match the wrong one |
+
+Channel identity is compared properly: `@Ravi_Loots`, `t.me/ravi_loots`,
+`https://t.me/Ravi_Loots/` and a trailing `?query` are the **same** channel, and a
+WhatsApp newsletter JID never collides with a Telegram handle.
+
+**The door.** Every add path — the team page, Easy Setup, a bulk paste and the
+inventory import — runs the guard *before* writing: a row that would reuse
+somebody's tag or channel is refused with that creator's name and the reason
+(`⛔ Amazon tag “ravi-21” already belongs to Ravi Loots`), and the attempt is
+audited (`add_blocked_duplicate`). Inside one paste the index stays honest too, so
+two lines of the same file cannot create the collision. Updating a creator's own
+tag or channel is of course still allowed (its own id is ignored).
+
+### 🏷️ Tag proof: the tag saved is the tag posted — or nothing posts
+
+The money map finds the **mix-ups**. This is the promise: whatever tag you type
+for a creator, the Amazon links that go out on **their** channels carry exactly
+that tag — and a link that would carry anybody else's id is never published.
+
+Every destination resolves its tag the same way, in one place
+(`tag_proof.signing`): a channel's own Amazon override → the creator's own
+Associate id → the hub-wide `AMAZON_ASSOCIATE_TAG`. That last one is **not** the
+creator's own: the database fills a blank tag with it so a deal is never
+dropped, which is exactly the mix-up that loses a creator their commission. So
+the hub treats it as missing, and:
+
+| Situation | What happens |
+|---|---|
+| Creator has their own tag (or a channel override) | the post goes out, links signed with it — approval, main, WhatsApp mirror alike |
+| Creator is still on the hub-wide tag, deal has Amazon links | the post is **held**: nothing is published under the shared id. The deal is parked with the reason `no_own_amazon_tag`, logged, audited (`amazon_tag_hold`) and retried by the worker |
+| Creator saved the tag before the worker's next pass | the parked deal goes out — signed with **their** tag |
+| Deal has no Amazon link (Flipkart/EarnKaro/HYPD/Meesho) | untouched: EarnKaro and HYPD money goes to the hub's central accounts by design |
+| Channel strips Amazon links | never held (there is no Amazon link to sign) |
+
+The hold applies to **every** role including the approval preview: an approval
+channel is still a channel of that creator, and the link there is the one you
+are being asked to approve — a wrongly-signed link is one click from going out.
+
+```bash
+python -m influencer_hub.cli tag-proof                  # every active channel, exit 1 if any is held
+python -m influencer_hub.cli tag-proof --creator 62      # the exact link #62's posts will carry
+python -m influencer_hub.cli tag-proof --json
+curl -s http://127.0.0.1:5000/api/tag-proof              # admin only: counts + who is held
+curl -s "http://127.0.0.1:5000/api/tag-proof?creator=62" # one creator: link + per-channel tag
+```
+
+```
+$ python -m influencer_hub.cli tag-proof
+⛔ 2 of 62 active channel(s) still on the hub's shared tag (No Tag Yet, Copy Cat)
+Paste each creator's own Associate tag (for example on No Tag Yet's page) — until
+then their Amazon deals are held, never signed with mama086-21.
+  ⛔ No Tag Yet (#41) — @notag
+     Amazon deals held: no own tag (would post as mama086-21)
+```
+
+Where you see it: `/setup → 🏷️ Tag proof` (one line per held creator, with the
+link their posts would carry today and a **Paste their own tag →** link), a chip
+on the dashboard home, the **Amazon attribution** self-check item, the daily ops
+digest (`🏷️ Amazon tags: 61/62 channel(s) own · ⛔ 1 held (No Tag Yet)`) and the
+creator's own page — where the review line now states the exact link
+(`Amazon links will read www.amazon.in/dp/…?tag=ravi-21`).
+
+The whole-fleet proof is **one batched pass**: 1001 creators + 1001 channels are
+checked with two queries (measured < 1 s in the suite), so it runs on a page
+render and on a cron alike.
+
+One switch, for a hub that really does run a single shared account:
+
+```bash
+REQUIRE_OWN_AMAZON_TAG=off        # restores the old fallback signing (default: on)
+```
+
+### 🧾 Text fidelity: nothing goes missing, nothing is invented
+
+Two failures a creator notices before the owner does: a line from the source
+post that never reached their channel (a title, a price, a size list — a lost
+sale), and a line that was **never** in the source appearing under their name
+("unwanted text"). The hub now checks every post against the text it came from
+before it is published.
+
+| What is compared | What it means | What happens |
+|---|---|---|
+| Product text | every deal line's words **and numbers** (a price going missing is a lost sale) | a line that would vanish is caught before the post goes out |
+| Inventions | output lines that are not derived from the source | anything the hub did not put there on purpose is reported |
+| Links | the **link budget** — a post must not come out with fewer links than it went in with | a rewritten link (own tag, EarnKaro, shortener) is fine; a link that vanished is not |
+
+The renderer runs twice when needed: the normal render first, and — if real text
+would be lost — a conservative render that keeps **every** source line and only
+rewrites links. The better one is posted; a recovery is logged and audited
+(`text_fidelity_recovered`). What a switched-off network removed is recorded on
+the delivery row, so "why is this post different from the source?" has an answer
+in the log itself:
+
+```
+$ curl -s -b cookies http://127.0.0.1:5000/api/posts.csv | tail -2
+…,posted,6d1f…,,,network merchant: NIRLON Shirt at ₹399 — Sizes: M, L, XL
+```
+
+The self-check has a **Source text & duplicates** item that turns amber with the
+creator's name the moment a post changed its source text.
+
+### 📡 Deal sources: the default channel, and picking several
+
+A creator's posts come from the sources **you** set beside their channels.
+
+* **Nothing selected** → the hub's default source, `https://t.me/LootZoneIndia11`
+  (`DEFAULT_SOURCE_SPEC`), is used — a creator never quietly posts from every
+  source in the hub. One click on `/setup → 📡 Source pool` adds it to the pool
+  (`/sources/ensure-default`), the guided wizard does it the first time it is
+  needed, and the worker does it at startup — so a brand-new box posts from
+  LootZoneIndia11 even if nobody opened the dashboard yet.
+* **Tick as many as you want** in the guided wizard (step 2) — "pakka manam set
+  chesina source channels pakkana multiple ga select cheskunelaga". What is
+  stored is the plain token list the pipeline filters on
+  (`allowed_sources`: `LootZoneIndia11, powerloot`); anything you paste —
+  `https://t.me/LootZoneIndia11`, `@LootZoneIndia11`, a private invite — is
+  normalized to its token, because that is what a Telegram dialog name matches.
+* **Every source** is still possible: tick *Post from every source in the hub*.
+* The picker is one shared block, so it is identical on the **Setup Center**,
+  in the **guided wizard** and on a **creator page**: tick-boxes side by side
+  (tick several), each row labelled with the source's **name** and its spec —
+  `Power Loots · @powerloot` — never a bare token, plus a *paste as many as you
+  want* box that understands names, `@handles`, `https://t.me/…` and private
+  invites, and resolves a configured source's name to the token the pipeline
+  filters on.
+* The creator page's source fields suggest the tokens that exist (a `<datalist>`),
+  per creator **and** per channel — one channel can read one source while the
+  creator's others read several.
+* The **Quick Add** form has the same field, pre-filled with the default, plus a
+  *post from every source* tick — so a creator added in one line reads the
+  default without anybody thinking about it.
+* Creators saved **before** the default existed have no source at all, which has
+  always meant "every source in the hub". The pool card says how many there are
+  and switches them in one click (`POST /sources/apply-default`, audited); it
+  never touches a creator the operator already pointed somewhere.
+
+### 🎯 Categories never cost a sale
+
+A creator can be narrowed to chosen categories ("this one posts electronics"),
+and the filter is keyword based — so it can only ever be sure about the deals it
+recognises. `🔥 BOAT AIRDOPES at ₹1299 · Use code BOAT500` matches no electronics
+keyword and only the word *code*: dropping it for an electronics creator would be
+a lost sale caused by our own vocabulary. So the filter now drops a deal only
+when the hub is sure it belongs to a **different product category**:
+
+| Deal | Creator asked for | Result |
+|---|---|---|
+| `Banarasi Silk Saree at ₹899` | electronics | dropped — it is clothing |
+| `BOAT AIRDOPES … Use code BOAT500` | electronics | **posted** — the brand is unknown to us, the coupon is not a category |
+| `General quiz contest information` | electronics | posted (unknown), unless strict mode is on |
+
+`CATEGORY_FILTER_STRICT_UNKNOWN=on` restores the old, strict behaviour for an
+operator who wants a tightly curated feed.
+
+### 🔁 No duplicates — the same product never lands twice
+
+The operator's rule: "multiple posts same products asalu same channel lo
+cheyoddu … 1 hours lo same products vasthe skip cheyali". Four guards run on
+every destination, cheapest first, and each one writes its reason to the delivery
+log (so the self-check can report "N duplicates were blocked"):
+
+| Guard | Catches |
+|---|---|
+| deal signature (ASIN / HYPD token / Flipkart item / URL) | the exact same product, however it was worded |
+| identifier dedup + in-run set | two creators (or two passes) posting to one shared channel |
+| content hash, 24 h | identical title+price even when the signature differed slightly |
+| near-duplicate, 12 h, 60% word overlap + same price | the same product from another source, re-worded — **well past** the 1-hour rule |
+| 20/hour and 5/10 min per channel | a bug or a backlog turning into spam |
+
+### Per-creator networks: only Amazon on means only Amazon products post
+
+A creator's switches (Amazon / EarnKaro / HYPD, `only_amazon`) decide what their
+channels may post, and the **whole product block** follows the switch: a Flipkart
+product for a creator with EarnKaro off is removed with its title, sizes and
+price (a title with no link to buy it is a dead deal, not copy), and the delivery
+note says which network removed it. With EarnKaro on, the same block posts with
+the hub's converted `ekaro.in` link; Amazon blocks always post signed with that
+creator's own tag. Two creators, one source post, two correct channels:
+
+```
+@both_on:   🔥 BOAT AIRDOPES at ₹1299 → amazon.in/dp/…?tag=bothon-21
+            NIRLON Shirt at ₹399 Sizes M,L → ekaro.in/our-conversion
+@amz_only:  🔥 BOAT AIRDOPES at ₹1299 → amazon.in/dp/…?tag=amzonly-21
+            (the Flipkart block removed — EarnKaro is off for this creator)
+```
+
+### ✍️ Adding creators the easy way: one line, anything you have
+
+Whoever is onboarding does not need a column order. This is all the same row:
+
+```
+Ravi Loots ravi-21 @ravi_loots @ravi_amazon_deals 120363012345678901@newsletter +91 98765 43210
+Sita Deals | sita-21 | t.me/sita_loots | https://t.me/sita_approval | 120363019999999999@g.us
+Kiran, kiran-21, @kiran_main, @kiran_approval, , 9876543210, electronics, 09-23, budget, VIP
+```
+
+Commas, tabs, pipes, semicolons or just spaces; the Amazon tag, both Telegram
+channels, the WhatsApp id and a phone number in any order; `key=value` extras
+(`notes="instagram 12k"`, `price=premium`, `hours=09-23`, `store=93944`); a header
+row from any CSV export; `#` comments and blank lines skipped. The parser says
+what it understood (`main channel ← @ravi_loots`) and, on the team page,
+**🔎 Check these lines first** shows the table before anything is written — the
+same code path as the add itself, so the preview cannot lie. A value in the wrong
+column is moved and reported (`1203…@newsletter → WhatsApp, was in the main
+column`); a plainly wrong tag stays wrong, so the row is refused with the reason
+instead of being guessed at. After the six documented columns the order is
+`categories, posting hours, price filter, notes`, and a note typed into the price
+column is kept as a note. A leftover word in a line that has **no** separators
+also becomes a note rather than a guess: notes are internal, while a category
+decides which deals a creator sees — so settings there are written explicitly
+(`categories=electronics`) or in a comma/tab row.
+
+### 👥 New-creator defaults: set once, every add inherits
+
+The team should never have to decide which networks are on, which HYPD store
+earns, or whether the main channel mirrors into WhatsApp:
+
+```
+/setup → 👥 New-creator defaults   (or: python -m influencer_hub.cli add-defaults --only-amazon on)
+```
+
+Amazon / EarnKaro / HYPD switches, Amazon-only, the mirror, categories, posting
+hours, the price filter and the HYPD store id — stored in the hub's own settings
+(they travel with the database), audited (`add_defaults_changed`), and shown to
+the team as one sentence on their page: *“New creators start with: Amazon,
+EarnKaro, HYPD · mirror on · HYPD store 93944.”* Precedence is always: the pasted
+row → the form on screen → your presets → the code defaults, so a specific paste
+still wins and nothing that was set once gets silently overridden.
+
+### 📦 Creator inventory: export EVERYTHING, edit in Excel, paste it back
+
+The owner can take the whole hub out in one click and put it back — with the
+safety of seeing exactly what would change **before** anything is written.
+
+**Export** (one row per creator, 31 columns): `creator_id`, `name`, `added_by`,
+`created_date`, `created_at`, `setup_age`, `setup_age_days`, `active`, `ready`,
+`amazon_tag` + `tag_source`
+(creator / admin / none), the approval / main / WhatsApp channel identifiers,
+`wa_status`, `phone_number`, `mirror_whatsapp` (`yes`/`no`/`inherit`), the four
+money switches (`allow_amazon`, `allow_earnkaro`, `allow_hypd`, `only_amazon`),
+`hypd_store_id`, `categories`, `posting_schedule`, `price_filter`, `notes`,
+`next_step`, `next_action`, the 24h counters (`posts_24h`, `mirrored_24h`,
+`last_post_at`). Every value comes from the same tables the worker posts from,
+so the file and the hub cannot disagree.
+
+```bash
+# the button on /setup (📦 card) and on the console (⬇️ Full inventory (CSV))
+python -m influencer_hub.cli export-inventory --out inventory.csv
+python -m influencer_hub.cli export-inventory --member Ravi --out ravi.csv
+curl -s "http://localhost:5000/api/inventory.csv" -o inventory.csv   # admin only
+```
+
+**Import** — same file, edited in Excel/LibreOffice/Sheets, pasted into the 📦
+card (or uploaded): the hub plans first and shows **line, creator, and
+`field: old → new` for every row**, lists the rows it cannot use with the line
+number and the reason, and only the “✅ Apply the changes” button writes.
+Nothing is ever written from a preview.
+
+```bash
+python -m influencer_hub.cli import-inventory --file inventory.csv            # preview
+python -m influencer_hub.cli import-inventory --file inventory.csv --apply    # write
+python -m influencer_hub.cli import-inventory --file new.csv --create --apply # + new creators
+python -m influencer_hub.cli import-inventory --file inventory.csv --json     # for scripts
+```
+
+A 1001-creator hub exports in ~0.2 s and previews a full edited file in ~0.1 s
+(the hub-wide values — channels, sessions, mirror counts, post activity, the
+mirror default — are read once, not once per creator). The pasted file is kept
+in a **private server-side stash** (mode 0600, three-hour TTL) and only a random
+token travels in the browser session, so a 250 KB spreadsheet cannot bloat or
+break the sign-in cookie; if a preview expires the card says so instead of
+applying nothing.
+
+The rules that make a spreadsheet safe to hand back:
+
+| You write | What happens |
+|---|---|
+| a new value | that one field is updated (validated first) |
+| an **empty** cell | the value is left exactly as it is — an empty spreadsheet column can never wipe data |
+| a single `-` | that field (or channel) is cleared on purpose |
+| `yes` / `no` | the money switches, `active`, mirroring |
+| a name that is not in the hub | reported, and only created when “Add rows whose name is not in the hub yet” (`--create`) is ticked |
+| an unusable Amazon tag | reported with its line number, skipped — a creator is never re-pointed at somebody else's tag |
+| a row it cannot match | reported with its line number, the rest of the batch still applies |
+
+Creators are matched by `creator_id` first (safe when two people share a name),
+then by name. Channels are matched by role, so pasting a channel identifier in
+`whatsapp_channel` pairs that WhatsApp destination exactly where the worker
+looks for it. Every applied row is written to the audit log
+(`creator_updated` / `creator_created` / `inventory_imported` with counts), and
+the result table stays on `/setup` as “Result of the last import”.
+
+### 🧭 Guided setup: name → channels → categories → go live
+
+One page that takes a creator from nothing to posting, in four numbered steps.
+Every step saves on its own, so the operator can close the laptop in the middle
+and come back — the page reopens on the step that is still missing.
+
+```
+/setup → 🧭 Guided setup        (top navigation: 🧭 Guided)
+```
+
+| Step | What is saved | What the page does for you |
+|---|---|---|
+| 1 · 🧑 Creator | the name and **their own Amazon Associate tag** (e.g. `ravi-21`) | creates or resumes the creator; a tag or channel that already belongs to somebody else is refused **naming the owner**; the creator is stamped with who added them |
+| 2 · 🔗 Channels | approval (preview), main, and the WhatsApp channel / group link | pastes in any shape (`@handle`, `t.me/…`, full link); both Telegram channels inherit that one tag; the main channel mirrors to WhatsApp unless you switch it off; **QR / login-code pairing is inline**; a pasted WhatsApp invite link that needs the phone is kept (never silently dropped) and re-resolved on the next save |
+| 3 · 🛍️ Deals & hours | the category picker (12, the same list the creator page uses), posting hours, price filter, the four network switches | pre-filled from your **new-creator defaults**; ticking “All categories” clears the rest (it means *any loot*); a save can never leave a creator with no network |
+| 4 · 🚀 Go live | active + the review | a line-by-line review (“their own Amazon tag — `ravi-21`”, “WhatsApp destination — not linked yet”) marked ✅ or *still missing*, then **Go live**, **Send a test deal now** (the same code path the worker uses) and Test a Deal |
+
+A progress pill always says where this creator is: *“3 of 4 steps done · next:
+Deals & hours”*. The whole flow is plain forms — it works with JavaScript
+switched off, and JavaScript only moves the highlight along as each step saves.
+Every save is audited (`guided_creator_created`, `guided_channels_saved`,
+`guided_deals_saved`, `guided_finished`).
+
+**The team may use it to add, never to edit.** A team member can create a
+creator and keep filling in that creator's channels and settings **while that run
+is open**; the moment the run finishes (or on any creator they did not create in
+that run), the wizard refuses them: *“already saved — ask the owner to change
+it.”* Every step re-checks ownership server-side before any write — walking the
+flow for a creator somebody else added is refused before the view runs, however
+the request is shaped, and recorded as `team_blocked_route` — exactly how
+`/team/add` already treats a name that is already in the hub. Editing and
+removing stay the owner's job.
+
+### 🕒 Setup date and age beside every creator
+
+When many people are adding creators, “*when* was this one set up, and *how long*
+has it been running?” is the question the owner asks first. The hub answers it
+everywhere the creator list appears.
+
+```
+today · 1 day · 6 days · 4 weeks · 2 months · 11 months · 1 year · 1 year 3 months · 2 years 6 months
+```
+
+* `influencer_hub/age.py` does the wording once: **one unit** in lists
+  (`2 months`, `1 year 3 months`), **two units** on a card (`1 week 6 days`,
+  `1 month 29 days`); under 7 days it counts days, under 30 weeks, and past 345
+  days it becomes years + months — “12 months” can never appear. A date the hub
+  cannot read shows as *“Set up date unknown”* instead of a wrong number.
+* **Dashboard command center**: a **Set up** column next to every creator
+  (`2 years 6 months` · the date · *by Mohan*), plus chips for the fleet —
+  *oldest 2 years 6 months · newest today* and *➕ 6 added in the last 30 days*
+  with the names, the age and who added each one.
+* **Setup directory** (`/setup#creator-directory`): each card says *Added
+  2026-08-10 by Mohan · 🕒 2 months*; the list can be ordered **oldest first,
+  newest first, A–Z or Z–A** and cut to a **date range** (`since` / `until`), so
+  “show me what we set up last month” is two clicks. A creator whose stored date
+  is unreadable is never hidden by a filter.
+* **Easy Setup**: every creator pill carries its age, and the strip header prints
+  the hub line — *“Set up: oldest 2 years 6 months ago · newest today · 6 added in
+  the last 30 days.”*
+* **Team page**: the same age column for the creators that member added.
+* Everywhere: hover the line (or read the export) for the full
+  `Set up 1 year 3 months ago · 2025-07-14 · by Mohan`.
+
+One `summarise()` call per page — the age of the whole hub costs no extra query
+per creator, so the 1000-creator hub stays a single fast read.
+
+### 🚀 Dashboard: the setup command center
+
+The dashboard home (`/`) is not just counters. Above the metrics it renders a
+**read-only checklist** for every creator and the *single next action* that
+unblocks the most:
+
+| Column | What it answers |
+|---|---|
+| Set up | When this creator was set up, how long ago, and which team member added them |
+| Own Amazon tag | Is this creator's Amazon money going to *their* id, or still the hub-wide shared default? |
+| Approval · Main · WhatsApp | Which of the three channels exist, and which are Pending instead of live |
+| Phone | Is the creator's WhatsApp phone actually linked (QR or login code)? |
+| Live | Has a WhatsApp destination passed its visible Test post? |
+| Mirror · 24h | Is main → WhatsApp copying deals right now, and how many went out today |
+| Next action | The one button/link for the next step, deep-linked to that creator page |
+
+A progress bar, chips (ready / blocked / mirroring / worker / sources) and a
+**"Do this next"** list put the blocked creators first, so a hub with twenty
+creators still answers "what do I do now?" in one line. The panel re-checks
+itself every 20 seconds against `/api/readiness?live=1` — a GET-only JSON API
+(also available per creator: `/api/readiness?inf_id=<id>`) that never creates a
+session, sends a message or flips a switch. A stopped WhatsApp hub degrades to
+the saved state with a visible "hub unreachable" note instead of an empty panel.
+
+The Setup Center's creator directory shows the same next step on each card, and
+Easy Setup shows it for the creator being edited.
+
+Everything in the pairing list can also be done without leaving **Easy Setup**
+(`/easy-setup`): pick the creator from the pill strip at the top (a 🟡 pill is
+blocked on a step), and the screen shows that creator's readiness track, the
+inline QR / login-code form and, once the phone is linked, the **Send Test
+post** button for the Pending destination. If the creator has no WhatsApp
+channel at all, the same screen creates one from the creator's own linked
+account in one click (saved as Pending, then the Test post activates it).
+Actions triggered there return to the same screen with their status, and the
+form prefills the creator's saved tag, channels and switches, so editing an
+existing creator is one screen too.
+
+### 1000+ creators: one paste, and a dashboard that stays fast
+
+Onboarding a hundred or a thousand creators is the same screen as one, and it is
+**one paste**:
+
+```
+Ravi Loots, ravi-21, @ravi_loots, @ravi_amazon_deals, 120363012345678901@newsletter
+Sita Deals, sita-21, @sita_loots, @sita_amazon_deals
+Kiran Deals, kiran-21, @kiran_loots
+```
+
+Columns are `name, amazon tag, main channel, approval channel, whatsapp id`.
+Comma, tab, `|` or `;` separators all work, `#` comments and blank lines are
+ignored, and a header row (`name,amazon_tag,broadcast_tg,approval_tg,whatsapp_id`)
+or a CSV/TXT upload is understood too. Up to **2000 lines per submit**.
+
+* Re-pasting the same list **updates** those creators (matched by name) instead
+  of duplicating them, so a corrected spreadsheet is simply pasted again.
+* Every line is validated on its own and reported line by line: unusable
+  Amazon tag, missing channels, approval == main, and so on. One bad line never
+  stops the batch.
+* A real WhatsApp channel id (`…@newsletter`, `…@g.us`) is saved as **Pending**
+  immediately. An invite *link* needs that creator's paired phone to resolve, so
+  it is reported as "paste it after pairing" rather than guessed at — a
+  1000-line import never fires a thousand hub calls.
+* The three network switches and the main → WhatsApp mirror switch apply to the
+  whole batch.
+
+Afterwards the 🚀 command center is the to-do list: filter by `⚠️ Blocked`, read
+the next action per creator, and clear them page by page.
+
+**What keeps it fast at that size** (verified with 1000 creators / 3000 channels):
+
+| Screen | Time | What is rendered |
+|---|---|---|
+| `/` command center | ~0.6 s, 65 KB | one page of rows (25), hub-wide chips and the priority list |
+| `/easy-setup` | ~0.1 s, 41 KB | 40 creator pills + paging + the bulk paste card |
+| `/setup` | ~0.15 s | 60 directory cards + a capped simulator list |
+| `/api/readiness?live=1&limit=25` | ~0.1 s | one page of creators, 50 warnings, 200 actions |
+
+The readiness engine reads each table **once** for the whole hub (channels,
+sessions, mirror counts, the mirror setting) — a 400-creator overview makes
+7 database reads, not 1200 — and the dashboard never ships a thousand rows to
+the browser. Search (`q`), state filters (`state=blocked|ready|mirroring|…`) and
+paging (`limit`/`offset`) work the same in the UI and in the JSON API.
+
+### How to onboard unlimited influencers (1-Click Easy Setup)
+1. **Dashboard Self-Serve (/onboard):**
+   Go to `/onboard`, enter the influencer's own Amazon Associate tag (the configured `mama086-21` value is only a fallback). Choose the supported affiliate-network and platform toggles, then click **"⚡ Save & Create Selected Destinations"**. When Telegram is enabled, the app attempts to create the Approval + Broadcast channels; when WhatsApp is enabled, it starts a QR session. Check the result messages, pair WhatsApp, and connect or create a group/channel afterward.
+2. **CLI Command:**
+   ```bash
+   python -m influencer_hub.cli onboard-tg <id>
+   ```
+   Auto-creates both Channel 1 (Approval) and Channel 2 (Broadcast) for that influencer.
+3. **Check Demo Render:**
+   ```bash
+   python -m influencer_hub.cli render-demo <id>
+   ```
+   Prints a sample render using the influencer's saved routing settings; it does not dispatch a real post.
+
+---
+
+## Architecture
+
+```
+influencer_hub/   Python brain
+  config.py          env config and safe production defaults
+  db.py              SQLite: profiles, channels, posts, sources, durable cursors and shared WhatsApp pacing
+  link_router.py     Amazon tag handling, configured affiliate routing and deal filters
+  amazon_creators.py official Amazon Creators API OAuth/catalog client
+  earnkaro.py        EarnKaro converter client with configured publisher checks
+  telegram_ops.py    Telethon operations with isolated per-process session copies
+  puller.py          ingestion from already joined Telegram dialogs (no invite checks)
+  whatsapp_client.py HTTP client for the wa_hub
+  pipeline.py        shared deal -> render per influencer -> dispatch to channels
+  polls.py           manual Telegram/WhatsApp-group polls with global deduplication
+  worker.py          24/7 pull/dispatch daemon with cursoring and recovery
+  vm_watch.py        host health (cpu/mem/disk/bot) -> DB + ops Telegram channel
+  cli.py             management CLI
+
+wa_hub/            Node/baileys multi-session WhatsApp service
+  server.js        REST + SSE API (sessions, QR, send, group, newsletter)
+  wa_manager.js    one baileys socket per influencer number, persistent auth
+
+dashboard/         Flask web UI
+  app.py           register influencers, show QR, per-influencer stats, VM health
+  templates/ static/
+
+tests/             pytest for link_router + db (no creds needed)
+```
+
+### Why this split?
+- **link_router + db** are exercised by unit tests with zero credentials —
+  tag placement, supported URL rewrites, and filter behavior can be checked
+  locally; external approval and commission attribution remain outside the app.
+- **Telegram** uses the existing authorized account. The base Telethon session
+  is copied with SQLite's online-backup API into a private process-local session
+  file; Flask, the worker, and CLI therefore never contend for one `.session`
+  database. Dashboard requests also share one stable asyncio loop.
+- **WhatsApp** lives in Node (baileys) — the exact stack your `tg-wa-bridge`
+  already uses — because it must hold a live WA-Web socket per phone number.
+  The Python side only speaks JSON to it.
+
+---
+
+## Quick start (no creds — validates the logic)
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 \
+  python -m influencer_hub.cli init
+PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 \
+  python -m influencer_hub.cli add-influencer "Ravi" --tag ravi099-21 --handle @ravi --dummy
+PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 \
+  python -m influencer_hub.cli render-demo 1      # shows routing for this profile's saved settings
+HUB_SKIP_DOTENV=1 PYTHONPATH=. HUB_DB_PATH=/tmp/hub.sqlite3 python -m pytest tests/ -q
+```
+
+`HUB_SKIP_DOTENV=1` makes the run ignore any provisioned `.env` completely, so
+the suite always exercises plain code defaults — no real Telegram session,
+affiliate key, shortener token or bot credential is touched (the whole suite is
+green this way; see VERIFICATION §1).
+
+## Production integrations and defaults
+
+- New influencer records and omitted Amazon tags use `mama086-21` only as a
+  configured fallback; supply each influencer's own Associates tag whenever
+  available. Explicit per-influencer/channel tags are supported. Amazon.in
+  product ASIN links are cleaned to `www.amazon.in/dp/<ASIN>`; Amazon.com ASINs
+  stay on Amazon.com, and non-product routes keep their original marketplace,
+  path, and required query parameters. The effective `tag` replaces the source
+  tag; safe numeric product selectors (`th`, `psc`) are preserved.
+
+  **Compact Amazon links, without losing the creator ID:** set one
+  operator-owned HTTPS origin in `AFFILIATE_SHORT_LINK_BASE_URL` (for example
+  `https://go.your-domain.in`) and route it to this dashboard. Broadcast and
+  WhatsApp posts then use
+  `https://go.your-domain.in/a/<opaque-code>?tag=<creator-tag>`. The route only
+  redirects when **the configured origin + stored code + exact tag** match; its
+  only destination is the canonical Amazon item with that same tag. A forged
+  `/a/...` URL, a stale code, an attacker host, an altered tag, or an unsafe
+  stored target is rejected and never counted as an earning link. The previous
+  `/amazon/<code>` path remains live for already-posted links. The dashboard's
+  Save confirmation and **Test a Deal** preview mint and display the actual
+  clickable compact link plus its canonical redirect target. With no public
+  HTTPS origin configured, the safe canonical URL stays visible instead.
+
+  Approval-role posts deliberately remain native Amazon URLs. Amazon-issued
+  `amzn.to` codes must come from Amazon Associates/SiteStripe; the app does not
+  invent them.
+### One branded short-link domain (production setup)
+
+A short URL must have a real public HTTPS hostname; the app cannot safely make
+one out of `localhost`, a VM IP, a request `Host` header, or somebody else's
+shortener. Point a domain/subdomain you control (for example `go.example.in`) to
+the same reverse proxy as the dashboard, then put only the origin in the private
+VM `.env`:
 
 ```dotenv
-AFFILIATE_SHORT_LINK_BASE_URL=https://go.your-domain.in
+AFFILIATE_SHORT_LINK_BASE_URL=https://go.example.in
+# Optional only when Amazon/HYPD need separate domains:
+# AMAZON_SHORT_LINK_BASE_URL=https://amz.example.in
+# MEESHO_SHORT_LINK_BASE_URL=https://go.example.in
+DASHBOARD_TRUST_PROXY=true  # only behind the one trusted TLS proxy
 ```
 
-Restart the dashboard and worker, run
-`python3 -m influencer_hub.cli doctor --short-links`, then save a channel or
-use **Test a Deal**. The resulting `/a/<code>?tag=<creator-tag>` URL must return
-one `302` to the shown canonical Amazon target with that exact creator tag.
-Amazon approval channels intentionally stay native. EarnKaro outputs are already
-network-short and are not double-wrapped.
+A minimal nginx virtual host can proxy the short domain to the existing dashboard
+service (keep the dashboard's admin routes firewalled/authenticated; only the
+validated `/a/`, legacy `/amazon/`, `/m/`, `/l/` redirects and `/healthz` are
+public):
 
-The four original appliers below remain useful for VMs missing those earlier
-changes; do not rerun them on a release where their checks say already applied.
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name go.example.in;
+    # certificate directives managed by your TLS/Certbot setup
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+```
 
-| applier | touches | what it fixes |
-| --- | --- | --- |
-| `apply-commission-fixes.py` | `influencer_hub/` | tagged Amazon pages kept, `convert_option` payload, `affExtParam2`/`id=` provenance |
-| `apply-password-policy.py` | `dashboard/` | `REAUTH_REQUIRED_ENDPOINTS` 28 → 3, no `data-require-reauth` on adds/saves, one shared unlock dialog |
-| `apply-account-model.py` | both | installs `influencer_hub/accounts.py` + wires it in (their Amazon id, our EarnKaro/HYPD) |
-| `apply-deal-flow.py` | both | `source_activity` bookkeeping, `_flow_snapshot()`, `GET /api/flow`, the Easy Setup flow card |
-| `apply-private-source-fallback.py` | puller + dashboard + docs | unmatched named private invites fall back to eligible joined dialogs; Setup and CLI diagnostics explain why |
+Restart `influencer-dashboard` and `influencer-deal-worker`, then use **Test a
+Deal** or save a channel. It shows a real `/a/<code>?tag=<creator-tag>` link;
+open it once and verify its `302` location is the printed canonical Amazon URL
+with the same tag. Do not enable generic Bitly merely to hide attribution:
+EarnKaro outputs (`ekaro.in`/`fktr.in`/…) are already network-short and retain
+our publisher proof; HYPD uses `/m/<code>`; approved LehLah uses `/l/<code>`.
+Raw, foreign, unresolved, or unverified links are not branded—they are converted,
+held for retry, or logged instead of being presented as ours.
 
-The four original appliers support `--check`, `--dry-run`, `--with-tests` and
-stop a second run. The new applier validates its bundled `git apply` patch and
-also supports `--check`, `--dry-run`, and `--with-tests`:
+- HYPD is reserved for Meesho; raw Meesho URLs are never sent through EarnKaro.
+  Existing HYPD affiliate URLs are first rewritten to the effective HYPD store
+  ID (default `93944`). Raw Meesho URLs remain unchanged until HYPD's official
+  generator contract is configured. Optionally, valid HYPD `/afflink/<token>` URLs can be
+  wrapped as stable first-party redirects at `/m/<code>` when
+  `MEESHO_SHORT_LINK_BASE_URL` points to an operator-owned HTTPS origin routed
+  to Flask (for example, a subdomain under your own brand domain). Each code is
+  stored persistently and the redirect only accepts a stored `https://hypd.store`
+  affiliate target; generic Bitly does not replace these links. With the setting
+  blank, the original HYPD affiliate URL remains. This shortens an existing
+  HYPD affiliate link; it does not generate HYPD tokens from a raw Meesho URL.
+- Meesho links carrying LehLah/AppsFlyer attribution (`pid` containing `lehlah`,
+  `af_siteid=lehlah`, or `mcn=LEHLAH`) are detected separately from raw Meesho
+  merchant links. Their complete original URL is preserved and they are not sent
+  through EarnKaro/HYPD/Bitly. Short-link wrapping is disabled by default and is
+  only enabled with `LEHLAH_SHORTLINKS_ENABLED=true` after account approval, plus
+  an operator-owned `MEESHO_SHORT_LINK_BASE_URL`.
+- Generic Bitly shortening requires a valid API token, with priority channel
+  token -> influencer token -> global `BITLY_API_KEY` only for influencer IDs in
+  `BITLY_GLOBAL_INFLUENCER_IDS`. The allowlist is empty by default, so the global
+  key is never shared with other profiles. Amazon, HYPD, and LehLah-attributed
+  links bypass generic Bitly. Raw Meesho links also stay out of generic Bitly.
+  Without an applicable token, generic links stay
+  unchanged.
+- Telegram API ID defaults to `33595682`. Keep `TELEGRAM_API_HASH` in the VM's
+  private `.env`/secret store; it is intentionally not embedded in Git. The
+  session at `TELEGRAM_SESSION` is used as the seed for isolated process copies.
+- The official Amazon Creators API client defaults to application
+  `SMART_BUY` (`amzn1.application-oa2-client.83229d9d14664351be9fc2059038a4f2`)
+  and India marketplace `www.amazon.in`. Set the credential secret in
+  `AMAZON_CREATORS_API_CLIENT_SECRET` and set the exact credential version
+  shown in Associates Central (the checked-in `3.2` is a configurable default). Try a
+  catalog lookup with `python -m influencer_hub.cli amazon-items B0...`.
+  Catalog API access is optional and not part of the deal-dispatch hot path.
+- `puller.py` calls `client.iter_dialogs()` and reads only joined groups/channels;
+  it never sends `CheckChatInviteRequest` or joins invite URLs. Use
+  `TELEGRAM_OUTPUT_CHANNELS` and registered Telegram destination channels to
+  keep output/ops dialogs out of source ingestion. Public source selectors match
+  by username/ID. A private invite hash is never resolved; its optional label
+  only matches an exact normalized joined-dialog title. If a private label does
+  not match, the worker logs a warning and falls back to eligible already-joined
+  dialogs (output dialogs and unconfigured account-owned channels stay excluded).
+  The live check in Setup Center shows this fallback; run
+  `python -m influencer_hub.cli doctor --telegram-sources` on the VM for the same
+  read-only selection audit. To keep ingestion narrow, add public usernames or
+  use the exact title of the joined private dialog as its source label.
+- `deploy/start_services.sh` starts supervised `deal-worker`, WhatsApp hub,
+  dashboard, and VM watcher processes. Each service writes to `logs/` and is
+  restarted by its launcher if it exits; `worker.py` additionally retries
+  transient pull/delivery failures and persists per-dialog Telegram message
+  cursors. Use `deploy/stop_services.sh` to stop that service set. For systemd,
+  run `sudo ./deploy/install_systemd.sh` from the checkout to render units for
+  that path and the invoking non-root account, then enable only the services
+  you have configured. Do not run the shell supervisor and systemd unit for the
+  same service at the same time (especially the deal worker). Keep the dashboard
+  and worker on the same writable SQLite database: WhatsApp send slots are
+  atomically shared there and survive restarts. This coordinates this app's
+  send paths only; it does not guarantee delivery or account safety. The Setup
+  Center's Launch readiness panel checks worker heartbeat and offers bounded,
+  read-only Telegram/source-selector and WhatsApp-hub diagnostics; it does not
+  join sources or send messages. Channel permissions still require explicit
+  per-destination test posts.
 
-| flag | meaning |
+## Secure dashboard deployment
+
+The dashboard now requires an admin password before exposing management pages or APIs; it also applies CSRF checks, rate-limits sign-in attempts, uses `HttpOnly`/`SameSite=Lax` session cookies, and adds security headers. Production service definitions run the Flask app through Gunicorn; `python dashboard/app.py` is for local development only. Configure these values in the private `.env` before starting it:
+
+Generate three independent values and paste them into the private `.env` file (the `.env` loader does not evaluate shell substitutions):
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(24))'  # admin password; keep it private
+python -c 'import secrets; print(secrets.token_urlsafe(48))'  # Flask session signing key
+python -c 'import secrets; print(secrets.token_urlsafe(48))'  # WA_HUB_TOKEN; keep it private
+```
+
+Set `DASHBOARD_ADMIN_PASSWORD` to the first value, `DASHBOARD_SECRET_KEY` to the second, `WA_HUB_TOKEN` to the third, plus `HUB_ENV=production`. The admin password must be at least 16 characters; the signing key must remain stable across restarts and workers. Leave `ADMIN_DELETE_PASSWORD` unset to reuse the dashboard password for destructive confirmations. Production mode enables Secure cookies on HTTPS requests (over plain HTTP the flag is dropped so sign-in still works), and the dashboard listens on `0.0.0.0:5000` so it is reachable on the VM IP — keep that port firewalled or fronted by HTTPS. The WhatsApp hub binds to loopback and refuses production startup without its private token. `/healthz` is the sole unauthenticated health endpoint besides validated first-party affiliate redirects. Do not deploy publicly with missing/weak dashboard credentials.
+
+### 🚀 Deploying and updating in one command (`deploy/deploy.sh`)
+
+Updating the VM used to be "pull, remember the migrations, restart, hope". It is
+now one command that cannot surprise you — it **checks first, backs up, and can
+undo itself**:
+
+```bash
+./deploy/deploy.sh --check     # read-only: is this box ready? what is missing?
+./deploy/deploy.sh --dry-run   # print every command it would run, change nothing
+./deploy/deploy.sh             # update to this checkout's branch
+./deploy/deploy.sh --ref <sha> # pin exactly one commit
+```
+
+| Step | What happens | The rule that keeps you safe |
+|---|---|---|
+| 1 | preflight | a required failure stops it *before* anything is written |
+| 2 | `cli backup` | no backup, no deploy (safe while the worker is posting) |
+| 3 | `git fetch` + `git merge --ff-only` | never rewrites history, never discards a modified file |
+| 4 | `pip install` / `npm ci` | only when the locks changed — **`npm audit fix` never runs** |
+| 5 | `cli init` | new columns added; safe to re-run |
+| 6 | restart | systemd units, or `start_services.sh` (supervised) |
+| 7 | health | `/healthz` → `cli self-check` → `cli tag-proof` |
+| 8 | rollback | any failure: previous commit + the backup + restart, then a non-zero exit |
+
+`--check` prints one line per thing it looked at — branch and commit, whether the
+worktree has modified files, the venv and the real dependency versions, Node and
+the WhatsApp modules, **which `.env` keys exist** (names only, never values), the
+database and its schema, free disk, backup age, whether the systemd units are
+installed, and whether the dashboard and WhatsApp hub answer right now.
+
+```bash
+$ ./deploy/deploy.sh --check
+  [OK] branch        on main at 5b5696f (wanted main, remote 5b5696f)
+  [OK] worktree      0 modified file(s), 3 untracked (usually .env, a venv, logs)
+  [OK] python-deps   flask 3.1.3 | aiohttp 3.14.5 | telethon 1.45.0 | gunicorn 23.0.0
+  [XX] env:AMAZON_ASSOCIATE_TAG  missing — hub-wide Amazon fallback tag
+       fix: add AMAZON_ASSOCIATE_TAG=… to .env
+Verdict: ⛔ fix first: env:AMAZON_ASSOCIATE_TAG
+```
+
+Undoing is written down for you at the end of every deploy (the exact
+`--from-backup` and `git reset --hard <sha>` lines), and `deploy/DEPLOY.md` walks
+through the first install, the update, the two kinds of rollback, and the
+firewall. The same preflight is available in the CLI, so it can be called from
+your own scripts:
+
+```bash
+python -m influencer_hub.cli deploy-check --json | python -m json.tool | head -20
+```
+
+### Setup password: asked once, then remembered
+
+Adding, saving and deleting channels (and every other sensitive setup change)
+is password-protected, but the password is only asked **once at the start of a
+work session**:
+
+1. The first *Connect Channel* / *Save* / *Remove* opens one confirmation dialog.
+2. After the correct password, setup stays **unlocked for 30 minutes of work**
+   (`DASHBOARD_SETUP_UNLOCK_SECONDS`, default `1800`). Every later add, save and
+   delete goes straight through — no second prompt.
+3. The window is idle-based: each confirmed change renews it, so an active
+   operator is never interrupted. It locks itself after 30 idle minutes, on
+   **Sign out**, or when you press **🔓 Unlocked · Lock now** in the header.
+
+If a form is submitted after the window expired, nothing is saved: the page
+returns with your typed values restored and asks for the password once. Channel
+removals keep a one-step **Undo** so a misclick is not permanent. The unlock is
+also bound to the IP that confirmed it (`DASHBOARD_SETUP_UNLOCK_BIND_IP=0` to
+disable behind a fixed-IP tunnel).
+
+Adding a channel validates the destination before saving: a Telegram
+`@username` (4-32 chars), a numeric channel id, or a private `t.me/+…` invite
+link. A duplicate destination for the same creator is updated in place instead
+of creating a second copy, and every result is reported on the page.
+
+### Reaching the dashboard on `http://<vm-ip>:5000`
+
+The systemd unit and `deploy/start_services.sh` bind Gunicorn to
+`0.0.0.0:5000`, so the dashboard answers on the VM's IP. That port must be
+opened twice — in the **OCI/VCN security list ingress rule** (source
+`0.0.0.0/0`, TCP, destination port 5000) *and* in the VM firewall
+(`sudo ufw allow 5000/tcp`) — and it must stay that way only if you accept
+plain HTTP. Preferred alternatives: restrict the ingress rule to your own IP,
+or terminate HTTPS in front of it and set `DASHBOARD_TRUST_PROXY=1`.
+
+```bash
+sudo ss -tlnp | grep 5000          # expect 0.0.0.0:5000 (not 127.0.0.1:5000)
+curl -I http://127.0.0.1:5000      # expect 302 → /login?next=/
+```
+
+Two failure modes look identical in the browser and are worth checking first:
+
+* **`POST /login` returns 400 in the logs** — the session cookie was rejected,
+  usually because each Gunicorn worker was signing sessions with a different
+  key. Set `DASHBOARD_SECRET_KEY` in `.env` (or leave it empty and let the app
+  persist a generated key in `DASHBOARD_SECRET_KEY_FILE`, mode `0600`), then
+  `sudo systemctl restart influencer-dashboard.service`.
+* **Sign-in works but every page bounces back to `/login`** — you are on plain
+  HTTP with `HUB_ENV=production`. The `Secure` cookie flag is now dropped
+  automatically on non-HTTPS requests, but a browser that already stored a
+  Secure cookie must be cleared once (or use HTTPS / `HUB_ENV=development` for
+  LAN-only use).
+
+### Private phone/laptop access with Tailscale (no purchased domain)
+
+For a small, trusted set of devices, use Tailscale Serve rather than a public IP or Funnel:
+
+1. Install Tailscale on the `influencers` VM and only the chosen phones/laptops. Use separate Tailscale identities; turn on **Device Approval** in the admin console and approve only these devices. If the tailnet contains other devices, add an access policy that denies them access to this server.
+2. Enable MagicDNS and HTTPS certificates in Tailscale's DNS settings. Authenticate the VM, deploy the production dashboard so it answers on `127.0.0.1:5000` (`--bind 127.0.0.1:5000` for this private-only setup), and verify `/healthz` locally.
+3. Run `sudo ./deploy/enable_tailscale_serve.sh`. It verifies the dashboard is healthy and loopback-only, checks that the WhatsApp hub is not listening on a public interface, then configures HTTPS Serve to proxy to the dashboard. It never enables Funnel or opens cloud firewall ports.
+4. Open the printed `https://<vm>.<tailnet>.ts.net` URL only from an approved device with Tailscale connected. Verify access from one approved device and denial from an unapproved device. Keep OCI ingress for 5000/8088 closed; with this private setup, no paid domain or public web port is needed.
+
+Tailscale Serve is tailnet-only; Funnel is public internet exposure. See [Tailscale Serve docs](https://tailscale.com/docs/reference/tailscale-cli/serve). To remove the HTTPS handler, run `sudo tailscale serve --https=443 off`.
+
+### ⚡ Easy Setup — one screen, most easy
+
+Open **⚡ Easy** in the header (or `/easy-setup`). One form sets up a creator end
+to end, and the same rule the switches promise is the rule the pipeline follows:
+
+**Amazon → only Amazon · EarnKaro → the other merchants · HYPD → Meesho.**
+
+1. **Creator** — name + that creator's own Amazon Associate tag.
+2. **Channels** — 🛡️ *approval* channel and 📢 *main* channel. Paste an existing
+   `@username` or a `t.me/…` link. Nothing is created or joined here — the hub
+   only posts to channels the connected account can already post in.
+3. **Three switches** (all on by default, they can run together):
+   * 📦 **Amazon** — Amazon links get that creator's tag. Nothing else touches them.
+   * 💰 **EarnKaro** — Flipkart, Shopsy, Myntra, Ajio, Nykaa, Croma, TataCliq…
+     become EarnKaro links (needs the EarnKaro key in **Vault & Sources**).
+   * 🛍️ **HYPD (Meesho)** — HYPD affiliate links (`hypd.store/…/afflink/…`) are
+     retagged to that creator's store. A raw `meesho.com` link cannot be minted
+     into an affiliate link yet, so it is posted as-is.
+   * 🔥 **Only Amazon (strict)** — post Amazon deals only; the other two are off.
+4. **Save & start posting** — both channels are saved `ready`, the creator is
+   activated, and the page shows exactly what each kind of link becomes.
+
+The routing table is live: flip a switch and see the outcome before saving.
+Approval channels always render Amazon-only native links with the
+`#ad (paid link)` disclosure; main channels post every network you switched on.
+Running Easy Setup again with an existing creator name **updates** that creator
+instead of creating a duplicate. Deals keep coming from the shared source list —
+if none are configured yet, Easy Setup offers the recommended loot catalog in one
+click, and every creator you add starts receiving them automatically.
+
+### 💰 Money Radar — stop posting deals that pay nothing
+
+Routing a link correctly is not the same as earning on it. A post can carry a
+link that pays zero: a raw `meesho.com` URL, an unconverted Flipkart link, or an
+Amazon link tagged for somebody else. **💰 Money** (`/money`) reads the deals we
+actually posted and reports, per creator and per reason, how many links carried
+our attribution and how many leaked.
+
+It counts **attribution, not rupees** — network approval, cookies and
+cancellations are outside what any link inspection can promise, so the page
+never shows an earnings figure.
+
+| State | What it means |
 | --- | --- |
-| *(none)* | apply, print every edit |
-| `--check` | report whether the fix is already in place, write nothing |
-| `--dry-run` | validate every replacement, write nothing |
-| `--with-tests` | also refresh the verified test files from `patches/tests/` |
+| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link with our publisher · LehLah · a verified stored branded `/a/`, `/m/`, or `/l/` short link on our configured HTTPS origin |
+| 🔴 Leak | Amazon tagged for someone else (or untagged) · HYPD on another store · EarnKaro for another publisher · raw merchant with no EarnKaro conversion · raw Meesho |
+| ⚪ Neutral | Informational links, and generic short links whose attribution sits behind the redirect |
 
-Exit codes: `0` applied / already in place with `--check`, `1` already applied
-(stop — never double-edit), `2` the file did not match the verified revision
-(nothing was written).
+Two switches turn the findings into money (both password-confirmed like every
+other setup change):
 
-**For the VM:** the merged `c6fa901` release already contains the commission,
-account, password and deal-flow work. Apply only
-`apply-private-source-fallback.py` for this follow-up. It never resets files or
-joins channels; if its exact patch does not match, it exits without writing.
-Use `--with-tests` only when refreshing the test suite on the VM.
+* **Meesho → EarnKaro fallback** *(on by default)* — HYPD owns Meesho but cannot
+  mint an affiliate link from a raw `meesho.com` product URL, so that deal posts
+  for free. With this on, the raw URL goes to EarnKaro, which runs a Meesho
+  programme, and the deal converts instead of leaking. Meesho still never goes
+  through generic Bitly shortening, and the source URL is kept whenever EarnKaro
+  returns nothing.
+* **Only post deals that earn** *(off by default — your call)* — holds back a
+  deal when none of its links would carry our attribution
+  (`skipped:no_commission_link`). It trades volume for earnings, so it starts
+  off and the Radar recommends it only once it has seen free posts.
+* **Post unconverted links anyway** *(off by default)* — mirrored by
+  `ALLOW_UNCONVERTED_POSTS=1`. See the retry queue below: when a merchant link
+  did not convert, the deal is parked and retried, so this switch is only for an
+  operator who prefers volume over commission during a converter outage.
 
-## 3. What each policy actually does
+#### Conversion guarantees, link shape by link shape
 
-### Commission leaks (`influencer_hub/`)
+Every link kind a source deal can carry has exactly one defined outcome:
 
-1. **Amazon attribution follows the `tag`, not the `/dp/` path.** A search page /
-   storefront / `amzn.to` short link carrying OUR tag is kept instead of being
-   deleted by the commission guard
-   (`advanced_shortener.is_our_amazon_attribution`, used by the guard, Money
-   Radar and the pipeline's "does anything still earn?" check).
-2. **EarnKaro payload.** `{"deal": <clean url>, "convert_option": "convert_only"}`
-   in `convert_one` *and* the live verifier. The old body answered HTTP 200 with
-   no link, which posted unpaid Flipkart / Myntra / Ajio / Nykaa / Croma /
-   Shopsy links.
-3. **Provenance.** `link_router.publisher_ids_in_url()` reads `affExtParam2`
-   **and** a numeric `id=`; a link carrying somebody else's id falls back to the
-   raw merchant URL.
+| Source link | What is posted |
+| --- | --- |
+| Amazon `/dp/<ASIN>`, `/gp/product/<ASIN>`, `?asin=<ASIN>`, search, storefront | One canonical `https://www.amazon.in/dp/<ASIN>` (or the same search/store page) carrying exactly **our** tag; every other `tag=` is removed |
+| Amazon short (`amzn.to`, `amzn.in`, `amzn.eu`, `amzn.asia`, `a.co`), long link for the same product in the same post | Both collapse into that one canonical OUR link |
+| Amazon short alone | Resolved over the network into `https://www.amazon.in/dp/<ASIN>?tag=<OURS>`; if the network cannot resolve it, the short is kept with our tag appended and the run logs `UNRESOLVED AMAZON SHORT` |
+| Flipkart / Shopsy / Myntra / Ajio / Nykaa / Croma / TataCliq… | The EarnKaro short link (`ekaro.in`, `fktr.in`, `myntr.it`, …) carrying our publisher id, verified by following the redirect |
+| Same merchants while EarnKaro is down | The deal is **parked** (see below) instead of posting a raw zero-commission URL |
+| Raw Meesho | Sent to EarnKaro when the fallback is on; otherwise posted as-is, because HYPD cannot mint an affiliate link from a product URL (with a `ZERO-COMMISSION post` log line) |
+| HYPD `hypd.store/<store>/afflink/<token>` | Retagged to our store id |
+| LehLah Meesho (`mcn=LEHLAH`, `af_siteid=lehlah`, `pid=lehlah`) | Kept exactly as it is — it already pays us |
+| Wrapper (`bit.ly`, `tinyurl.com`, `cutt.ly`, `dl.flipkart.com/…`, `fkrt.it/…`) | Resolved first: an Amazon destination becomes the canonical OUR link, a merchant destination is converted by EarnKaro; if the destination cannot be resolved the deal is parked and the run logs `UNRESOLVED WRAPPED LINK` |
+| Link written without `http://` (`flipkart.com/…`, `amazon.in/dp/…`, `amzn.to/…`) | Promoted to a real URL before anything else, then handled like every other link above (retagged/converted) |
+| Anything else (news, YouTube, blog) | Untouched |
 
-### Account model (`influencer_hub/accounts.py`)
+#### Add a channel → it posts with your tag
 
-| network | who earns | enforced by |
+Save a Telegram/WhatsApp destination and the hub uses the tag you gave, with no
+extra steps:
+
+| Where | What is saved | What is posted |
 | --- | --- | --- |
-| Amazon | the **creator** (their own Associate tag) | `accounts.creator_amazon_tag()` — channel override → creator tag → flagged fallback |
-| EarnKaro | **us** (vault credentials + publisher id) | `accounts.central_earnkaro_*()` |
-| Meesho / HYPD | **us** (our store id) | `accounts.hypd_store_for()` — with `central_network_accounts` on (default) a stored per-creator store cannot take the commission |
-| LehLah | the source's attribution | preserved as-is |
+| Easy Setup screen (`name` + your tag + channel) | creator tag + both channels (`status=ready`), every network you left switched on | the confirmation shows the exact link: `Amazon deals will post as https://www.amazon.in/dp/…?tag=<YOUR TAG> (verified ✅)` |
+| Creator page → Connect Channel (`@username` only) | channel inherits the creator's networks instead of switching them off | deals start flowing on the next worker poll — no restart |
+| A per-channel tag in `Alt Tag` | that channel's tag wins over the creator's | links on that channel are signed with the channel tag |
 
-Pipeline, Money Radar and both dashboard previews resolve through the module, so
-posts and the money audit can never disagree; Easy Setup shows a **"whose
-account earns"** table. `accounts.creators_missing_own_tag()` lists any profile
-that would post on the fallback tag.
+A tag the Associates format cannot accept (`[A-Za-z0-9_-]{3,30}`, e.g. `ravi-21`)
+is **refused at save time** with the reason instead of being silently replaced by
+the fallback; an unusual-but-usable tag is accepted with a warning, and an empty
+tag is reported. The pipeline logs `AMAZON TAG UNUSABLE` once per channel if it
+ever has to fall back.
 
-### Deal flow (`influencer_hub/` + `dashboard/`)
+#### Check a post before it goes out
 
-* The worker keeps its self-healing properties (cursor held on a failed
-  delivery, heartbeat, capped backoff, separate poll queue) and now records per
-  source: deals seen, posts dispatched, failures and the **reason**.
-* `db.source_activity` + `db.channel_post_activity()` are the readers;
-  `posts.posted_at` only exists for successful posts, so failures are reported
-  all-time rather than pretending they are dated.
-* `GET /api/flow` (pure reads, no network) returns worker state, per-source
-  last-seen, per-channel posted/failed counts, `hourly_loot_enabled` and
-  `only_earning_deals`, plus plain-language notes — e.g. a source that delivered
-  before but has been silent for 3h, or an idle day that is idle because the
-  hourly loot sweep is off.
-* Easy Setup ends with a **"Deal flow — sources → posts"** card; the per-source
-  table and the channel table live in its Advanced section.
+```bash
+python3 -m influencer_hub.cli audit-links --text "🔥 deal … bit.ly/abc"
+python3 -m influencer_hub.cli audit-links --file /tmp/post.txt --json
+python3 -m influencer_hub.cli audit-links --offline --text "…"   # no network calls
+```
 
-### Private Telegram source fallback (`influencer_hub/puller.py`)
+Read-only: prints every link, its kind, where a wrapper really points, the text
+that would be published and the verdict — exit code `0` when at least one of OUR
+links is present, `1` when the worker would hold the deal instead of posting it.
 
-* A private invite is never checked or joined. Its friendly name is only a hint
-  for an **exact normalized joined-dialog title** match.
-* If one or more private invite hints do not match, selection falls back to all
-  eligible dialogs already joined by the Telegram account. Configured output
-  channels and unconfigured account-owned channels are excluded. The worker
-  logs one warning per source configuration; invite hashes are not logged.
-* This fallback may read many joined groups/channels. Use public usernames or
-  the exact private-dialog title to narrow selection. The Setup Center and
-  `doctor --telegram-sources` show when fallback is active.
-* The flow board proves the selection: `/api/flow` gains `live` (mode, counts
-  and a capped list of the dialogs the worker would read now) and per-source
-  rows gain `source_name`, the joined dialog's title recorded by the worker.
-  The probe is read-only, cached ~45 s, and skippable with `?live=0`.
-* `tests/conftest.py` redirects every test to a fresh temporary SQLite DB, so
-  tests without a local DB fixture cannot touch a VM/operator database.
+#### The retry queue — no free posts, no lost deals
 
-### Password policy (`dashboard/`)
+When the only link in a deal is a merchant URL EarnKaro should have converted
+but did not (key missing/expired, API outage, transient error), posting now
+would earn nothing and posting later would be too late. The same applies to a
+wrapper link (`bit.ly`, `fkrt.it`, …) whose destination could not be resolved —
+until it is, nobody can say whether the link pays us. Instead the deal is
+parked in `deferred_deals` and the worker retries it every
+`DEFERRED_RETRY_DELAY_SECONDS` (5 min) up to `DEFERRED_MAX_ATTEMPTS` (6) times —
+the source cursor has already moved on, so this queue is the only way the deal
+can still go out. As soon as EarnKaro converts, the deal is posted with OUR
+link. If the outage outlasts the retry budget the deal is posted anyway and the
+log says why, so a converter outage delays a deal instead of dropping it.
 
-* `REAUTH_REQUIRED_ENDPOINTS`: 28 endpoints → `delete_channel`,
-  `delete_influencer`, `delete_deal_source`.
-* `data-require-reauth` removed from the 20 add / save / toggle / poll /
-  Easy-Setup / money-switch forms (kept on the four removal tags).
-* Delete-Influencer drops its own `prompt()`/`admin_password` and uses the shared
-  unlock dialog; copy says **Removals** everywhere.
-* The Vault tab keeps its separate password gate (it stores credentials).
+`/api/flow` reports the queue as `deferred: {waiting, retry_seconds,
+allow_unconverted_posts}` and adds a note to the flow board, and the Money page
+carries the `Post unconverted links anyway` switch. Two link shapes stay
+zero-commission by design and are logged rather than delayed: a raw Meesho URL
+(nothing can mint it) and a store EarnKaro does not cover.
 
-## `patches/tests/` + `conftest.py`
+Per-creator and per-channel **⭐ Minimum Deal Quality** (S/A/B/C, resolved
+channel → creator → global) keeps a channel's attention for the deals worth a
+click. The dashboard home page shows the same 7-day coverage number with a link
+into the full report.
 
-`patches/tests/` carries byte-identical copies for the patched test files and a
-copy of `tests/conftest.py`. The root conftest gives each pytest case a fresh
-`tmp_path` SQLite DB; `patches/conftest.py` separately prevents pytest from
-collecting the bundle copies twice.
+## Onboarding an influencer (production)
 
-`tests/test_patch_bundle.py` is the drift guard: it checks patch presence and
-format, copied-test parity, root DB isolation, and that every applier recognizes
-the current tree.
+1. `add-influencer "Ravi" --tag <creator-tag>` to save the influencer's own Associate tag. Omitting `--tag` uses configured `mama086-21` only as a fallback.
+2. **Telegram:** `create-tg <id> --title "Ravi Loots"` uses the configured
+   authorized Telegram account to create the channel. An optional bot-admin
+   grant is best-effort; the authorized account itself publishes posts.
+3. **WhatsApp:** `pair-wa <id>` starts a per-influencer QR session; the creator
+   scans it with their own WhatsApp account. Add their Channel invite URL from
+   the dashboard. It resolves to a newsletter JID and remains Pending until an
+   explicit test post succeeds. The connected number must be an admin with
+   posting rights. WhatsApp groups likewise require membership before testing.
+4. Deals from the shared pool are rendered per influencer and pushed to ready
+   channels. Amazon links use that creator's saved tag; dedup is per
+   (influencer, channel, deal).
 
-## Traps (learned the hard way)
+All of this is also doable from the **dashboard**. For local development only, run `cd dashboard && PYTHONPATH=.. python app.py` (binds `0.0.0.0:5000`; do not expose this development server publicly). Production uses Gunicorn under systemd on `0.0.0.0:5000`; keep the port restricted to your own IP, or put HTTPS in front of it.
 
-* The current follow-up expects the merged `c6fa901` release. The original five
-  patches are only for the historical `0bf913f` replay path.
-* Do not use `git checkout -- <file>` or force a patch on a VM with a mismatch.
-  The new applier validates first and exits without writing when context differs.
-* Private-invite fallback scans eligible joined dialogs; it does not join the
-  invite. Narrow with usernames or exact dialog titles if a broad joined set is
-  not intended.
-* Keep artifacts inside the repo. Test copies go stale when tests change; run
-  the full suite so `test_patch_bundle.py` catches drift.
+### One-shot & self-serve onboarding
+- **Self-serve page:** `/onboard` saves the profile, Amazon tag, and selected
+  affiliate-network/platform flags. When enabled, it attempts to create the two
+  Telegram channels and starts WhatsApp QR pairing; after pairing, connect or
+  create the WhatsApp group/channel from the profile page.
+- **One command:** `python -m influencer_hub.cli onboard <id>` performs the
+  platform setup available for that influencer's enabled channels; QR pairing
+  and WhatsApp destination setup can still require follow-up.
+- **Bulk:** the dashboard CSV importer supports routing fields including
+  `tag`/`amazon_tag`, `allow_amazon`, `allow_earnkaro`, `allow_hypd`,
+  `only_amazon`, `strip_amazon`, and `hypd_store_id`, alongside profile and
+  destination columns. The CLI `add-influencers --csv` command supports its
+  documented basic profile/platform columns; use the dashboard importer for
+  affiliate-network settings.
 
-## Verified in this session
+### Telegram and WhatsApp are fully independent
+Each influencer has `telegram_enabled` / `whatsapp_enabled` flags, so you can run
+**TG-only**, **WA-only**, or both — and manage them separately:
+- `onboard-tg <id>` / `onboard-wa <id>` (or the dashboard buttons) act on one
+  channel without touching the other.
+- `set-flags <id> --tg 1 --wa 0` toggles them anytime (dashboard: "Save channels").
 
-* Clean checkout baseline `c6fa901`: **302 passed** before the follow-up.
-* Working tree after the source-selection fix, live flow-board source
-  visibility, DB-isolated tests, docs and bundle guard: **320 passed**.
-* `tests/test_private_source_fallback.py` simulates 236 joined dialogs, checks
-  warning behavior, exclusions and capped dialog summaries, confirms live
-  diagnostics make no invite or history requests, and exercises the worker pull
-  path; `tests/test_deal_flow.py` pins the live `/api/flow` selection view and
-  the recorded joined-dialog title per source.
-* The full suite has not been run against a live Telegram account or deployed VM.
+### Test EarnKaro conversion (live)
+The client is configured to POST a cleaned merchant URL to the EarnKaro
+converter endpoint with `Authorization: Bearer <credential>` and
+`{"deal": url}`. Use a real product URL from a merchant supported by your
+account when testing:
+
+```bash
+python -m influencer_hub.cli verify-earnkaro --url "<real supported merchant product URL>"
+```
+
+This command makes a live request. `ok: true` means it received a parseable
+link and verified the configured publisher ID (for a short link, the redirect
+must resolve to that ID). This checks link provenance for the test URL, not a
+sale or commission attribution. The current automated tests use mocked
+responses, and no production credential, source URL, or live conversion was
+tested in this workspace. Normal dispatch also checks direct-link publisher
+provenance; short-link checks there are best-effort if redirect resolution
+fails.
+
+---
+
+## WhatsApp Channel posting: supported path and limits
+
+The pinned Baileys release has a text-message route for WhatsApp newsletter
+JIDs. The dashboard can resolve a `https://whatsapp.com/channel/...` invite to
+its real `@newsletter` JID, save it as **Pending**, and only activate that
+destination after an operator sends a visible test post successfully. The
+connected influencer account must be a Channel admin with posting rights. A
+WhatsApp group invite is different: resolving its JID does not silently join
+the group; the paired account must already be a member with posting access.
+
+This is **not an official Meta Channel API**: Meta's Cloud API documentation
+lists Channels as unsupported ([Meta onboarding feature comparison](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-business-app-users/)). Baileys uses the WhatsApp-Web protocol; behavior can change and account restrictions cannot be ruled out. The pipeline sends text and links to Channels; newsletter media delivery is not guaranteed (see the [Baileys newsletter text/media report](https://github.com/WhiskeySockets/Baileys/issues/2345)). Two pairing routes are implemented and produce the same registered device: scanning the QR, or typing the influencer's full international number and entering the 8-character **phone-linking code** WhatsApp shows on that phone (*Linked devices → Link with phone number*). A code belongs to one socket attempt — it is re-issued after a reconnect, cleared the moment the number is linked, never logged, and shown only on the authenticated creator page. Test with a low-risk creator/channel before enabling automatic posts.
+
+## VM watch ("ma VM chusthundta bot")
+
+`python -m influencer_hub.cli vm-watch --loop` samples CPU/mem/disk + whether
+the bot process is alive, writes to `vm_stats`, and posts a compact card to
+`OPS_TELEGRAM_CHANNEL`. The dashboard shows the latest snapshot at `/vm`.
+
+## Dummy / separate sources
+
+`use_dummy_sources` per influencer + the `sources` table (kind `production` |
+`dummy`) let you stage a new influencer against isolated test sources before
+pointing them at the live shared pool. Dummy sources are kept completely
+separate from production.

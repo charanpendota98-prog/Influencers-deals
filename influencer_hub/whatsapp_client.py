@@ -56,6 +56,21 @@ async def list_chats(session_key: str) -> list[dict]:
     return res.get("chats", [])
 
 
+async def list_admin_chats(session_key: str) -> list[dict]:
+    """Groups/channels where this paired number is admin or owner.
+
+    This is what the dashboard's "pick your channel" dropdown shows, so the
+    operator chooses a name they recognise instead of pasting a JID. A chat whose
+    role cannot be read is simply left out (never guessed), and the call fails
+    soft: the picker keeps working with the plain chat list and invite links.
+    """
+    try:
+        res = await _request("GET", f"/sessions/{session_key}/admin-chats")
+    except Exception:
+        return []
+    return res.get("chats", [])
+
+
 async def resolve_invite(session_key: str, invite_url_or_code: str) -> dict:
     return await _request("POST", f"/sessions/{session_key}/resolve-invite", json={"invite": invite_url_or_code})
 
@@ -80,6 +95,25 @@ async def create_session(influencer_id: int, label: str) -> dict:
 
 async def get_qr(session_key: str) -> dict:
     return await _request("GET", f"/sessions/{session_key}/qr")
+
+
+async def request_pairing_code(session_key: str, phone: str, label: str = "") -> dict:
+    """Link a phone number with an 8-character code instead of a QR scan.
+
+    The operator types the number (country code included) shown on the phone,
+    so the same number can be linked even when the camera/QR route is awkward.
+    """
+    safe_key = quote(str(session_key), safe="")
+    return await _request("POST", f"/sessions/{safe_key}/pairing-code", json={
+        "phone": phone,
+        "label": label,
+    }, timeout=40)
+
+
+async def pairing_state(session_key: str) -> dict:
+    """Read-only: the live pairing code (if any) for this session."""
+    safe_key = quote(str(session_key), safe="")
+    return await _request("GET", f"/sessions/{safe_key}/pairing", timeout=10)
 
 
 async def session_status(session_key: str) -> dict:

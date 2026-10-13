@@ -12,14 +12,30 @@ Examples
   python -m influencer_hub.cli audit-links --text "Deal ... bit.ly/abc"
   python -m influencer_hub.cli audit-links --file /tmp/post.txt --json
   python -m influencer_hub.cli vm-watch
+  python -m influencer_hub.cli self-check --live
+  python -m influencer_hub.cli self-check --alert        # only when it got worse
+  python -m influencer_hub.cli digest --send
+  python -m influencer_hub.cli amazon-scan --file /tmp/post.txt --fleet   # every creator, own tag
+  python -m influencer_hub.cli amazon-scan --report --check               # what we really sent
+  python -m influencer_hub.cli export-inventory --out /tmp/hub-creators.csv
+  python -m influencer_hub.cli import-inventory --file /tmp/hub-creators.csv --apply
+  python -m influencer_hub.cli assignments        # whose tag / channel is whose (read-only)
+  python -m influencer_hub.cli add-defaults --show                     # what new creators start with
+  python -m influencer_hub.cli add-defaults --only-amazon off --mirror-whatsapp on
+  python -m influencer_hub.cli totp --new        # admin two-factor secret for the authenticator app
+  python -m influencer_hub.cli snapshot          # one row of history per day
+  python -m influencer_hub.cli backup --out /var/backups/hub --keep 14
+  python -m influencer_hub.cli restore /var/backups/hub/hub-20261011-0900.sqlite3 --yes
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
+from pathlib import Path
 
-from . import db, link_router, vm_watch
+from . import db, deploy, link_router, vm_watch
 from . import config
 
 
@@ -240,6 +256,33 @@ def _cmd_vm_watch(args):  # pragma: no cover - side effect
     else:
         snap = asyncio.run(vm_watch.snapshot_and_report())
         print(snap)
+
+
+def _cmd_deploy_check(args):  # noqa: D401 - read-only by construction
+    """What this box has, and what the next deploy would do — changing nothing."""
+    report = deploy.preflight(
+        repo=Path(args.repo) if args.repo else None,
+        branch=args.branch or "",
+        backup_dir=Path(args.backups) if args.backups else None,
+    )
+    if args.json:
+        print(deploy.as_json(report))
+        return 0 if report["ok"] else 1
+    print(f"== Deploy preflight · {report['repo']} · branch {report['branch']} ==")
+    for check in report["checks"]:
+        mark = "OK" if check["ok"] else ("XX" if check["required"] else "--")
+        print(f"  [{mark}] {check['name']:<24} {check['detail']}")
+        if not check["ok"] and check["fix"]:
+            print(f"       fix: {check['fix']}")
+    print()
+    print(f"Verdict: {report['summary']}")
+    if args.show_plan:
+        print()
+        print("A deploy would run, in order:")
+        for step in report["next_deploy"]:
+            print(f"  {step['step']:>2}. {step['name']:<20} {step['command']}")
+            print(f"      {step['why']}")
+    return 0 if report["ok"] else 1
 
 
 def _cmd_run_pipeline(args):  # pragma: no cover - network
@@ -484,6 +527,586 @@ def _cmd_doctor(args):  # pragma: no cover - side effect
     return 0 if all_ok else 1
 
 
+def _cmd_self_check(args):
+    """Run the hub self-check from the shell (same checks as the dashboard)."""
+    import json as _json
+
+    from . import ops, selfcheck
+
+    report = selfcheck.run_checks(live=args.live)
+    if args.alert:
+        result = ops.maybe_alert(report, force=args.force)
+        report["alert"] = result
+    if args.json:
+        print(_json.dumps(report, indent=2))
+    else:
+        icons = {"ok": "✅", "warn": "⚠️", "fail": "⛔", "skip": "·"}
+        print(f"self-check: {report['verdict']} ({report['summary']})")
+        for check in report["checks"]:
+            print(f"  {icons.get(check['state'], '·')} {check['label']}: {check['detail']}")
+            if check["state"] in {"warn", "fail"} and check["fix"]:
+                print(f"      → {check['fix']}")
+        if args.alert:
+            alert = report.get("alert") or {}
+            decision = alert.get("decision") or {}
+            state = "sent" if alert.get("sent") else f"not sent ({decision.get('reason', 'n/a')})"
+            print(f"ops alert: {state}" + (f" — {alert['error']}" if alert.get("error") else ""))
+    return 0 if report["verdict"] == "ready" else 1
+
+
+def _cmd_digest(args):
+    """Print (and optionally send) the operational digest."""
+    import json as _json
+
+    from . import ops
+
+    data = ops.digest(hours=args.hours)
+    text = ops.render_digest(data)
+    sent, error = False, ""
+    if args.send:
+        channel = str(config.OPS_TELEGRAM_CHANNEL or "").strip()
+        if not channel:
+            error = "OPS_TELEGRAM_CHANNEL is not configured"
+        else:
+            try:
+                from . import telegram_ops
+
+                asyncio.run(telegram_ops.post_to_channel(channel, text))
+                sent = True
+            except Exception as exc:  # pragma: no cover - network
+                error = str(exc)[:200]
+    # A daily card that goes to the ops channel is also the day's history row.
+    snapshot = None
+    if args.send and sent:
+        try:
+            snapshot = ops.record_snapshot(hours=args.hours, data=data)
+        except Exception as exc:  # pragma: no cover - history is best-effort
+            error = error or str(exc)[:200]
+    if args.json:
+        data = {**data, "sent": sent, "error": error, "snapshot": snapshot}
+        print(_json.dumps(data, indent=2))
+    else:
+        print(text)
+        if args.send:
+            print(f"\nops send: {'sent' if sent else 'not sent'}" + (f" — {error}" if error else ""))
+            if snapshot:
+                print(f"history: day {snapshot['day']} recorded ({snapshot['attempts']} attempts)")
+    return 0 if not error else 1
+
+
+def _cmd_assignments(args):
+    """The money map: two creators on one tag, one channel on two creators."""
+    from . import guard
+
+    findings = guard.scan()
+    if args.json:
+        print(json.dumps({
+            "ok": guard.is_clear(findings),
+            "counts": guard.counts(findings),
+            "summary": guard.summary_line(findings),
+            "findings": findings,
+        }, indent=2))
+        return 0 if guard.is_clear(findings) else 1
+    print(guard.render_report(findings))
+    if args.fix_hint:
+        print("\nFix them on the dashboard (/setup → 🛡️ Money map) or with the "
+              "inventory export: edit the amazon_tag column and paste it back "
+              "(`import-inventory --file … --apply`).")
+    return 0 if guard.is_clear(findings) else 1
+
+
+def _cmd_tag_proof(args):
+    """Whose Amazon tag signs which active channel — and what is held.
+
+    Exit code 1 when any active channel would post an Amazon link under a tag
+    that is not its creator's own: those deals are held by the pipeline, so the
+    owner fixes the tag and they go out signed correctly.
+    """
+    from . import tag_proof
+
+    if getattr(args, "creator", 0):
+        profile = db.get_influencer(int(args.creator))
+        if not profile:
+            print(f"No creator with id {args.creator}.")
+            return 2
+        link = tag_proof.tagged_link(profile)
+        proof = tag_proof.verify(link, profile) if link else {"ok": False, "issues": ["no tag saved"]}
+        channels = []
+        for channel in db.list_channels(int(profile["id"])):
+            info = tag_proof.signing(profile, channel)
+            channels.append({
+                "channel_id": info["channel_id"],
+                "identifier": str(channel.get("identifier") or ""),
+                "tag": info["tag"],
+                "own": info["own"],
+                "source": info["source"],
+                "shared_default": info["shared_default"],
+                "status": str(channel.get("status") or ""),
+            })
+        payload = {
+            "ok": bool(link) and proof["ok"],
+            "creator_id": int(profile["id"]),
+            "name": str(profile.get("name") or ""),
+            "own_tag": tag_proof.own_tag(profile),
+            "stored_tag": tag_proof.stored_tag(profile),
+            "link": link,
+            "link_summary": tag_proof.url_summary(link) if link else "",
+            "hold_reason": tag_proof.HOLD_REASON,
+            "channels": channels,
+            "verify": proof,
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            stored = payload["stored_tag"] or "(none)"
+            print(f"{payload['name']} — own tag: {payload['own_tag'] or '(none)'} "
+                  f"(stored: {stored})")
+            print(f"  Amazon links will read: {payload['link_summary'] or '(nothing: tag missing)'}")
+            for row in channels:
+                mark = "✅ own" if row["own"] else "⛔ held"
+                shared = " (the hub's shared id)" if row["shared_default"] else ""
+                print(f"  {mark}  {row['identifier'] or row['channel_id']} "
+                      f"[{row['source']}] tag={row['tag'] or '(none)'}{shared}")
+            if not payload["ok"]:
+                print("  Amazon deals for this creator are held, not signed with the "
+                      "shared id:")
+                for issue in (proof.get("issues") or ["paste their own Associate tag"])[:3]:
+                    print(f"    · {issue}")
+        return 0 if payload["ok"] else 1
+
+    fleet = tag_proof.fleet(active_only=True)
+    if args.json:
+        print(json.dumps(fleet, indent=2))
+        return 0 if fleet["ok"] else 1
+    print(fleet["summary"])
+    fix = tag_proof.describe_fix(fleet["blocked"])
+    if fix:
+        print(fix)
+    if not fleet["blocked"]:
+        print(f"Nothing to fix — {fleet['creators']} creator(s), {fleet['channels']} active "
+              "channel(s) checked.")
+        return 0
+    print()
+    for row in fleet["blocked"]:
+        held = ", ".join(channel["identifier"] or f"#{channel['channel_id']}"
+                         for channel in row["channels"])
+        print(f"  ⛔ {row['name']} (#{row['creator_id']}) — {held}")
+        print(f"     Amazon deals held: no own tag "
+              f"(would post as {row['fallback_tag'] or '(none)'})")
+    print("\nFix: paste each creator's own Associate tag (🧭 Guided setup or the creator "
+          "page). Held deals post on the next worker run.")
+    return 1
+
+
+def _cmd_add_defaults(args):
+    """Read or write what every NEW creator starts with."""
+    from . import presets
+
+    def _flag(value):
+        if value is None:
+            return None
+        return str(value).strip().lower() in {"on", "1", "true", "yes"}
+
+    updates: dict = {}
+    for key in ("only_amazon", "amazon", "earnkaro", "hypd", "mirror_whatsapp"):
+        setattr(args, key, _flag(getattr(args, key)))
+    if args.only_amazon is not None:
+        updates["only_amazon"] = args.only_amazon
+    if args.amazon is not None:
+        updates["allow_amazon"] = args.amazon
+    if args.earnkaro is not None:
+        updates["allow_earnkaro"] = args.earnkaro
+    if args.hypd is not None:
+        updates["allow_hypd"] = args.hypd
+    if args.mirror_whatsapp is not None:
+        updates["mirror_whatsapp"] = args.mirror_whatsapp
+    for name, value in (("categories", args.categories), ("posting_schedule", args.hours),
+                        ("price_filter", args.price), ("hypd_store_id", args.store)):
+        if value is not None:
+            updates[name] = value
+    if updates and not args.dry_run:
+        try:
+            presets.save(updates, actor=args.actor or "cli")
+        except Exception as exc:
+            print(f"could not save the new-creator defaults: {exc}")
+            return 1
+    if args.json:
+        print(json.dumps({"defaults": presets.resolved(),
+                          "summary": presets.summary_line(),
+                          "changed": sorted(updates)}, indent=2))
+        return 0
+    if updates and args.dry_run:
+        print("dry run — nothing saved. Would set: " + ", ".join(sorted(updates)))
+    print(presets.summary_line())
+    for row in presets.describe():
+        print(f"  {row['label']:24s} {row['shown']:12s} {row['hint']}")
+    return 0
+
+
+def _cmd_export_inventory(args):
+    """Write the whole creator inventory (with dates and channels) to a file."""
+    from . import inventory
+
+    text = inventory.csv_text(member=args.member or "")
+    if args.out:
+        Path(args.out).expanduser().write_text(text, encoding="utf-8")
+        rows = len(text.strip().splitlines()) - 1
+        print(f"wrote {rows} creator(s) to {args.out}")
+        print("columns: " + ", ".join(inventory.COLUMNS))
+    else:
+        print(text, end="")
+    return 0
+
+
+def _cmd_import_inventory(args):
+    """Preview an edited inventory file, or apply it with --apply."""
+    from . import inventory
+
+    try:
+        text = Path(args.file).expanduser().read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"could not read {args.file}: {exc}")
+        return 1
+    try:
+        plan = inventory.plan_import(text, create=args.create)
+    except Exception as exc:
+        print(f"that file could not be read: {exc}")
+        return 1
+    if args.json:
+        payload = {key: plan[key] for key in
+                   ("records", "changed", "created", "unchanged", "issues")}
+        payload["edits"] = [{"line": op["line"], "name": op["name"], "create": op["create"],
+                             "edits": inventory.edits(op)}
+                            for op in plan["operations"]
+                            if op["changes"] or op["channels"] or op["create"]]
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"rows read: {plan['records']} · would change: {plan['changed']} "
+              f"· unchanged: {plan['unchanged']} · would create: {plan['created']} "
+              f"· cannot apply: {len(plan['issues'])}")
+        for op in plan["operations"]:
+            if op["changes"] or op["channels"] or op["create"]:
+                print(f"  line {op['line']:>5} {op['name']}"
+                      + (" [new]" if op["create"] else "") + ":")
+                for edit in inventory.edits(op):
+                    was = f"{edit['from']} → " if edit["from"] else ""
+                    print(f"          {edit['field']}: {was}{edit['to']}")
+        for issue in plan["issues"][:20]:
+            print(f"  ! line {issue['line']} {issue['name']}: {issue['detail']}")
+    if not args.apply:
+        if not args.json:
+            print("preview only — run again with --apply to write the changes.")
+        return 0
+    report = inventory.apply_import(plan, actor=args.actor or "admin")
+    print("applied: " + inventory.render_report(report))
+    for row in report["results"]:
+        if row["status"] == "failed":
+            print(f"  ⛔ {row['name']}: {row['detail']}")
+    return 0 if not report["failed"] else 1
+
+
+def _cmd_totp(args):
+    """Create or verify the admin two-factor secret (RFC 6238 TOTP)."""
+    import time as _time
+
+    from . import config, security
+
+    if args.uri_only:
+        print(security.totp_uri(config.ADMIN_TOTP_SECRET, account=args.account))
+        return 0
+    if args.check:
+        ok = security.verify_totp(args.check, secret=config.ADMIN_TOTP_SECRET
+                                  or args.secret or "")
+        if ok:
+            print("✅ the code matches — two-factor sign-in will accept it right now.")
+            return 0
+        print("⛔ the code does not match (check the device clock; codes last 30 seconds).")
+        return 1
+    if args.new:
+        secret = security.new_totp_secret()
+        print("New two-factor secret (keep it private):")
+        print(f"  ADMIN_TOTP_SECRET={secret}")
+        print("")
+        print("1. Add it to your authenticator app (manual entry, time-based, 6 digits):")
+        print("   account: admin · key: " + secret)
+        print("   or paste this URL in the app:")
+        print("   " + security.totp_uri(secret))
+        print("2. Put the line above in the server .env and restart the dashboard.")
+        print("3. Test before you rely on it (a fresh code):")
+        print("   PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp --check <code>")
+        return 0
+    if args.secret:
+        print(f"current code for that secret: {security.totp_code(args.secret)}")
+        print("(valid for this 30-second window)")
+        return 0
+    configured = bool(str(config.ADMIN_TOTP_SECRET or "").strip())
+    print(f"two-factor sign-in: {'ON' if configured else 'OFF'}")
+    if configured:
+        print(f"current code: {security.totp_code(config.ADMIN_TOTP_SECRET)} "
+              f"(for {_time.strftime('%H:%M:%S', _time.gmtime())} UTC)")
+        print("otpauth URL: " + security.totp_uri(config.ADMIN_TOTP_SECRET, account=args.account))
+    else:
+        print("Switch it on with: PYTHONPATH=. .venv/bin/python -m influencer_hub.cli totp --new")
+    return 0
+
+
+def _cmd_snapshot(args):
+    """Freeze today's numbers into the history (a nightly cron line)."""
+    import json as _json
+
+    from . import db, ops
+
+    db.init()
+    row = ops.record_snapshot(hours=args.hours, notes=args.note)
+    trend = ops.trend(days=args.days)
+    if args.json:
+        print(_json.dumps({"snapshot": row, "trend": trend}, indent=2))
+    else:
+        print(f"history: {row['day']} · {row['posted']} posted · {row['failed']} failed "
+              f"· {row['attempts']} attempts · verdict {row['verdict']}")
+        if trend["captured_days"]:
+            if trend["sparkline"]:
+                line = f"{trend['days']}d: {trend['sparkline']}"
+                if trend["green_streak"]:
+                    line += f" · green {trend['green_streak']}d"
+                elif trend["delta_pct"] is not None:
+                    line += f" · {trend['delta_pct']:+d}% vs previous day"
+            else:
+                line = "no deliveries recorded yet"
+            print(line + f"  ({trend['captured_days']} day(s) stored)")
+    return 0
+
+
+def _cmd_backup(args):
+    """A consistent copy of the hub database (safe while the worker runs)."""
+    import json as _json
+
+    from . import ops
+
+    try:
+        result = ops.backup_database(args.out, keep=args.keep)
+    except Exception as exc:
+        print(f"backup failed: {exc}")
+        return 1
+    if args.json:
+        print(_json.dumps(result, indent=2))
+    else:
+        counts = ", ".join(f"{name} {value}" for name, value in result["counts"].items())
+        print(f"backup: {result['path']} ({result['size_bytes'] // 1024} KB)")
+        if counts:
+            print(f"contents: {counts}")
+        print(f"sidecar: {result['sidecar']}")
+        print(f"kept {len(result['kept'])} file(s)"
+              + (f" · pruned {', '.join(result['pruned'])}" if result["pruned"] else ""))
+        print("note: .env secrets are NOT in a backup — the copy is safe to move.")
+    return 0
+
+
+def _cmd_restore(args):
+    """Put a backup back, keeping the current file aside as *.pre-restore-*."""
+    import json as _json
+
+    from . import ops
+
+    check = ops.inspect_backup(args.file)
+    if not check["ok"]:
+        print(f"not a hub database: {check['reason']}")
+        return 1
+    if not args.yes and not args.dry_run:
+        print(f"would restore {args.file} ({check.get('counts', {})}) over {config.DB_PATH}.")
+        print("run again with --yes to do it (the current file is kept as *.pre-restore-*).")
+        return 2
+    try:
+        result = ops.restore_database(args.file, dry_run=args.dry_run)
+    except Exception as exc:
+        print(f"restore failed: {exc}")
+        return 1
+    if args.json:
+        print(_json.dumps({"check": check, "result": result}, indent=2))
+    else:
+        verb = "checked" if result["dry_run"] else "restored"
+        print(f"{verb}: {result['restored_from']}")
+        if result["previous_saved_as"]:
+            lead = "previous file would be kept as" if result["dry_run"] else "previous file kept as"
+            print(f"{lead}: {result['previous_saved_as']}")
+        print(f"contents: {result['counts']}")
+    return 0
+
+
+def _cmd_channel_names(args):
+    """Name the Telegram destinations we already saved (read-only peek, opt-in write).
+
+    The Telegram twin of the WhatsApp picker: a channel added as a link or a JID
+    should read as its real name everywhere in the dashboard. Adding a channel
+    asks Telegram for that name (see ``dashboard.app._telegram_destination_info``);
+    this command backfills the ones saved before that, and answers the operator's
+    other question — is our account actually an admin there? — for the whole
+    fleet in one pass.
+
+    It joins nothing, posts nothing and writes nothing unless ``--apply`` is
+    given.
+    """
+    import asyncio
+    import json as _json
+
+    from . import db, telegram_ops
+
+    if not telegram_ops.session_ready():
+        print("no Telegram session on this box yet — run `python -m influencer_hub.cli authorize`")
+        print("(until then a pasted channel is saved exactly as pasted, and the dashboard")
+        print(" keeps showing the identifier instead of a name.)")
+        return 2
+
+    channels = [row for row in db.list_channels() if row.get("platform") == "telegram"]
+    if args.id:
+        channels = [row for row in channels if int(row.get("influencer_id") or 0) == args.id]
+    if not args.all_names:
+        channels = [row for row in channels if not str(row.get("title") or "").strip()]
+    channels = channels[: max(0, int(args.limit))]
+
+    async def _look(row: dict) -> dict:
+        info = await telegram_ops.inspect_channel(row.get("identifier") or "")
+        return {"channel_id": row.get("id"), "identifier": row.get("identifier"),
+                "role": row.get("role"), **info}
+
+    results = []
+    for row in channels:
+        results.append(asyncio.run(_look(row)))
+
+    applied = 0
+    if args.apply:
+        for row in results:
+            if row.get("ok") and str(row.get("title") or "").strip():
+                db.update_channel_details(int(row["channel_id"]), title=row["title"])
+                applied += 1
+
+    if args.json:
+        print(_json.dumps({"checked": len(results), "applied": applied,
+                           "channels": results}, indent=2, ensure_ascii=False))
+        return 0
+
+    if not results:
+        print("every Telegram destination already has a name"
+              + ("" if args.all_names else " (--all re-checks the named ones too)"))
+        return 0
+    for row in results:
+        if not row.get("ok"):
+            print(f"  [??] {row['identifier']} — {row.get('error') or 'unresolved'}")
+            continue
+        rights = {True: "can post", False: "NOT an admin here",
+                  None: "rights unknown"}[row.get("can_post")]
+        name = row.get("title") or "(no title)"
+        print(f"  [OK] {name} · {row.get('kind')} · {rights} · {row['identifier']}"
+              f" ({row['role']})")
+    print(f"checked {len(results)} Telegram destination(s)")
+    if args.apply:
+        print(f"saved {applied} name(s) — the dashboard now shows the name, not the JID")
+    else:
+        print("nothing was changed; run again with --apply to save these names")
+    print("a destination marked NOT an admin here is still saved: our account simply")
+    print("cannot post to it, so it is useful as an approval/preview channel only.")
+    return 0
+
+
+def _cmd_amazon_scan(args):
+    """What Amazon links a source carries, and whose tag each creator's post gets."""
+    import json as _json
+
+    from . import amazon_watch, db, link_router
+
+    text = args.text or ""
+    if args.file:
+        try:
+            text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"could not read {args.file}: {exc}")
+            return 1
+    payload: dict = {}
+
+    if args.report:
+        payload["report"] = amazon_watch.attribution_report(hours=args.hours,
+                                                            limit=args.limit or 500)
+    if text:
+        payload["scan"] = amazon_watch.scan(text)
+        if args.creator:
+            inf = db.get_influencer(args.creator)
+            if not inf:
+                print(f"unknown creator id {args.creator}")
+                return 1
+            payload["plan"] = amazon_watch.plan(text, tag=inf.get("amazon_tag") or "", role=args.role)
+            payload["plan"]["creator"] = inf.get("name")
+        elif args.fleet or args.check:
+            payload["fleet"] = amazon_watch.fleet_plan(
+                text, db.list_influencers(), role=args.role, limit=args.limit or 1000,
+            )
+    if not payload:
+        print("nothing to do: pass --text/--file (what the source carries), --report (what we sent), or both")
+        return 2
+
+    check_failures: list[str] = []
+    if args.check:
+        if "report" in payload and not payload["report"]["ok"]:
+            check_failures.append("a post carried someone else's tag")
+        if "fleet" in payload and not payload["fleet"]["all_own_tags"]:
+            check_failures.append("a creator would post with a tag that is not their own")
+        if "plan" in payload and not payload["plan"]["ok"]:
+            check_failures.append("the rendered post has an Amazon link problem")
+        payload["check"] = {
+            "ok": not check_failures,
+            "problems": check_failures,
+            "message": ("check passed: every Amazon link is signed with the creator's own tag."
+                        if not check_failures else "check failed: " + "; ".join(check_failures)),
+        }
+
+    if args.json:
+        print(_json.dumps(payload, indent=2))
+    else:
+        if "scan" in payload:
+            scan = payload["scan"]
+            if not scan["has_amazon"]:
+                print("Amazon links in this source post: none.")
+            else:
+                print(f"Amazon links in this source post: {len(scan['links'])} "
+                      f"({', '.join(f'{count} {kind}' for kind, count in sorted(scan['counts'].items()))})")
+                for link in scan["links"]:
+                    whose = f"  [source tag: {link['source_tag']}]" if link["source_tag"] else ""
+                    asin = f" ASIN {link['asin']}" if link["asin"] else ""
+                    print(f"  • {link['kind']:7}{asin} → {link['action']}{whose}")
+                    print(f"      {link['url']}")
+                    print(f"      {link['action_text']}")
+        if "plan" in payload:
+            plan = payload["plan"]
+            print(f"\n{plan['creator']} → tag {plan['effective_tag']}"
+                  + ("" if plan.get("usable_tag") else " (fallback: their tag is not usable)"))
+            print(plan["rendered"])
+            if plan["issues"]:
+                print("\nnotes:")
+                for issue in plan["issues"]:
+                    print(f"  ! {issue}")
+        if "fleet" in payload:
+            fleet = payload["fleet"]
+            verdict = "every creator gets their OWN tag" if fleet["all_own_tags"] else "PROBLEMS"
+            print(f"\nfleet: {fleet['creators']} creator(s), {fleet['own_tag']} with their own tag "
+                  f"· {fleet['fallback_or_missing']} fallback/missing · {fleet['ms']}ms — {verdict}")
+            for detail in fleet["details"]:
+                print(f"  ! {detail['creator']} ({detail['tag'] or 'no tag'}) → "
+                      f"effective {detail['effective_tag']}, tags found {detail['tags_found']}")
+        if "report" in payload:
+            report = payload["report"]
+            print("\n" + amazon_watch.render_report(report))
+            for problem in report["problems"]:
+                print(f"  ⛔ {problem['creator']}: {problem['url']} carries "
+                      f"{problem['found_tag']!r}, expected {problem['expected_tag']!r}")
+            for example in report["examples"][:3]:
+                print(f"  · {example['creator']}: {', '.join(example['links'])[:120]}")
+
+    if args.check:
+        if not args.json:
+            print(payload["check"]["message"])
+        return 0 if payload["check"]["ok"] else 1
+    return 0
+
+
 def _cmd_amazon_items(args):  # pragma: no cover - requires configured Amazon credentials
     """Fetch product details from the official Amazon Creators API."""
     import json
@@ -558,6 +1181,25 @@ def build_parser() -> argparse.ArgumentParser:
     ve.add_argument("--url", default="https://www.flipkart.com/p/itmEXAMPLE12345")
     ve.set_defaults(func=_cmd_verify_earnkaro)
 
+    aw = sub.add_parser(
+        "amazon-scan",
+        help="what Amazon links a source carries, whose tag each creator's post gets (read-only)",
+    )
+    aw.add_argument("--text", default="", help="the source post text")
+    aw.add_argument("--file", default="", help="read the source post from a file instead")
+    aw.add_argument("--creator", type=int, default=0, help="show the rendered post for one creator")
+    aw.add_argument("--fleet", action="store_true", help="check every creator gets their own tag")
+    aw.add_argument("--report", action="store_true",
+                    help="audit the posts we really sent in the last --hours")
+    aw.add_argument("--hours", type=int, default=24, help="window for --report (default 24)")
+    aw.add_argument("--limit", type=int, default=0, help="cap creators/posts inspected")
+    aw.add_argument("--role", default="broadcast", choices=["broadcast", "whatsapp", "approval"],
+                    help="render as this kind of channel (default broadcast)")
+    aw.add_argument("--check", action="store_true",
+                    help="exit 1 when any Amazon link would go out without the creator's own tag")
+    aw.add_argument("--json", action="store_true", help="machine-readable output")
+    aw.set_defaults(func=_cmd_amazon_scan)
+
     amz = sub.add_parser("amazon-items", help="look up ASINs with Amazon Creators API")
     amz.add_argument("asins", nargs="+", help="one to ten Amazon ASINs")
     amz.set_defaults(func=_cmd_amazon_items)
@@ -577,6 +1219,107 @@ def build_parser() -> argparse.ArgumentParser:
     d.set_defaults(func=_cmd_doctor)
 
     sub.add_parser("status", help="overview of everything").set_defaults(func=_cmd_status)
+
+    sc = sub.add_parser(
+        "self-check",
+        help="check database, Telegram, worker, sources, accounts, creators and the mirror",
+    )
+    sc.add_argument("--live", action="store_true",
+                    help="also ping the WhatsApp hub on the loopback port")
+    sc.add_argument("--json", action="store_true", help="machine-readable output")
+    sc.add_argument("--alert", action="store_true",
+                    help="post to OPS_TELEGRAM_CHANNEL when the verdict got worse "
+                         "(cooldown applies)")
+    sc.add_argument("--force", action="store_true",
+                    help="with --alert: send even if the verdict improved or is in cooldown")
+    sc.set_defaults(func=_cmd_self_check)
+
+    dg = sub.add_parser("digest", help="operational summary for the ops channel or a terminal")
+    dg.add_argument("--hours", type=int, default=24, help="window in hours (default 24)")
+    dg.add_argument("--send", action="store_true", help="post the card to OPS_TELEGRAM_CHANNEL")
+    dg.add_argument("--json", action="store_true", help="machine-readable output")
+    dg.set_defaults(func=_cmd_digest)
+
+    asg = sub.add_parser("assignments",
+                         help="whose Amazon tag / channel is whose (read-only, exit 1 on a mix)")
+    asg.add_argument("--json", action="store_true", help="machine-readable findings")
+    asg.add_argument("--fix-hint", action="store_true", help="print how to fix them")
+    asg.set_defaults(func=_cmd_assignments)
+
+    tpr = sub.add_parser(
+        "tag-proof",
+        help="prove every active channel posts Amazon links under its own tag (exit 1 when not)",
+    )
+    tpr.add_argument("--creator", type=int, default=0,
+                     help="the single-creator proof: the exact link their posts will carry")
+    tpr.add_argument("--json", action="store_true", help="machine-readable output")
+    tpr.set_defaults(func=_cmd_tag_proof)
+
+    ad = sub.add_parser("add-defaults",
+                        help="what every NEW creator starts with (presets for the team)")
+    ad.add_argument("--show", action="store_true", help="just print them (the default)")
+    for name, flag, help_text in (("amazon", "--amazon", "Amazon links on/off"),
+                                  ("earnkaro", "--earnkaro", "EarnKaro on/off"),
+                                  ("hypd", "--hypd", "HYPD / Meesho on/off"),
+                                  ("only_amazon", "--only-amazon", "Amazon-only channels on/off"),
+                                  ("mirror_whatsapp", "--mirror-whatsapp",
+                                   "new main channels mirror to WhatsApp")):
+        ad.add_argument(flag, dest=name, choices=["on", "off"], default=None, help=help_text)
+    ad.add_argument("--categories", default=None, help="default deal categories")
+    ad.add_argument("--hours", default=None, help="default posting hours")
+    ad.add_argument("--price", default=None, help="default price filter")
+    ad.add_argument("--store", default=None, help="HYPD store id ('' = hub default)")
+    ad.add_argument("--dry-run", action="store_true", help="show what would be saved")
+    ad.add_argument("--actor", default="cli", help="name recorded in the audit log")
+    ad.add_argument("--json", action="store_true", help="machine-readable output")
+    ad.set_defaults(func=_cmd_add_defaults)
+
+    ex = sub.add_parser("export-inventory",
+                        help="write every creator (date added, channels, ids, settings) as CSV")
+    ex.add_argument("--out", default="", help="file to write (default: print to stdout)")
+    ex.add_argument("--member", default="", help="only the creators one team member added")
+    ex.set_defaults(func=_cmd_export_inventory)
+
+    im = sub.add_parser("import-inventory",
+                        help="apply an edited inventory file (preview by default)")
+    im.add_argument("--file", required=True, help="the edited CSV")
+    im.add_argument("--apply", action="store_true", help="write the changes (default: preview)")
+    im.add_argument("--create", action="store_true", help="also create rows not in the hub yet")
+    im.add_argument("--actor", default="admin", help="name recorded in the audit log")
+    im.add_argument("--json", action="store_true", help="machine-readable preview")
+    im.set_defaults(func=_cmd_import_inventory)
+
+    tp = sub.add_parser(
+        "totp",
+        help="create/verify the admin two-factor secret (authenticator app, 6 digits)",
+    )
+    tp.add_argument("--new", action="store_true", help="print a fresh secret + otpauth URL")
+    tp.add_argument("--check", default="", help="verify a six-digit code against ADMIN_TOTP_SECRET")
+    tp.add_argument("--secret", default="", help="work with this secret instead of the configured one")
+    tp.add_argument("--uri", dest="uri_only", action="store_true",
+                    help="print the otpauth URL for the configured secret")
+    tp.add_argument("--account", default="admin", help="account label in the otpauth URL")
+    tp.set_defaults(func=_cmd_totp)
+
+    sn = sub.add_parser("snapshot", help="store today's numbers in the history (trends)")
+    sn.add_argument("--hours", type=int, default=24, help="window to summarise (default 24)")
+    sn.add_argument("--days", type=int, default=7, help="history to show back (default 7)")
+    sn.add_argument("--note", default="", help="a short note to keep with the row")
+    sn.add_argument("--json", action="store_true", help="machine-readable output")
+    sn.set_defaults(func=_cmd_snapshot)
+
+    bk = sub.add_parser("backup", help="copy the hub database (safe while the worker runs)")
+    bk.add_argument("--out", default="backups", help="directory for the copies (default ./backups)")
+    bk.add_argument("--keep", type=int, default=7, help="how many copies to keep (default 7)")
+    bk.add_argument("--json", action="store_true", help="machine-readable output")
+    bk.set_defaults(func=_cmd_backup)
+
+    rs = sub.add_parser("restore", help="put a backup back (keeps the current file aside)")
+    rs.add_argument("file", help="the backup file to restore")
+    rs.add_argument("--yes", action="store_true", help="actually do it")
+    rs.add_argument("--dry-run", action="store_true", help="only check the file")
+    rs.add_argument("--json", action="store_true", help="machine-readable output")
+    rs.set_defaults(func=_cmd_restore)
 
     r = sub.add_parser("render-demo", help="show how a sample deal renders for an influencer")
     r.add_argument("id", type=int)
@@ -598,6 +1341,30 @@ def build_parser() -> argparse.ArgumentParser:
     v = sub.add_parser("vm-watch", help="snapshot VM health (or loop)")
     v.add_argument("--loop", action="store_true")
     v.set_defaults(func=_cmd_vm_watch)
+
+    dc = sub.add_parser(
+        "deploy-check",
+        help="read-only preflight for a deploy: checkout, deps, .env keys, DB, services",
+    )
+    dc.add_argument("--branch", default="", help="the branch the hub should run (default: its upstream)")
+    dc.add_argument("--repo", default="", help="repository root (default: this checkout)")
+    dc.add_argument("--backups", default="", help="backup directory to look at (default ./backups)")
+    dc.add_argument("--plan", dest="show_plan", action="store_true",
+                    help="also print the ordered deploy steps")
+    dc.add_argument("--json", action="store_true", help="machine-readable output")
+    dc.set_defaults(func=_cmd_deploy_check)
+
+    cn = sub.add_parser(
+        "channel-names",
+        help="name the Telegram channels we saved (read-only peek; --apply saves the names)",
+    )
+    cn.add_argument("--id", type=int, default=None, help="only this creator's channels")
+    cn.add_argument("--limit", type=int, default=50, help="how many to look at (default 50)")
+    cn.add_argument("--all", dest="all_names", action="store_true",
+                    help="re-check destinations that already have a name")
+    cn.add_argument("--apply", action="store_true", help="save the names it found")
+    cn.add_argument("--json", action="store_true", help="machine-readable output")
+    cn.set_defaults(func=_cmd_channel_names)
 
     rp = sub.add_parser("run-pipeline", help="pull shared deals and dispatch to influencers")
     rp.add_argument("--id", type=int, default=None, help="limit to one influencer")

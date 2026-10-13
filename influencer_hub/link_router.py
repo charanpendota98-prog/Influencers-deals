@@ -1093,29 +1093,111 @@ def deduplicate_urls_in_text(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", result).strip()
 
 
+#: The affiliate kinds this filter owns. Anything else (informational links) is
+#: left exactly as it came in.
+STORE_KINDS = frozenset({"amazon", "merchant", "hypd", "meesho", "lehlah"})
+
+
+def _blocks(text: str) -> list[list[str]]:
+    """Split a post into blocks (one product's copy) on blank lines."""
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if line.strip():
+            current.append(line.rstrip())
+        else:
+            if current:
+                blocks.append(current)
+                current = []
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+#: Words that are only a store's *name*. A line left holding one of these after
+#: its link was removed is a dangling label ("Flipkart:") — noise, not copy.
+_BRAND_WORDS = frozenset({
+    "amazon", "amzn", "flipkart", "fk", "myntra", "ajio", "nykaa", "tatacliq",
+    "snapdeal", "croma", "meesho", "shopsy", "hypd", "lehlah", "earnkaro",
+    "ekaro", "shop", "buy", "link", "now", "here", "click", "store", "off",
+})
+
+
+def _only_labels_and_punctuation(line: str) -> bool:
+    """True when a line is just store labels ("Flipkart:" / "Buy - Amazon") or noise."""
+    words = [w.lower() for w in re.findall(r"[A-Za-z]+", line or "")]
+    if not words:
+        return True
+    return all(word in _BRAND_WORDS for word in words)
+
+
+def _drop_blocked_urls_from_line(line: str, blocked: list[str]) -> str:
+    output = line
+    for url in blocked:
+        output = output.replace(url, "")
+    return re.sub(r"\s{2,}", " ", output).strip(" \t-–—:|,·•")
+
+
+def partition_disallowed_blocks(text: str, allowed_kinds: set[str]) -> tuple[str, list[dict]]:
+    """Split a post into what stays and the product blocks a disabled network takes with it.
+
+    A block is one product's copy (the lines before the next blank line). When
+    every store link in a block is disabled, the **whole block** goes: its title,
+    size list and price describe a product this channel does not post, so leaving
+    the words behind — with no link to buy them — would publish a dead deal that
+    earns nothing and looks like a mistake.
+
+    A block that also carries an allowed store link keeps its copy, and only the
+    disabled URLs are removed from those lines. Informational/unknown URLs are
+    never touched.
+
+    Returns ``(kept_text, dropped)`` where each dropped entry is
+    ``{"lines": [...], "kinds": [...], "urls": [...]}`` so the caller can say
+    exactly what a switched-off network removed.
+    """
+    allowed = set(allowed_kinds)
+    kept_lines: list[str] = []
+    dropped: list[dict] = []
+    for block in _blocks(text):
+        store_urls = [url for line in block for url in find_urls(line)
+                      if classify_url(url) in STORE_KINDS]
+        blocked = [url for url in store_urls if classify_url(url) not in allowed]
+        if store_urls and len(blocked) == len(store_urls):
+            dropped.append({
+                "lines": [line for line in block if line.strip()],
+                "kinds": sorted({classify_url(url) for url in blocked}),
+                "urls": blocked,
+            })
+            continue
+        for line in block:
+            line_store_urls = [url for url in find_urls(line)
+                               if classify_url(url) in STORE_KINDS]
+            line_blocked = [url for url in line_store_urls if url in blocked]
+            if line_store_urls and len(line_blocked) == len(line_store_urls):
+                # The line exists only to carry a switched-off network's link
+                # ("Flipkart: https://…"): the label goes with the link.
+                continue
+            output = _drop_blocked_urls_from_line(line, line_blocked)
+            if not output or _only_labels_and_punctuation(output):
+                continue
+            kept_lines.append(output)
+        kept_lines.append("")
+    result = "\n".join(kept_lines)
+    result = re.sub(r"\n{3,}", "\n\n", result).strip()
+    return result, dropped
+
+
 def filter_disallowed_affiliate_links(text: str, allowed_kinds: set[str]) -> str:
     """Remove links disabled by merchant settings without discarding allowed deals.
 
     Only supported affiliate kinds (Amazon, EarnKaro merchants, HYPD, LehLah) are
-    filtered. Informational/unknown URLs are left untouched. A line containing
-    only disabled links is removed, while product copy and allowed URLs survive.
+    filtered. Informational/unknown URLs are left untouched. A block whose only
+    store links are disabled is removed with its copy, while product copy next to
+    an allowed link survives. See :func:`partition_disallowed_blocks` for the
+    dropped blocks themselves.
     """
-    allowed = set(allowed_kinds)
-    kept_lines: list[str] = []
-    for line in text.splitlines():
-        urls = find_urls(line)
-        blocked = [url for url in urls
-                   if classify_url(url) in {"amazon", "merchant", "hypd", "meesho", "lehlah"}
-                   and classify_url(url) not in allowed]
-        remaining = [url for url in urls if url not in blocked]
-        if urls and not remaining:
-            continue
-        output = line
-        for url in blocked:
-            output = output.replace(url, "")
-        if output.strip():
-            kept_lines.append(output.rstrip())
-    return "\n".join(kept_lines).strip()
+    kept, _dropped = partition_disallowed_blocks(text, allowed_kinds)
+    return kept
 
 
 def _render_base(
@@ -1193,7 +1275,10 @@ def _approval_render(text: str, amazon_tag: str) -> str:
                 elif classify_url(u) in ("merchant", "hypd", "meesho", "lehlah"):
                     # Drop merchant or hypd url from line
                     out_line = out_line.replace(u, "").strip()
-            if out_line.strip():
+            out_line = re.sub(r"\s{2,}", " ", out_line).strip(" \t-–—:|,·•")
+            # A line left holding only the network's name ("Flipkart:") is the
+            # label of a link this channel does not post — not copy.
+            if out_line.strip() and not _only_labels_and_punctuation(out_line):
                 kept_lines.append(out_line)
                 has_amazon = True
         elif line_has_non_amazon:
@@ -1396,6 +1481,45 @@ PROMO_PATTERNS = [
 ]
 
 
+#: Channel promotion / watermark lines. A line matching this carries no deal
+#: meaning: it is advertising for the *source* channel (or its admin), and the
+#: hub is expected to drop it rather than forward it to a creator's followers.
+_PROMO_LINE_RE = re.compile(
+    r"(?i)^\s*(?:"
+    r"join|subscribe|follow|join\s+channel|join\s+fast|share\s+with\s+friends|for\s+more|posted\s+by|credit|powered\s+by|loot\s+alert\s+by|"
+    r"admin|contact|dm|queries|support|follow\s+us|subscribe\s+us|join\s+our|telegram\s+channel|whatsapp\s+channel|"
+    r"more\s+loots?|more\s+deals?|more\s+offers?|daily\s+loots?|best\s+loots?|"
+    r"invite\s+link|group\s+link|channel\s+link|"
+    r"forwarded\s+from|via\s+@"
+    r")\b",
+    re.I,
+)
+#: A bare channel handle (``@somechannel``) or a bare invite link.
+_HANDLE_ONLY_RE = re.compile(r"^@[A-Za-z0-9_]{3,50}$")
+_INVITE_ONLY_RE = re.compile(
+    r"^[\s@]*https?://(?:t\.me|telegram\.me|chat\.whatsapp\.com)/\S+[\s]*$", re.I
+)
+
+
+def is_promo_line(line: str) -> bool:
+    """Is this line only channel promotion/watermark text (safe to drop)?"""
+    stripped = str(line or "").strip()
+    if not stripped:
+        return True
+    if _INVITE_ONLY_RE.match(stripped) or _HANDLE_ONLY_RE.match(stripped):
+        return True
+    if _PROMO_LINE_RE.search(stripped):
+        return True
+    # "Loot by @someone" style one-liners are watermarks too.
+    if re.search(r"(?i)(?:loot|deal|offer)\s*(?:by|via)\s*@?\w+", stripped) \
+            and len(stripped.split()) <= 6:
+        return True
+    if re.search(r"(?i)join.*now|subscribe.*now|follow.*now", stripped) \
+            and len(stripped) < 40:
+        return True
+    return False
+
+
 def clean_source_post(text: str) -> str:
     """Clean promotional watermarks, source telegram links, @admin tags,
     and invite links from source posts while PRESERVING product titles,
@@ -1411,16 +1535,7 @@ def clean_source_post(text: str) -> str:
     cleaned_lines: list[str] = []
 
     # Enhanced promo-line detection (Telugu + English + Hinglish)
-    promo_line_re = re.compile(
-        r"(?i)^\s*(?:"
-        r"join|subscribe|follow|join\s+channel|join\s+fast|share\s+with\s+friends|for\s+more|posted\s+by|credit|powered\s+by|loot\s+alert\s+by|"
-        r"admin|contact|dm|queries|support|follow\s+us|subscribe\s+us|join\s+our|telegram\s+channel|whatsapp\s+channel|"
-        r"more\s+loots?|more\s+deals?|more\s+offers?|daily\s+loots?|best\s+loots?|"
-        r"invite\s+link|group\s+link|channel\s+link|"
-        r"forwarded\s+from|via\s+@"
-        r")\b",
-        re.I,
-    )
+    promo_line_re = _PROMO_LINE_RE
 
     for line in lines:
         stripped = line.strip()
@@ -1595,10 +1710,26 @@ def classify_deal_category(text: str) -> list[str]:
     return matched or ["other"]
 
 
+# Categories that describe the *kind of offer* rather than the product: a promo
+# code, a cashback, a "loot deal", or simply "we could not tell". They never veto
+# a deal, because they are not about what is being sold — "🔥 BOAT AIRDOPES at
+# ₹1299 · Use code BOAT500" is electronics that happens to carry a coupon, and
+# dropping it for a creator who asked for electronics would be a lost sale caused
+# by our own vocabulary.
+SECONDARY_CATEGORIES = {"other", "recharge_freebies"}
+
+
 def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> bool:
     """Return True if the deal belongs to any of the allowed categories.
-    allowed_categories_spec: comma-separated list like 'clothing,electronics' or empty/all for all.
-    When set to 'all' or empty, NO restrictions are applied: ANY deal in the world is allowed!
+
+    allowed_categories_spec: comma-separated list like 'clothing,electronics', or
+    empty/all for no restriction at all.
+
+    A deal is dropped when the hub is **sure** it belongs to a product category
+    the destination did not ask for (a saree deal for an electronics-only
+    creator). A deal it cannot place — an unknown brand, or one whose only match
+    is a saving-type flag — passes, so a missing keyword can never silently cost a
+    sale. Set ``CATEGORY_FILTER_STRICT_UNKNOWN=on`` to drop even those.
     """
     s = (allowed_categories_spec or "").strip().lower()
     unrestricted = {"all", "any", "unrestricted", "all categories", "all deals", "*", "no_filter", "default"}
@@ -1610,8 +1741,11 @@ def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> boo
     # If the deal matches any allowed category, return True
     if deal_cats.intersection(allowed_set):
         return True
-    # If deal has uncategorized items ('other'), let it pass if explicitly permitted or 'other' in allowed_set
-    if "other" in deal_cats and ("other" in allowed_set or not allowed_set):
+    # Nothing but saving-type flags / "other": the product is unknown to us.
+    if not (deal_cats - SECONDARY_CATEGORIES):
+        return not getattr(config, "CATEGORY_FILTER_STRICT_UNKNOWN", False)
+    # If deal has uncategorized items ('other'), let it pass if explicitly permitted
+    if "other" in deal_cats and "other" in allowed_set:
         return True
     return False
 

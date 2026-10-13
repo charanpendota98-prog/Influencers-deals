@@ -74,6 +74,89 @@
   tick();
 })();
 
+// Phone-linking (OTP) pairing: show the live 8-character code WhatsApp puts on
+// the influencer's phone, without ever starting a session from the browser.
+// GET-only polling; the dashboard proxies the loopback endpoints.
+(function () {
+  const box = document.getElementById('pairbox');
+  if (!box) return;
+  const key = box.dataset.key;
+  if (!key) return;
+
+  function paint(code, phone, status) {
+    box.replaceChildren();
+    if (code) {
+      const card = document.createElement('div');
+      card.style.cssText = 'background:#052e16; border:1px solid #22c55e; padding:10px 12px; border-radius:8px; text-align:center;';
+      const hint = document.createElement('div');
+      hint.className = 'hint';
+      hint.style.cssText = 'font-size:11px; margin:0;';
+      hint.textContent = `WhatsApp → Linked devices → Link with phone number (${phone || 'this phone'}):`;
+      const value = document.createElement('div');
+      value.style.cssText = 'font-size:26px; font-weight:900; letter-spacing:4px; color:#4ade80; font-family:monospace;';
+      value.textContent = code;
+      const note = document.createElement('div');
+      note.className = 'hint';
+      note.style.cssText = 'font-size:11px; margin-top:4px;';
+      note.textContent = 'Type this code on the influencer phone. It is valid while this page shows it.';
+      card.append(hint, value, note);
+      box.appendChild(card);
+      return;
+    }
+    if (status === 'connected') {
+      const done = document.createElement('div');
+      done.style.cssText = 'background:#064e3b; color:#86efac; padding:8px 12px; border-radius:6px; font-weight:bold; font-size:13px;';
+      done.textContent = '✅ Phone linked — the code is no longer needed.';
+      box.appendChild(done);
+      return;
+    }
+    if (status === 'pairing') {
+      const waiting = document.createElement('p');
+      waiting.className = 'hint';
+      waiting.style.cssText = 'font-size:11px; margin:0;';
+      waiting.textContent = 'Pairing code requested — WhatsApp is answering. Keep this page open.';
+      box.appendChild(waiting);
+    }
+  }
+
+  let stopped = false;
+  async function tick() {
+    if (stopped) return;
+    let nextPollMs = 3000;
+    try {
+      const response = await fetch(`/api/wa/${encodeURIComponent(key)}/pairing`, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+      });
+      const state = await response.json();
+      if (state && state.ok) {
+        if (state.hasCode && state.code) {
+          paint(state.code, state.phone, state.status);
+        } else if (state.status === 'connected') {
+          paint(null, state.phone, 'connected');
+          stopped = true;
+          return;
+        } else if (state.status === 'pairing') {
+          paint(null, state.phone, 'pairing');
+        }
+      }
+      if (state && state.error) {
+        const error = document.createElement('p');
+        error.className = 'hint';
+        error.style.cssText = 'color:#fbbf24; font-size:11px; margin:0;';
+        error.textContent = `⚠ ${state.error}`;
+        box.replaceChildren(error);
+      }
+    } catch (_error) {
+      // Hub restarting or unavailable: keep whatever is on screen.
+      nextPollMs = 5000;
+    }
+    window.setTimeout(tick, nextPollMs);
+  }
+
+  tick();
+})();
+
 // Removals (delete a channel, a creator, a deal source) need one password
 // confirmation per unlock window: the first delete asks, later deletes in the
 // window do not. Adding and saving are never intercepted. Passwords travel
@@ -437,4 +520,354 @@
       button.textContent = 'Run live checks';
     }
   });
+})();
+
+/* --- Setup command center: live readiness (no reload, read-only) ----------
+   The panel is server-rendered first, so this is pure enhancement: it fetches
+   the same checklist JSON with `live=1`, which lets the dashboard ask the
+   WhatsApp hub for the real session state, and patches the cells that change
+   most often (phone link, WhatsApp live, worker, progress). */
+(() => {
+  const panel = document.getElementById('command-center');
+  if (!panel) return;
+  const src = panel.dataset.liveSrc;
+  if (!src) return;
+  let timer = null;
+  let failures = 0;
+
+  const setText = (selector, value) => {
+    const node = panel.querySelector(selector);
+    if (node && value !== undefined && value !== null) node.textContent = value;
+  };
+
+  function paint(payload) {
+    const summary = payload.summary || {};
+    const globals = payload.globals || {};
+    const bar = panel.querySelector('.command-bar > span');
+    if (bar) bar.style.width = `${summary.percent ?? 0}%`;
+    setText('.command-headline strong', `${summary.percent ?? 0}%`);
+    setText('[data-live-worker]',
+      `${globals.worker && globals.worker.done ? '🟢' : '🔴'} worker ${globals.worker && globals.worker.done ? 'running' : 'not running'}`);
+    const chips = panel.querySelectorAll('.command-chip');
+    if (chips[0] && summary.ready !== undefined) chips[0].textContent = `👥 ${summary.ready} ready to post`;
+    if (chips[1] && summary.blocked !== undefined) {
+      chips[1].textContent = `⚠️ ${summary.blocked} still blocked`;
+      chips[1].className = `command-chip ${summary.blocked ? 'is-warn' : 'is-ok'}`;
+    }
+    if (chips[2] && summary.mirroring !== undefined) chips[2].textContent = `🔁 ${summary.mirroring} mirroring to WhatsApp`;
+    (payload.creators || []).forEach((creator) => {
+      const steps = {};
+      (creator.steps || []).forEach((step) => { steps[step.id] = step; });
+      const phone = panel.querySelector(`[data-live-cell="phone-${creator.id}"]`);
+      if (phone && steps.phone) {
+        phone.textContent = steps.phone.done
+          ? '✅ linked'
+          : (creator.wa_status && creator.wa_status !== 'not_paired' ? `⛔ ${creator.wa_status}` : '➡️ not linked');
+        phone.className = `command-step is-${steps.phone.state}`;
+        phone.title = steps.phone.detail || '';
+      }
+      const live = panel.querySelector(`[data-live-cell="live-${creator.id}"]`);
+      if (live && steps.activate) {
+        live.textContent = steps.activate.done ? '🟢 live' : '· pending test';
+        live.className = `command-step is-${steps.activate.state}`;
+        live.title = steps.activate.detail || '';
+      }
+    });
+    const stamp = panel.querySelector('[data-live-updated]');
+    if (stamp) {
+      stamp.textContent = payload.live_error
+        ? `hub unreachable · saved state`
+        : `checked ${String(payload.generated_at || '').replace('T', ' ').replace('+00:00', 'Z')}`;
+    }
+  }
+
+  async function refresh() {
+    try {
+      const response = await fetch(src, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if (response.status === 401) return;
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error('readiness refresh failed');
+      failures = 0;
+      paint(payload);
+    } catch (error) {
+      failures += 1;
+    }
+    schedule();
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    const delay = failures ? Math.min(120000, 20000 * failures) : 20000;
+    timer = setTimeout(() => {
+      if (document.visibilityState === 'hidden') { schedule(); return; }
+      refresh();
+    }, delay);
+  }
+
+  schedule();
+})();
+
+/* --- Easy Setup stepper: keep the "what is done / next" track live --------
+   Read-only poll of the same checklist endpoint for the creator on screen. */
+(() => {
+  const panel = document.querySelector('[data-live-src][data-creator]');
+  if (!panel || panel.id !== 'next-steps') return;
+  const creator = panel.dataset.creator;
+  const src = `${panel.dataset.liveSrc}&inf_id=${encodeURIComponent(creator)}`;
+  let failures = 0;
+
+  function paint(payload) {
+    const creator = (payload.creators || [])[0];
+    if (!creator) return;
+    (creator.steps || []).forEach((step) => {
+      const dot = panel.querySelector(`[data-live-step="${step.id}"]`);
+      if (!dot) return;
+      const mark = step.done ? '✅' : (step.state === 'blocked' ? '⛔' : (step.state === 'next' ? '➡️' : '·'));
+      dot.className = `step-dot is-${step.state}`;
+      dot.title = `${step.label} — ${step.detail}`;
+      dot.textContent = `${mark} ${step.label}`;
+    });
+    const next = panel.querySelector('.next-action');
+    if (next && creator.next_step) {
+      const heading = next.querySelector('strong');
+      const copy = next.querySelector('p');
+      if (heading) heading.textContent = `🎯 Next: ${creator.next_step.label}`;
+      if (copy) copy.textContent = creator.next_step.action || creator.next_step.detail;
+    }
+  }
+
+  async function tick() {
+    try {
+      const response = await fetch(src, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if (response.status === 401) return;
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok && payload.ok) { failures = 0; paint(payload); }
+      else failures += 1;
+    } catch (error) {
+      failures += 1;
+    }
+    window.setTimeout(tick, failures ? Math.min(60000, 10000 * failures) : 10000);
+  }
+  tick();
+})();
+
+/* --- Self-check panel: re-run the read-only checks, including the hub ping -- */
+(() => {
+  const panel = document.getElementById('self-check');
+  if (!panel) return;
+  const src = panel.dataset.liveSrc;
+  if (!src) return;
+  const marquee = { ok: '✅', warn: '⚠️', fail: '⛔', skip: '·' };
+  const verdictText = { ready: '✅ READY', attention: '⚠️ ATTENTION', fail: '⛔ PROBLEMS' };
+  let failures = 0;
+
+  function paint(payload) {
+    const verdict = panel.querySelector('[data-live-verdict]');
+    if (verdict) {
+      verdict.textContent = verdictText[payload.verdict] || '⚠️ ATTENTION';
+      verdict.className = `selfcheck-verdict is-${payload.verdict}`;
+    }
+    (payload.checks || []).forEach((check) => {
+      const item = panel.querySelector(`.selfcheck-item[data-check="${check.id}"]`);
+      if (!item) return;
+      item.className = `selfcheck-item is-${check.state}`;
+      item.title = `${check.detail}${check.fix ? ` — fix: ${check.fix}` : ''}`;
+      const mark = item.querySelector('.selfcheck-mark');
+      if (mark) mark.textContent = marquee[check.state] || '·';
+      const small = item.querySelector('.selfcheck-body small');
+      if (small) small.textContent = check.detail;
+    });
+    const fixes = panel.querySelector('[data-live-fixes]');
+    if (fixes && Array.isArray(payload.next)) {
+      fixes.replaceChildren(...payload.next.map((check) => {
+        const li = document.createElement('li');
+        li.className = `is-${check.state}`;
+        const strong = document.createElement('strong');
+        strong.textContent = `${check.label}: `;
+        li.append(strong, document.createTextNode(check.detail));
+        if (check.fix) {
+          const span = document.createElement('span');
+          span.className = 'routing-note';
+          span.textContent = check.fix;
+          li.appendChild(span);
+        }
+        return li;
+      }));
+    }
+  }
+
+  async function tick() {
+    try {
+      const response = await fetch(src, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if (response.status === 401) return;
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok && payload.checks) { failures = 0; paint(payload); }
+      else failures += 1;
+    } catch (error) {
+      failures += 1;
+    }
+    window.setTimeout(tick, failures ? Math.min(180000, 30000 * failures) : 30000);
+  }
+  window.setTimeout(tick, 3000);
+})();
+
+/* --- Ops digest: keep the 24h numbers current without a reload ------------- */
+(() => {
+  const card = document.getElementById('ops-digest');
+  if (!card) return;
+  const src = card.dataset.liveSrc;
+  if (!src) return;
+  let failures = 0;
+  const set = (key, value) => {
+    const node = card.querySelector(`[data-live-ops="${key}"]`);
+    if (node && value !== undefined && value !== null) node.textContent = value;
+  };
+  const note = (key, value) => {
+    const node = card.querySelector(`[data-live-ops-note="${key}"]`);
+    if (node && value !== undefined && value !== null) node.textContent = value;
+  };
+  async function tick() {
+    try {
+      const response = await fetch(src, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if (response.status === 401) return;
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.ok) {
+        failures = 0;
+        set('posted', data.posts.posted);
+        set('failed', data.posts.failed);
+        set('retry', data.retry_queue);
+        set('worker', `${['running', 'idle', 'polling', 'healthy'].includes(data.worker.state) ? '🟢' : '🔴'} ${data.worker.state}`);
+        set('ready', `${data.creators.ready} / ${data.creators.total}`);
+        set('percent', `${data.creators.setup_percent}%`);
+        const bad = card.querySelector('[data-live-ops="failed"]');
+        if (bad) bad.className = data.posts.failed ? 'is-bad' : '';
+        const rate = data.delivery_rate_pct === null || data.delivery_rate_pct === undefined ? '\u2014' : data.delivery_rate_pct;
+        note('posted', `delivery ${rate}% \u00b7 ${data.posts.mirrored} mirrored`);
+        note('failed', `${data.posts.skipped} skipped \u00b7 ${data.posts.attempts} attempts`);
+        note('worker', `sources ${data.sources.active}/${data.sources.total} active`);
+        note('ready', `${data.creators.blocked} blocked \u00b7 ${data.creators.mirroring} mirroring`);
+        const failures = (data.posts.top_failures || []).map(f => `${f.count}\u00d7 ${f.reason}`).join(' \u00b7 ');
+        note('failures', failures);
+        const failuresRow = card.querySelector('[data-live-ops="failures"]');
+        if (failuresRow) failuresRow.style.display = failures ? '' : 'none';
+
+        const trend = data.trend || {};
+        const trendRow = card.querySelector('[data-live-ops="trend"]');
+        if (trendRow) {
+          if (trend.captured_days) {
+            const bits = [`<span class="ops-spark">${trend.sparkline || '\u00b7'}</span>`];
+            bits.push(`last ${trend.captured_days} day(s) of delivery`);
+            if (trend.green_streak) bits.push(`🟢 green ${trend.green_streak} day(s) in a row`);
+            else if (trend.delta_pct !== null && trend.delta_pct !== undefined) bits.push(`${trend.delta_pct >= 0 ? '+' : ''}${trend.delta_pct}% vs the previous day`);
+            bits.push('<small>\u00b7 history is one row per day: <code>python -m influencer_hub.cli snapshot</code></small>');
+            trendRow.innerHTML = bits.join(' ');
+          } else {
+            trendRow.innerHTML = 'No history yet \u2014 one cron line (<code>cli snapshot</code>) turns this into a trend.';
+          }
+        }
+        const chart = card.querySelector('[data-live-ops="chart"]');
+        if (chart && (trend.points || []).length >= 2) {
+          const tones = {ready: 'is-green', attention: 'is-warn'};
+          chart.innerHTML = trend.points.map(point => {
+            const note = `${point.day} \u00b7 ${point.posted} posted \u00b7 ${point.failed} failed`
+              + (point.delivery_pct === null || point.delivery_pct === undefined ? '' : ` \u00b7 ${point.delivery_pct}% delivered`);
+            return `<span class="ops-bar ${tones[point.verdict] || 'is-bad'}" `
+              + `style="height: ${Math.max(6, point.delivery_pct || 0)}%" title="${note}"></span>`;
+          }).join('');
+        }
+                const amazonRow = card.querySelector('[data-live-ops="amazon"]');
+        const amazon = data.amazon || {};
+        if (amazonRow && amazon.links) {
+          amazonRow.innerHTML = amazon.foreign_tag
+            ? `<strong class="is-bad">\u26d4 ${amazon.foreign_tag} Amazon link(s) carried someone else's tag.</strong>`
+            : `\u2705 Amazon: ${amazon.own_tag} link(s) in ${amazon.posts_with_amazon} post(s) carry the creator's <strong>own tag</strong>`
+              + (amazon.short_links ? ` \u00b7 ${amazon.short_links} short code(s) resolved before sending` : '')
+              + ` <small>\u00b7 read from the posts we really sent</small>`;
+        }
+                const blockerRow = card.querySelector('[data-live-ops="blocker"]');
+        const blocker = (data.creators || {}).biggest_blocker;
+        if (blockerRow && blocker) {
+          const labels = {tag: 'their own Amazon tag', approval: 'the approval channel', main: 'the main channel', whatsapp: 'the WhatsApp channel', phone: 'phone pairing', activate: 'activation', mirror: 'WhatsApp mirroring'};
+          blockerRow.textContent = `Biggest blocker: ${labels[blocker.step] || blocker.step} \u2014 ${blocker.count} creator(s) are waiting on it.`;
+        }
+      } else failures += 1;
+    } catch (error) {
+      failures += 1;
+    }
+    window.setTimeout(tick, failures ? Math.min(120000, 30000 * failures) : 30000);
+  }
+  tick();
+})();
+
+/* --- The ops alert preview: fetched only when the block is opened ---------- */
+(() => {
+  const block = document.getElementById('ops-alert-preview');
+  const target = document.querySelector('[data-live-ops="alert-preview"]');
+  if (!block || !target) return;
+  let loaded = false;
+  block.addEventListener('toggle', async () => {
+    if (!block.open || loaded) return;
+    loaded = true;
+    try {
+      const response = await fetch('/api/self-check?preview_alert=1',
+        { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      const preview = payload.alert_preview || {};
+      if (preview.error) throw new Error(preview.error);
+      const decision = preview.decision || {};
+      const why = preview.sends
+        ? `would be sent by the next \`cli self-check --alert\` (${decision.reason})`
+        : `nothing is sent right now (${decision.reason})`;
+      const channel = preview.ops_channel_configured
+        ? '' : '\n(OPS_TELEGRAM_CHANNEL is not configured, so nothing would be delivered.)';
+      target.textContent = `Verdict: ${payload.verdict} \u2014 ${why}${channel}\n\n${preview.message || ''}`;
+    } catch (error) {
+      target.textContent = `Could not load the preview: ${error.message}`;
+      loaded = false;
+    }
+  });
+})();
+
+/* --- Amazon scan: paste a source deal, see every link and each creator's tag -- */
+(() => {
+  const textarea = document.getElementById('amazon-scan-text');
+  const out = document.querySelector('[data-live-ops="amazon-scan"]');
+  if (!textarea || !out) return;
+  const buttons = Array.from(document.querySelectorAll('[data-amazon-scan]'));
+  async function run(mode) {
+    const text = (textarea.value || '').trim();
+    if (!text) { out.textContent = 'Paste a source deal first.'; return; }
+    out.textContent = 'Scanning\u2026';
+    try {
+      const query = new URLSearchParams({ text, tag: '' });
+      const fleet = mode === 'fleet' ? '&fleet=1' : '';
+      const response = await fetch(`/api/amazon-scan?${query.toString()}${fleet}`,
+        { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      const lines = [];
+      const scan = payload.scan || {};
+      lines.push(`Amazon links found: ${(scan.links || []).length}`);
+      (scan.links || []).forEach(link => {
+        lines.push(`  \u2022 ${link.kind}${link.asin ? ' ASIN ' + link.asin : ''} \u2192 ${link.action}`
+          + (link.source_tag ? `  [source tag: ${link.source_tag}]` : ''));
+        lines.push(`      ${link.url}`);
+      });
+      if (payload.fleet) {
+        const fleetData = payload.fleet;
+        lines.push('');
+        lines.push(`Fleet: ${fleetData.creators} creator(s), ${fleetData.own_tag} with their own tag`
+          + ` \u00b7 ${fleetData.ms}ms \u2014 ${fleetData.all_own_tags ? 'every creator gets their OWN tag' : 'PROBLEMS'}`);
+      } else if (payload.plan) {
+        lines.push('');
+        lines.push('Rendered post (first creator):');
+        lines.push(payload.plan.rendered);
+      }
+      out.textContent = lines.join('\n');
+    } catch (error) {
+      out.textContent = `Could not scan: ${error.message}`;
+    }
+  }
+  buttons.forEach(button => button.addEventListener('click', () => run(button.dataset.amazonScan)));
 })();

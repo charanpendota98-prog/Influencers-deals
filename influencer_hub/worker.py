@@ -13,7 +13,7 @@ import random
 import signal
 from collections import defaultdict
 
-from . import config, db, pipeline, polls, puller, scheduler
+from . import config, db, pipeline, polls, puller, scheduler, sources
 
 logger = logging.getLogger("influencer_hub.worker")
 
@@ -156,7 +156,14 @@ async def drain_deferred_deals(limit: int = 3) -> int:
             for per_channel in (result or {}).values()
             for status in (per_channel or {}).values()
         ]
-        still_held = any(status == "skipped:no_our_affiliate_after_guard" for status in statuses)
+        # A deal held for a missing own Amazon tag is not "processed": it stays in
+        # the retry queue (bounded by max_attempts) so it goes out the moment the
+        # owner pastes that creator's tag, instead of being silently dropped.
+        tag_hold = f"skipped:{pipeline.tag_proof.HOLD_REASON}"
+        still_held = any(
+            status in {tag_hold, "skipped:no_our_affiliate_after_guard"}
+            for status in statuses
+        )
         if not still_held:
             # Posted (or skipped for an unrelated reason): the retry queue entry
             # has done its job.
@@ -176,13 +183,19 @@ async def drain_deferred_deals(limit: int = 3) -> int:
                 deal_hash[:8], int(item.get("attempts") or 0),
             )
             continue
+        # Keep the *real* reason on the row: "no_own_amazon_tag" tells the owner
+        # to paste a tag, "still_unconverted" tells them to look at EarnKaro.
+        held_for_tag = tag_hold in statuses
         db.note_deferred_attempt(
             deal_hash, delay_seconds=pipeline.DEFERRED_RETRY_DELAY_SECONDS,
-            reason="still_unconverted",
+            reason=(pipeline.tag_proof.HOLD_REASON if held_for_tag
+                    else "still_unconverted"),
         )
         logger.info(
-            "Deferred deal %s still unconverted (attempt %s/%s)",
-            deal_hash[:8], int(item.get("attempts") or 0) + 1, int(item.get("max_attempts") or 1),
+            "Deferred deal %s %s (attempt %s/%s)",
+            deal_hash[:8],
+            "still held: no own Amazon tag" if held_for_tag else "still unconverted",
+            int(item.get("attempts") or 0) + 1, int(item.get("max_attempts") or 1),
         )
     return drained
 
@@ -276,10 +289,33 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
     return {"pulled": len(records), "handled": handled, "retry_sources": retried}
 
 
+def ensure_default_source() -> dict | None:
+    """Make sure the hub default source exists before the first pull.
+
+    A creator with no source picked posts from the hub default; the worker is
+    often the only thing running on a fresh box, so it adds
+    ``https://t.me/LootZoneIndia11`` itself. Idempotent, and it never touches a
+    source the operator chose. A failure here must not stop the worker — the
+    affected creators are simply skipped until the pool can be written.
+    """
+    try:
+        state = sources.ensure_default()
+    except Exception:
+        logger.exception(
+            "Could not ensure the default deal source; creators with no source of "
+            "their own will be skipped until it can be added"
+        )
+        return None
+    if state.get("added"):
+        logger.info("Default deal source %s added to the pool", state.get("spec"))
+    return state
+
+
 async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     """Run continuously; recover from transient failures with capped backoff."""
     stop_event = stop_event or asyncio.Event()
     db.init()
+    ensure_default_source()
     _record_heartbeat("starting")
     heartbeat_task = asyncio.create_task(_heartbeat_loop(stop_event))
     poll_dispatch_task = asyncio.create_task(_poll_dispatch_loop(stop_event))

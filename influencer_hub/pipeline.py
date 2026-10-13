@@ -23,9 +23,11 @@ from . import (
     config,
     db,
     earnkaro,
+    fidelity,
     hypd_shortlinks,
     lehlah_shortlinks,
     link_router,
+    tag_proof,
     telegram_ops,
     whatsapp_client,
 )
@@ -123,20 +125,39 @@ async def _earnkaro_map_for(text: str) -> dict[str, str]:
     return converted
 
 
+def whatsapp_gap_seconds() -> float:
+    """One random gap from the configured anti-ban window (60–80 s by default).
+
+    A fresh random value per send, never a fixed one: a bot that always waits
+    exactly 60 seconds is a pattern in itself. The window is configurable
+    (``WA_SEND_GAP_MIN``/``WA_SEND_GAP_MAX``), and a reversed window is repaired
+    rather than obeyed.
+    """
+    low = float(getattr(config, "WA_SEND_GAP_MIN", 60) or 0)
+    high = float(getattr(config, "WA_SEND_GAP_MAX", 80) or 0)
+    if high < low:
+        low, high = high, low
+    return random.uniform(low, high)
+
+
 async def apply_whatsapp_safety_pacing(session_key: str) -> None:
     """Reserve a durable, conservative WhatsApp send slot for this session.
 
     SQLite serializes the slot across worker/dashboard processes and preserves
-    it across restarts. Consecutive reservations are separated by a random
-    45–65 second gap, with a 120–150 second rest at the hourly window boundary.
-    These delays reduce send frequency; they cannot guarantee account safety
-    or prevent platform enforcement. Failed sends also consume their reserved
-    slot, intentionally favoring conservative pacing over throughput.
+    it across restarts. Consecutive reservations are separated by a random gap
+    inside the configured window (60–80 seconds by default), with a 120–150
+    second rest at the hourly window boundary. These delays reduce send
+    frequency; they cannot guarantee account safety or prevent platform
+    enforcement. Failed sends also consume their reserved slot, intentionally
+    favoring conservative pacing over throughput.
     """
     delay = db.reserve_whatsapp_send(
         session_key,
-        gap_seconds=random.uniform(45.0, 65.0),
-        rest_seconds=random.uniform(120.0, 150.0),
+        gap_seconds=whatsapp_gap_seconds(),
+        rest_seconds=random.uniform(
+            float(getattr(config, "WA_HOURLY_REST_MIN", 120) or 0),
+            float(getattr(config, "WA_HOURLY_REST_MAX", 150) or 0),
+        ),
     )
     if delay > 0:
         await asyncio.sleep(delay)
@@ -215,7 +236,8 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
             if btn_enabled and btn_url and btn_url not in wa_text:
                 wa_text = f"{text}\n\n👉 {btn_text}: {btn_url}"
 
-            # Apply 45-65s gap + 120-150s hourly safety pacing
+            # Apply the configured anti-ban gap (60-80s by default) plus the
+            # hourly rest, through the durable per-session slot.
             await apply_whatsapp_safety_pacing(key)
 
             await whatsapp_client.send_text(key, channel["identifier"], wa_text)
@@ -268,6 +290,828 @@ def _is_source_allowed(source_name: str, allowed_spec: str) -> bool:
     return any(a in src or src in a for a in allowed_list)
 
 
+def _destination_allowed_kinds(inf: dict, ch: dict, role: str,
+                              *, strip_amz: bool) -> tuple[set[str], bool, bool]:
+    """Which affiliate link kinds a destination may carry, plus its switches.
+
+    Settings are combined conservatively across the profile and channel:
+    strings such as "all" and "unrestricted" mean enabled, not truthy special
+    states that accidentally turn on only-Amazon. Returns
+    ``(allowed_kinds, allow_earnkaro, only_amazon)``.
+    """
+    # 4. Settings are combined conservatively across the profile and
+    # channel. Strings such as "all" and "unrestricted" mean enabled,
+    # not truthy special states that accidentally turn on only-Amazon.
+    allow_amz = (
+        _setting_enabled(ch.get("allow_amazon"), True)
+        and _setting_enabled(inf.get("allow_amazon"), True)
+    )
+    allow_ek = (
+        _setting_enabled(ch.get("allow_earnkaro"), True)
+        and _setting_enabled(inf.get("allow_earnkaro"), True)
+    )
+    allow_hypd = (
+        _setting_enabled(ch.get("allow_hypd"), True)
+        and _setting_enabled(inf.get("allow_hypd"), True)
+    )
+    only_amz = (
+        _setting_enabled(ch.get("only_amazon"), False, unrestricted=False)
+        or _setting_enabled(inf.get("only_amazon"), False, unrestricted=False)
+    )
+    # Network switches are independent: Amazon can post alongside
+    # selected EarnKaro/HYPD links. only_amazon is the explicit
+    # exclusive-mode override.
+    if only_amz:
+        allow_amz, allow_ek, allow_hypd = True, False, False
+    if strip_amz:
+        allow_amz = False
+    if role == "approval":
+        allow_ek = allow_hypd = False
+
+    allowed_kinds: set[str] = set()
+    if allow_amz:
+        allowed_kinds.add("amazon")
+    if allow_ek:
+        allowed_kinds.add("merchant")
+    if allow_hypd:
+        # HYPD owns the Meesho route. Existing HYPD affiliate links
+        # can be retagged; raw Meesho URLs stay intact until an official
+        # HYPD generator contract is configured.
+        allowed_kinds.update({"hypd", "meesho"})
+    # LehLah-tagged Meesho links carry an existing publisher attribution.
+    # Keep them (unless the channel is explicitly Amazon-only/approval)
+    # and never route them through EarnKaro or strip their query params.
+    if not only_amz and role != "approval":
+        allowed_kinds.add("lehlah")
+    return allowed_kinds, allow_ek, only_amz
+
+
+def mirror_main_to_whatsapp_enabled() -> bool:
+    """Global default for the main-channel -> WhatsApp mirror.
+
+    The Telegram main channel already decided the deal is worth posting; the
+    mirror makes sure the creator's WhatsApp destinations receive the same
+    offer (with the creator's own Amazon tag). A per-channel
+    ``mirror_whatsapp`` value of '1'/'0' overrides this, and the dashboard's
+    Mirror switch writes it.
+    """
+    value = db.get_global_setting(
+        "mirror_main_to_whatsapp", "1" if config.MIRROR_MAIN_TO_WHATSAPP else "0"
+    )
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _channel_mirror_enabled(inf: dict, ch: dict,
+                           global_default: bool | None = None) -> bool:
+    """'' inherits the global setting; '1'/'0' decide for this channel only.
+
+    ``global_default`` lets a hub-wide caller (the dashboard, thousands of
+    creators) read the setting once instead of once per channel.
+    """
+    raw = str(ch.get("mirror_whatsapp") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if raw in {"0", "false", "no", "off", "disabled", "none"}:
+        return False
+    if global_default is None:
+        return mirror_main_to_whatsapp_enabled()
+    return bool(global_default)
+
+
+MIRROR_SOURCE_ROLES = {"broadcast"}
+MIRROR_TARGET_PLATFORMS = {"whatsapp_group", "whatsapp_channel"}
+
+
+async def _render_and_deliver_destination(
+    inf: dict,
+    ch: dict,
+    deal_text: str,
+    *,
+    sig: str,
+    source_channel: str = "",
+    force_unconverted: bool = False,
+    role: str = "broadcast",
+    strip_amz: bool = False,
+    effective_amz_tag: str = "",
+    ek_cache: dict | None = None,
+    seen_physical_in_this_run: set | None = None,
+    seen_content_in_this_run: set | None = None,
+    mirror_source_id: int = 0,
+    bypass_display_filters: bool = False,
+) -> str:
+    """Render, money-guard and deliver one deal to one destination.
+
+    This is the single delivery path for both a normal deal post and a mirror
+    copy, so a mirrored WhatsApp post passes exactly the same affiliate,
+    commission-guard, dedup and rate-limit checks as a first-class post — the
+    only difference is which filters are allowed to drop it.
+
+    Returns the delivery status string (`posted`, `failed:…`, `skipped…`).
+
+    ``bypass_display_filters`` is used by the mirror pass: the Telegram main
+    channel has already accepted the deal, so the display/volume filters
+    (source label, posting window, category, price, quality tier) must not drop
+    it again on the WhatsApp side. Every affiliate/money check still runs.
+    """
+    ek_cache = ek_cache if ek_cache is not None else {}
+    seen_physical_in_this_run = (
+        seen_physical_in_this_run if seen_physical_in_this_run is not None else set()
+    )
+    seen_content_in_this_run = (
+        seen_content_in_this_run if seen_content_in_this_run is not None else set()
+    )
+
+    # A mirrored post was already accepted by the main Telegram channel, so
+    # these display filters must not silently drop it again on the WhatsApp
+    # side; every money guard further down still runs unchanged.
+    if not bypass_display_filters:
+        # 1. Source Specification Filter (an empty/all/unrestricted value means no restriction)
+        allowed_sources = ch.get("allowed_sources") or inf.get("allowed_sources") or ""
+        if source_channel and not _is_source_allowed(source_channel, allowed_sources):
+            return "skipped"
+
+        # 2. Posting window (empty/all/unrestricted remains 24/7)
+        schedule = ch.get("posting_schedule") or inf.get("posting_schedule") or ""
+        if not link_router.is_time_in_schedule(schedule):
+            return "skipped"
+
+        # 3. Category and price filters are no-ops for all/unrestricted and
+        # intentionally pass deals with missing metadata/prices.
+        cat_filter = ch.get("categories") or inf.get("categories") or ""
+        if not link_router.matches_category_filter(deal_text, cat_filter):
+            return "skipped"
+        filter_spec = ch.get("price_filter") or inf.get("price_filter") or "all"
+        max_p, min_p = _parse_price_filter_spec(filter_spec)
+        if not link_router.matches_price_filter(deal_text, max_price=max_p, min_price=min_p):
+            return "skipped"
+
+    # 3b. WRAPPER LINKS: a post can hide its destination behind a
+    # shortener (bit.ly, tinyurl, dl.flipkart.com/…, fkrt.it/…, amzn.to,
+    # amzn.eu, a.co…). Until it is resolved we cannot know whether the
+    # link pays us, so every wrapper is unwrapped *before* anything
+    # classifies, filters or converts the deal:
+    #   * Amazon destination -> OUR canonical /dp/ASIN?tag=OURTAG
+    #   * merchant destination -> the real URL, which the normal EarnKaro
+    #     conversion below turns into OUR ekaro link
+    #   * unknown destination -> left visible and reported, never silent
+    # Links written without http:// ("flipkart.com/…", "amzn.to/…") are
+    # invisible to every URL stage, so they are promoted to real URLs
+    # first — then resolved, classified, converted and verified like any
+    # other link instead of travelling through the post untouched.
+    render_text = link_router.promote_scheme_less_links(deal_text)
+    unresolved_wrapped: list[str] = []
+    if link_router.has_opaque_link(render_text):
+        render_text, unresolved_wrapped = await link_router.resolve_opaque_links_in_text_async(
+            render_text, effective_amz_tag
+        )
+        still_opaque = link_router.unresolved_amazon_shorts(render_text)
+        if still_opaque:
+            # Never stay silent about a link whose embedded tag we could
+            # not verify: the post goes out with best-effort attribution.
+            logging.getLogger(__name__).warning(
+                "UNRESOLVED AMAZON SHORT inf=%s ch=%s tag=%s links=%s — "
+                "tag appended but the short code still decides attribution",
+                inf.get("id"), ch.get("id"), effective_amz_tag, still_opaque[:3],
+            )
+        wrapped_left = [
+            url for url in unresolved_wrapped
+            if not link_router.is_amazon_short_host(url)
+        ]
+        if wrapped_left:
+            logging.getLogger(__name__).warning(
+                "UNRESOLVED WRAPPED LINK inf=%s ch=%s tag=%s links=%s — the wrapper hid its "
+                "destination; attribution is unverified and the deal is treated as "
+                "unmonetised (retried while nothing else pays)",
+                inf.get("id"), ch.get("id"), effective_amz_tag, wrapped_left[:3],
+            )
+
+    urls = link_router.find_urls(render_text)
+    kinds = {link_router.classify_url(url) for url in urls}
+    has_amz = "amazon" in kinds
+    present_affiliate_kinds = kinds.intersection(
+        {"amazon", "merchant", "hypd", "meesho", "lehlah"}
+    )
+
+    allowed_kinds, allow_ek, only_amz = _destination_allowed_kinds(
+        inf, ch, role, strip_amz=strip_amz
+    )
+
+    # Approval and only-Amazon channels need a native Amazon link. If
+    # every supported merchant in a mixed post is disabled, skip it;
+    # otherwise keep the deal and remove only the disabled URLs.
+    if (role == "approval" or only_amz) and not has_amz:
+        return "skipped"
+    if present_affiliate_kinds and not present_affiliate_kinds.intersection(allowed_kinds):
+        return "skipped"
+    if not bypass_display_filters:
+        # ADVANCED QUALITY FILTER: Only post B-tier and above (score 50+) to prevent 'motham vachinave' spam
+        # S=90-100 (must post), A=75-89 (good), B=50-74 (average), C<50 (skip)
+        # Priority: channel -> creator -> global setting.
+        try:
+            min_tier = str(
+                ch.get("min_deal_tier")
+                or inf.get("min_deal_tier")
+                or db.get_global_setting("min_deal_tier", "C")
+            ).strip().upper()
+            if min_tier not in {"S", "A", "B", "C"}:
+                min_tier = "C"
+            if min_tier != "C" and not link_router.is_high_quality_deal(deal_text, min_tier=min_tier):
+                # Still allow if it has strong affiliate (Amazon) and price is very low (flash loot)
+                adv = link_router.calculate_advanced_loot_score(deal_text)
+                # Don't skip if it's S/A tier or has very low price (<199) even if overall C
+                if adv["tier"] not in {"S", "A", "B"}:
+                    price = link_router.extract_price(deal_text)
+                    if price is None or price > 199:
+                        return f"skipped:quality_tier_{adv['tier']}_lt_{min_tier}"
+        except Exception:
+            pass
+    # Wrappers were already unwrapped above (step 3b), so filtering an
+    # affiliate kind now drops links the channel really disabled —
+    # including the ones a wrapper was hiding. A product block whose only links
+    # belong to a switched-off network goes with its copy: a title and price with
+    # no link to buy them would be a dead deal, and half a product's text is
+    # exactly the "unwanted text / missing text" the owner refuses to see.
+    render_text, dropped_blocks = link_router.partition_disallowed_blocks(
+        render_text, allowed_kinds
+    )
+    if dropped_blocks:
+        logging.getLogger(__name__).info(
+            "NETWORK FILTER inf=%s ch=%s removed %s block(s) for switched-off network(s): %s",
+            inf.get("id"), ch.get("id"), len(dropped_blocks),
+            [block["kinds"] for block in dropped_blocks],
+        )
+
+    # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel.
+    # A skip is written to the delivery log (status skipped + the reason), so
+    # "no duplicates" is something the owner can *see* rather than trust.
+    def _note_skip(reason: str) -> str:
+        try:
+            db.record_post(inf["id"], ch["id"], sig, status="skipped", error=reason)
+        except Exception:  # pragma: no cover - logging a skip must never break a run
+            pass
+        return reason
+
+    if db.already_posted(inf["id"], ch["id"], sig):
+        return _note_skip("skipped:duplicate_same_product")
+    # 8b. GLOBAL physical channel dedup: same deal already posted to same Telegram/WhatsApp identifier by ANY influencer?
+    # This stops duplicates when multiple influencers are configured to post to same @loots_channel (screenshot case).
+    try:
+        if db.already_posted_to_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), sig):
+            return _note_skip("skipped:global_identifier_dedup")
+        # In-memory cross-influencer dedup for this run (race-safe for same batch)
+        phys_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), sig)
+        if phys_key in seen_physical_in_this_run:
+            return _note_skip("skipped:run_batch_dedup")
+    except Exception:
+        pass
+
+    if allow_ek:
+        if ek_cache.get("map") is None:
+            ek_cache["map"] = await _earnkaro_map_for(render_text)
+        channel_ek_map = ek_cache["map"]
+    else:
+        channel_ek_map = {}
+
+    # Bitly token priority: channel -> influencer -> global key explicitly
+    # allowlisted for this owned influencer profile. No other influencer
+    # can consume the operator's global token by default.
+    influencer_key = str(inf.get("bitly_api_key") or "").strip()
+    channel_key = str(ch.get("bitly_api_key") or "").strip()
+    global_key = (
+        config.BITLY_API_KEY
+        if str(inf.get("id") or "") in config.BITLY_GLOBAL_INFLUENCER_IDS
+        else ""
+    )
+    effective_bitly_key = channel_key or influencer_key or global_key
+    # EarnKaro and Meesho/HYPD are OUR accounts: with central accounts
+    # on (default) the HYPD store is always ours, whatever the row says.
+    effective_hypd_store = accounts.hypd_store_for(inf, ch)
+    shortened_map = {}
+    # Money Radar switches (global, read once per channel).
+    try:
+        meesho_fallback = meesho_earnkaro_fallback_enabled()
+    except Exception:
+        meesho_fallback = bool(config.MEESHO_EARNKARO_FALLBACK)
+    try:
+        allow_unconverted_posts = allow_unconverted_posts_enabled()
+    except Exception:
+        allow_unconverted_posts = bool(config.ALLOW_UNCONVERTED_POSTS)
+    try:
+        only_earning = only_earning_deals_enabled()
+    except Exception:
+        only_earning = bool(config.ONLY_EARNING_DEALS)
+
+    if effective_bitly_key and role != "approval":
+        # Check if ADVANCED ONLY-OUR-LINKS mode is enabled (user requested "ONLY MANA LINK KI")
+        # When enabled, generic merchant Bitly is DISABLED; only OUR Amazon/HYPD via advanced shortener will be shortened
+        try:
+            _db_only_our = str(db.get_global_setting("advanced_only_our_links", "")).strip().lower()
+            if _db_only_our:
+                _only_our_enabled = _db_only_our in {"1", "true", "yes", "on"}
+            else:
+                _only_our_enabled = bool(config.ADVANCED_ONLY_OUR_LINKS)
+        except Exception:
+            _only_our_enabled = bool(config.ADVANCED_ONLY_OUR_LINKS)
+
+        if _only_our_enabled:
+            # ADVANCED MODE: Skip generic merchant Bitly, ONLY OUR links via advanced shortener later
+            shortened_map = {}
+        else:
+            # Classic mode: Bitly for long merchant links (Flipkart etc. not yet converted)
+            # Render base version to identify final URLs that will appear
+            base_rendered = link_router.render_for_influencer(
+                render_text, effective_amz_tag, channel_ek_map, role=role, strip_amazon=strip_amz,
+                clean_promos=True, hypd_store_id=effective_hypd_store,
+                meesho_earnkaro_fallback=meesho_fallback,
+            )
+            # Amazon, HYPD, and existing LehLah affiliate URLs never go
+            # through generic Bitly. Their first-party routes are applied later.
+            # EarnKaro shorteners (ekaro.in, fktr.in, etc.) are already short and must stay as-is.
+            from urllib.parse import urlparse as _bt_urlparse
+            _ek_shortener_hosts = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "myntr.it"}
+            def _is_earnkaro_short(url: str) -> bool:
+                try:
+                    h = (_bt_urlparse(url).hostname or "").lower()
+                    return h in _ek_shortener_hosts or (h.startswith("www.") and h[4:] in _ek_shortener_hosts)
+                except Exception:
+                    return False
+            final_urls = [
+                url for url in link_router.find_urls(base_rendered)
+                if link_router.classify_url(url) not in {"amazon", "hypd", "meesho", "lehlah"}
+                and not _is_earnkaro_short(url)
+            ]
+            # PERFECT CHECK: Ensure Amazon product links are never Bitly-shortened via generic path
+            # Only shorten if multiple links or excessively long URL (>65 chars)
+            should_shorten = (len(final_urls) >= 2) or any(len(url) > 65 for url in final_urls)
+            if should_shorten:
+                shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
+
+    # === OWN-TAG GATE: never sign a creator's Amazon link with somebody else ===
+    # The owner's rule: whatever tag a creator is given, the Amazon links on their
+    # channels carry it. When this channel has no own tag (empty, or still the
+    # hub-wide shared default) and the deal carries an Amazon link, the post is
+    # HELD — parked for a bounded retry and reported — instead of quietly paying
+    # the shared account while the creator loses the commission.
+    #
+    # This gate runs for EVERY role on purpose, including ``approval``: an
+    # approval channel is still a channel of that creator, and the link in the
+    # approval copy is the link the owner looks at before saying yes — a
+    # wrongly-signed link there is the same leak, one click away from going out.
+    # Nobody loses sight of the deal: the hold is logged, audited
+    # (``amazon_tag_hold``), parked in the deferred queue and listed on 🏷️ Tag
+    # proof until the tag is saved, at which point the worker posts it.
+    hold = tag_proof.holds(inf, ch, render_text, strip_amazon=strip_amz)
+    if hold["hold"]:
+        info = hold["signing"]
+        logging.getLogger(__name__).warning(
+            "OWN-TAG HOLD inf=%s ch=%s creator=%r would post Amazon links as %s "
+            "(the creator has no own tag) — held, not signed with the shared id",
+            inf.get("id"), ch.get("id"), info.get("creator"), info.get("tag") or "(none)",
+        )
+        try:
+            db.defer_deal(deal_text, source=source_channel,
+                          reason=tag_proof.HOLD_REASON,
+                          delay_seconds=DEFERRED_RETRY_DELAY_SECONDS)
+        except Exception:  # pragma: no cover - parking must never break a run
+            logging.getLogger(__name__).exception("could not park the held deal")
+        try:
+            from . import security
+            security.audit("pipeline", "system", "amazon_tag_hold",
+                           target=info.get("creator") or f"creator #{inf.get('id')}",
+                           detail=(f"tag {info.get('tag') or '(none)'} is the shared default; "
+                                   f"channel {ch.get('identifier') or ch.get('id')} holds the post"))
+        except Exception:  # pragma: no cover - auditing is best-effort
+            pass
+        return f"skipped:{tag_proof.HOLD_REASON}"
+
+    rendered = link_router.render_for_influencer(
+        render_text, effective_amz_tag, channel_ek_map, shortened_links=shortened_map,
+        role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store,
+        meesho_earnkaro_fallback=meesho_fallback,
+    )
+    # === TEXT FIDELITY: the source's deal text is what goes out ===
+    # The renderer above is the rich one (it may drop a line it reads as a
+    # watermark). Before anything is published the post is compared with the text
+    # it came from: a product line that would go missing, or a line that would
+    # appear from nowhere, is caught here. If real text would be lost, the
+    # conservative renderer runs (URLs rewritten, every source line kept) and wins
+    # when it keeps more of the source. Either way the verdict is logged, and a
+    # recovery is audited — nothing is published that reads worse than the source.
+    def _conservative_render() -> str:
+        # The conservative renderer is the same canonical renderer with promo
+        # cleaning off: same links, same shortener, same policy — but every source
+        # line is kept, so nothing the rich pass read as a watermark can vanish.
+        return link_router.render_for_influencer(
+            render_text, effective_amz_tag, channel_ek_map, shortened_links=shortened_map,
+            role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store,
+            meesho_earnkaro_fallback=meesho_fallback,
+            clean_promos=False,
+        )
+
+    rendered, fidelity_report = fidelity.enforce(
+        render_text, rendered, fallback_render=_conservative_render
+    )
+    _fid_log = logging.getLogger(__name__)
+    if fidelity_report.get("recovered"):
+        _fid_log.warning(
+            "TEXT FIDELITY RECOVERED inf=%s ch=%s: the rich render would have lost %s — "
+            "posted the conservative render instead",
+            inf.get("id"), ch.get("id"),
+            (fidelity_report.get("previous") or {}).get("missing", [])[:3],
+        )
+        try:
+            from . import security
+
+            security.audit(
+                "pipeline", "system", "text_fidelity_recovered",
+                target=str(inf.get("name") or f"creator #{inf.get('id')}"),
+                detail=(f"ch {ch.get('identifier') or ch.get('id')}: kept every source "
+                        f"line; the rich render would have dropped "
+                        f"{(fidelity_report.get('previous') or {}).get('missing', [])[:2]}"),
+            )
+        except Exception:  # pragma: no cover - auditing is best-effort
+            pass
+    elif not fidelity_report.get("ok"):
+        _fid_log.warning(
+            "TEXT FIDELITY inf=%s ch=%s: %s | missing=%s added=%s",
+            inf.get("id"), ch.get("id"), fidelity_report["summary"],
+            fidelity.first_missing(fidelity_report), fidelity_report["added"][:3],
+        )
+    # ADVANCED SHORTENER: ONLY OUR affiliate links are shortened
+    # - HYPD links with OUR store ID (93944) -> first-party /m/<code> or Bitly fallback
+    # - Amazon links with OUR tag (e.g. mytag-21) -> verified first-party /a/<code>?tag= or Bitly fallback
+    # Generic merchant links (Flipkart etc.) are already handled via EarnKaro's ekaro.in, no extra Bitly needed
+    # This advanced system ensures ONLY MANA LINK KI MATHARME short avtundi, vere vallavi kaadu
+    if role != "approval":
+        from . import advanced_shortener
+        rendered = await advanced_shortener.shorten_our_links_advanced(
+            rendered, effective_amz_tag, effective_hypd_store, bitly_token=effective_bitly_key
+        )
+        if config.LEHLAH_SHORTLINKS_ENABLED:
+            rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
+        # Deduplicate identical short URLs (e.g., amzn.to + long link both became same bit.ly)
+        rendered = link_router.deduplicate_urls_in_text(rendered)
+
+        # === COMMISSION GUARD: perfect verification that every shortened/posted link is OUR affiliate ===
+        # User: "SHORTEN LINK CHETHE PEREFCTGA CORRECT GA MANA AFFILAT ELINK RAVALI OOKAYNAA"
+        # We audit FINAL rendered text before dispatch. Any non-OUR leak is logged and sanitized.
+        try:
+            from . import commission_guard
+            log = logging.getLogger(__name__)
+            expected_pubid = (db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or "").strip()
+            audit = commission_guard.audit_rendered_text(
+                rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
+                bitly_map=shortened_map, allowed_kinds=allowed_kinds,
+                # Provenance: a wrapper that also sits in the untouched
+                # source post belongs to the source, not to us.
+                source_text=deal_text,
+            )
+            if not audit["ok"]:
+                log.warning(
+                    "COMMISSION GUARD leak inf=%s ch=%s tag=%s store=%s pubid=%s allowed=%s issues=%s snippet=%.200s",
+                    inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid, allowed_kinds,
+                    "; ".join(audit["issues"])[:500], rendered[:200]
+                )
+                # Sanitize: remove wrong-tag Amazon / wrong-store HYPD links so
+                # nobody else's attribution can ride along with our post.
+                sanitized, _ = commission_guard.sanitize_rendered_text(
+                    rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
+                )
+                if commission_guard.our_affiliate_urls(
+                    sanitized, effective_amz_tag, effective_hypd_store, expected_pubid,
+                    bitly_map=shortened_map, source_text=deal_text,
+                ):
+                    rendered = sanitized
+                else:
+                    # No OUR affiliate left — posting would earn zero. Skip this channel.
+                    return "skipped:no_our_affiliate_after_guard"
+            elif not commission_guard.our_affiliate_urls(
+                rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
+                bitly_map=shortened_map, source_text=deal_text,
+            ):
+                # The hard checks passed but nothing in the post pays us.
+                # Every link is informational, or a merchant link EarnKaro
+                # never converted, or a raw Meesho URL (nothing can mint
+                # an affiliate link from those by design).
+                unmonetised = commission_guard.unmonetised_links(audit, allowed_kinds)
+                # Wrappers are channel-independent: they are reported even
+                # when every affiliate kind is enabled.
+                wrapped = commission_guard.unmonetised_links(
+                    audit,
+                    set(allowed_kinds) | set(commission_guard.WRAPPED_KINDS),
+                    kinds=commission_guard.WRAPPED_KINDS,
+                )
+                # A conversion failure on a store EarnKaro is known to
+                # cover is worth retrying: hold the deal back and let the
+                # worker re-read the source post, so it goes out converted
+                # a few minutes later instead of posting a free link now.
+                # Unknown hosts stay posted: an unsupported store earns
+                # nothing whether or not we delay it.
+                retryable = [
+                    detail for detail in unmonetised
+                    if link_router.is_known_merchant_host(str(detail.get("url") or ""))
+                ]
+                # A wrapper whose destination we could not resolve is the
+                # same problem as a failed conversion: the link may pay
+                # nobody, so hold the deal and let the worker retry it.
+                pending_wrappers = [
+                    str(detail.get("url") or "")
+                    for detail in wrapped
+                    if str(detail.get("url") or "")
+                    and not link_router.is_amazon_short_host(str(detail.get("url") or ""))
+                ]
+                park_reason = "earnkaro_unconverted" if retryable else "unresolved_wrapper"
+                if ((retryable or pending_wrappers) and not allow_unconverted_posts
+                        and not force_unconverted
+                        and earnkaro.credentials_configured()):
+                    log.warning(
+                        "UNMONETISED DEAL PARKED FOR A RETRY inf=%s ch=%s tag=%s "
+                        "store=%s pubid=%s reason=%s unconverted=%s wrapped=%s (set "
+                        "ALLOW_UNCONVERTED_POSTS=1 to post unconverted/wrapped links anyway)",
+                        inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid,
+                        park_reason,
+                        [d.get("url") for d in retryable][:5], pending_wrappers[:5],
+                    )
+                    try:
+                        db.defer_deal(
+                            deal_text, source=source_channel, reason=park_reason,
+                            delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
+                            max_attempts=DEFERRED_MAX_ATTEMPTS,
+                        )
+                    except Exception:  # pragma: no cover - a retry gap must never break posting
+                        log.exception("could not park the deal for a retry")
+                    return "skipped:no_our_affiliate_after_guard"
+                if unmonetised:
+                    # Zero-commission by design or unsupported store: the
+                    # deal still goes out, but never silently.
+                    log.warning(
+                        "ZERO-COMMISSION post inf=%s ch=%s tag=%s store=%s pubid=%s unconverted=%s "
+                        "wrapped=%s meesho_by_design=%s",
+                        inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid,
+                        [d.get("url") for d in unmonetised][:5],
+                        pending_wrappers[:5],
+                        [d.get("url") for d in commission_guard.unmonetised_links(
+                            audit, allowed_kinds, kinds=commission_guard.UNMONETISABLE_KINDS
+                        )][:3],
+                    )
+        except Exception as _guard_exc:
+            logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
+
+    # 8b-2. MONEY FILTER: never spend a post on a deal that pays nothing.
+    # Off by default so volume is never reduced without the operator's
+    # say; the Money Radar recommends it when it sees free posts.
+    if only_earning:
+        try:
+            from . import money_radar
+
+            expected_pubid = (
+                db.get_global_setting("earnkaro_publisher_id")
+                or config.EARNKARO_PUBLISHER_ID or ""
+            ).strip()
+            audit = money_radar.audit_text(
+                rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
+                bitly_map=shortened_map,
+            )
+            if audit["earning"] == 0 and audit["monetisable"] > 0:
+                return "skipped:no_commission_link"
+        except Exception as _money_exc:  # pragma: no cover - defensive
+            logging.getLogger(__name__).exception("money filter failed: %s", _money_exc)
+    # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
+    # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
+    try:
+        content_hash = _content_hash_for_dedup(rendered)
+        phys_content_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), content_hash)
+        if phys_content_key in seen_content_in_this_run:
+            return "skipped:content_dedup_in_run"
+        if db.already_posted_content_hash(str(ch.get("platform","")), str(ch.get("identifier","")), content_hash, hours=24):
+            return _note_skip("skipped:content_dedup_24h")
+    except Exception:
+        content_hash = ""
+        phys_content_key = None
+    # 8d. NEAR-DUPLICATE FUZZY CHECK — catches 4-5-56x where same product has slightly different title wording
+    # Uses 65% token overlap + same price, checks last 12h. This is the deep-think advanced fix for severe spam.
+    try:
+        if db.is_near_duplicate_in_window(str(ch.get("platform","")), str(ch.get("identifier","")), rendered, hours=12, threshold=0.60):
+            # The owner's rule: the same product within the hour (or the day) is
+            # never posted twice to one channel. This is the fuzzy guard that
+            # catches the same product worded differently.
+            return _note_skip("skipped:near_duplicate_12h")
+    except Exception:
+        pass
+    # 8e. RATE LIMITER — ultimate safety net against any bug causing 56 posts
+    # Even if dedup somehow fails, this throttles to max 20/hour and 5/10min per physical channel. No more spam.
+    try:
+        # Check hourly limit
+        if db.get_recent_post_count_for_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), hours=1) >= 20:
+            return _note_skip("skipped:rate_limit_20_per_hour")
+        # Check 10-minute burst limit (0.17h ≈ 10min)
+        if db.get_recent_post_count_for_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), hours=0.17) >= 5:
+            return _note_skip("skipped:rate_limit_5_per_10min")
+    except Exception:
+        pass
+    status = await dispatch_to_channel(inf, ch, rendered)
+    # Mark physical channel + sig and content as seen for this run (prevents same-batch duplicates to same @channel)
+    try:
+        phys_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), sig)
+        seen_physical_in_this_run.add(phys_key)
+        if phys_content_key:
+            seen_content_in_this_run.add(phys_content_key)
+    except Exception:
+        pass
+    _fil = fidelity_report or {}
+    _counts = _fil.get("counts") or {}
+    _note_bits: list[str] = []
+    for block in (dropped_blocks or []):
+        first = (block.get("lines") or [""])[0]
+        _note_bits.append(
+            f"network {','.join(block.get('kinds') or [])}: {first[:80]}"
+        )
+    if _counts.get("promo_dropped"):
+        _note_bits.append(f"{_counts['promo_dropped']} source promotion line(s) removed")
+    if _counts.get("missing") or _counts.get("added"):
+        _note_bits.append(
+            f"fidelity ⛔ missing={(_fil.get('missing') or [])[:2]} "
+            f"added={(_fil.get('added') or [])[:2]}"
+        )
+    elif _fil.get("recovered"):
+        _note_bits.append("fidelity: conservative render (kept every source line)")
+    db.record_post(inf["id"], ch["id"], sig,
+                   status="posted" if status == "posted" else "failed",
+                   error="" if status == "posted" else status,
+                   deal_text=rendered if status == "posted" else "",
+                   note=" · ".join(_note_bits)[:400],
+                   mirror_source_id=mirror_source_id)
+    return status
+
+
+async def _mirror_main_posts_to_whatsapp(
+    inf: dict,
+    channels: list[dict],
+    deal_text: str,
+    *,
+    sig: str,
+    source_channel: str = "",
+    force_unconverted: bool = False,
+    per_channel: dict[int, str],
+    ek_cache: dict | None = None,
+    seen_physical_in_this_run: set | None = None,
+    seen_content_in_this_run: set | None = None,
+) -> dict[int, str]:
+    """Copy a deal the creator's main Telegram channel accepted to WhatsApp.
+
+    "Main channel lo vachinavi WhatsApp channel lo raval": a deal that really
+    went out on the ready Telegram main channel in this cycle is rendered for
+    WhatsApp and delivered to the creator's ready WhatsApp destinations, signed
+    with the creator's own Amazon tag.
+
+    Order of decisions, so a mirror can never outsmart the money rules:
+
+    * the source must be a ready Telegram channel with role ``broadcast`` that
+      posted this deal in this cycle *and* has mirroring enabled
+      (per-channel ``mirror_whatsapp``, otherwise the global setting);
+    * a destination that already received the deal — directly in this cycle or
+      in any earlier one — is never written twice (signature, identifier,
+      24h content-hash and 12h near-duplicate guards all still run);
+    * the destination's own affiliate switches (Amazon-only, strip-Amazon,
+      EarnKaro/HYPD off) and every commission guard still decide what may
+      appear there, so mirroring cannot publish a link that pays somebody else;
+    * nothing else about the destination is re-filtered: category/price/source/
+      tier filters already applied on the main channel, which is the point of
+      the mirror (Telegram decides, WhatsApp receives).
+
+    Returns ``{destination_channel_id: status}`` for the destinations that were
+    attempted (the caller merges this into its per-channel result).
+    """
+    log = logging.getLogger(__name__)
+    ready = [
+        ch for ch in channels
+        if str(ch.get("status") or "").strip().lower() in ACTIVE_CHANNEL_STATUSES
+    ]
+    sources = [
+        ch for ch in ready
+        if str(ch.get("platform") or "").strip().lower() == "telegram"
+        and str(ch.get("role") or "broadcast").strip().lower() in MIRROR_SOURCE_ROLES
+        and str(per_channel.get(ch["id"]) or "").strip().lower() == "posted"
+        and _channel_mirror_enabled(inf, ch)
+    ]
+    if not sources:
+        return {}
+    source = sources[0]
+
+    targets = [
+        ch for ch in ready
+        if str(ch.get("platform") or "").strip().lower() in MIRROR_TARGET_PLATFORMS
+        and str(ch.get("role") or "broadcast").strip().lower() != "approval"
+        and str(per_channel.get(ch["id"]) or "").strip().lower() != "posted"
+    ]
+    if not targets:
+        return {}
+
+    mirrored: dict[int, str] = {}
+    for target in targets:
+        status = await _render_and_deliver_destination(
+            inf, target, deal_text, sig=sig, source_channel=source_channel,
+            force_unconverted=force_unconverted,
+            role=(target.get("role") or "whatsapp").strip().lower(),
+            strip_amz=_setting_enabled(
+                target.get("strip_amazon"), default=False, unrestricted=False
+            ),
+            effective_amz_tag=accounts.creator_amazon_tag(inf, target),
+            ek_cache=ek_cache,
+            seen_physical_in_this_run=seen_physical_in_this_run,
+            seen_content_in_this_run=seen_content_in_this_run,
+            mirror_source_id=int(source.get("id") or 0),
+            bypass_display_filters=True,
+        )
+        mirrored[target["id"]] = status
+        if status == "posted":
+            log.info(
+                "MIRROR inf=%s main_ch=%s -> wa_ch=%s posted (main channel copy)",
+                inf.get("id"), source.get("id"), target.get("id"),
+            )
+        else:
+            log.warning(
+                "MIRROR NOT COPIED inf=%s main_ch=%s wa_ch=%s status=%s — the WhatsApp "
+                "destination's own policy, dedup or rate limit decided this; nothing was "
+                "posted with unverified attribution",
+                inf.get("id"), source.get("id"), target.get("id"), status,
+            )
+    return mirrored
+
+
+def mirror_plan(inf: dict, *, channels: list[dict] | None = None,
+                mirrored_counts: dict[int, int] | None = None,
+                global_default: bool | None = None) -> dict:
+    """Describe, without sending anything, what the mirror does for a creator.
+
+    Used by the dashboard so the operator sees "main channel -> WhatsApp" as a
+    live fact (which channels mirror, which destinations receive) instead of
+    trusting a toggle nobody can verify.
+
+    ``channels`` and ``mirrored_counts`` let a hub-wide caller (the dashboard
+    command center, thousands of creators) pass values it already fetched in
+    bulk, so this never turns into one query per creator.
+    """
+    try:
+        if channels is None:
+            channels = db.list_channels(inf["id"])
+        else:
+            channels = list(channels)
+    except Exception:  # pragma: no cover - the creator page must still render
+        channels = []
+    ready = [
+        ch for ch in channels
+        if str(ch.get("status") or "").strip().lower() in ACTIVE_CHANNEL_STATUSES
+    ]
+    sources = [
+        ch for ch in ready
+        if str(ch.get("platform") or "").strip().lower() == "telegram"
+        and str(ch.get("role") or "broadcast").strip().lower() in MIRROR_SOURCE_ROLES
+        and _channel_mirror_enabled(inf, ch, global_default)
+    ]
+    targets = [
+        ch for ch in ready
+        if str(ch.get("platform") or "").strip().lower() in MIRROR_TARGET_PLATFORMS
+        and str(ch.get("role") or "broadcast").strip().lower() != "approval"
+    ]
+    blocked_by_global = [
+        ch for ch in ready
+        if str(ch.get("platform") or "").strip().lower() == "telegram"
+        and str(ch.get("role") or "broadcast").strip().lower() in MIRROR_SOURCE_ROLES
+        and str(ch.get("mirror_whatsapp") or "").strip() == "0"
+    ]
+    mirrored_posts = 0
+    try:
+        if mirrored_counts is not None:
+            mirrored_posts = sum(int(mirrored_counts.get(ch["id"], 0)) for ch in targets)
+        else:
+            mirrored_posts = sum(db.mirrored_post_count(ch["id"], hours=24) for ch in targets)
+    except Exception:  # pragma: no cover - display only
+        mirrored_posts = 0
+    if global_default is None:
+        global_default = mirror_main_to_whatsapp_enabled()
+    return {
+        "enabled": bool(sources),
+        "global_default": bool(global_default),
+        "active": bool(sources and targets),
+        "sources": [
+            {"id": ch["id"], "identifier": ch.get("identifier"), "role": ch.get("role")}
+            for ch in sources
+        ],
+        "targets": [
+            {"id": ch["id"], "identifier": ch.get("identifier"),
+             "platform": ch.get("platform"), "status": ch.get("status")}
+            for ch in targets
+        ],
+        "opted_out": [
+            {"id": ch["id"], "identifier": ch.get("identifier")} for ch in blocked_by_global
+        ],
+        "mirrored_posts_24h": mirrored_posts,
+    }
+
+
 async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | None = None,
                               source_channel: str = "", force_unconverted: bool = False) -> dict:
     """Render one deal for every active influencer and dispatch to their channels.
@@ -295,7 +1139,7 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
     seen_content_in_this_run: set[tuple[str, str, str]] = set()
     # Lazily convert only when at least one destination explicitly allows
     # EarnKaro. The same deal mapping is then reused across those destinations.
-    ek_map_cache: dict[str, str] | None = None
+    ek_cache: dict = {}
 
     influencers = db.list_influencers(active_only=True)
     if influencer_ids is not None:
@@ -327,453 +1171,23 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
                         inf.get("id"), ch.get("id"), effective_amz_tag, fallback_tag,
                     )
 
-            # 1. Source Specification Filter (an empty/all/unrestricted value means no restriction)
-            allowed_sources = ch.get("allowed_sources") or inf.get("allowed_sources") or ""
-            if source_channel and not _is_source_allowed(source_channel, allowed_sources):
-                per_channel[ch["id"]] = "skipped"
-                continue
-
-            # 2. Posting window (empty/all/unrestricted remains 24/7)
-            schedule = ch.get("posting_schedule") or inf.get("posting_schedule") or ""
-            if not link_router.is_time_in_schedule(schedule):
-                per_channel[ch["id"]] = "skipped"
-                continue
-
-            # 3. Category and price filters are no-ops for all/unrestricted and
-            # intentionally pass deals with missing metadata/prices.
-            cat_filter = ch.get("categories") or inf.get("categories") or ""
-            if not link_router.matches_category_filter(deal_text, cat_filter):
-                per_channel[ch["id"]] = "skipped"
-                continue
-            filter_spec = ch.get("price_filter") or inf.get("price_filter") or "all"
-            max_p, min_p = _parse_price_filter_spec(filter_spec)
-            if not link_router.matches_price_filter(deal_text, max_price=max_p, min_price=min_p):
-                per_channel[ch["id"]] = "skipped"
-                continue
-
-            # 3b. WRAPPER LINKS: a post can hide its destination behind a
-            # shortener (bit.ly, tinyurl, dl.flipkart.com/…, fkrt.it/…, amzn.to,
-            # amzn.eu, a.co…). Until it is resolved we cannot know whether the
-            # link pays us, so every wrapper is unwrapped *before* anything
-            # classifies, filters or converts the deal:
-            #   * Amazon destination -> OUR canonical /dp/ASIN?tag=OURTAG
-            #   * merchant destination -> the real URL, which the normal EarnKaro
-            #     conversion below turns into OUR ekaro link
-            #   * unknown destination -> left visible and reported, never silent
-            # Links written without http:// ("flipkart.com/…", "amzn.to/…") are
-            # invisible to every URL stage, so they are promoted to real URLs
-            # first — then resolved, classified, converted and verified like any
-            # other link instead of travelling through the post untouched.
-            render_text = link_router.promote_scheme_less_links(deal_text)
-            unresolved_wrapped: list[str] = []
-            if link_router.has_opaque_link(render_text):
-                render_text, unresolved_wrapped = await link_router.resolve_opaque_links_in_text_async(
-                    render_text, effective_amz_tag
-                )
-                still_opaque = link_router.unresolved_amazon_shorts(render_text)
-                if still_opaque:
-                    # Never stay silent about a link whose embedded tag we could
-                    # not verify: the post goes out with best-effort attribution.
-                    logging.getLogger(__name__).warning(
-                        "UNRESOLVED AMAZON SHORT inf=%s ch=%s tag=%s links=%s — "
-                        "tag appended but the short code still decides attribution",
-                        inf.get("id"), ch.get("id"), effective_amz_tag, still_opaque[:3],
-                    )
-                wrapped_left = [
-                    url for url in unresolved_wrapped
-                    if not link_router.is_amazon_short_host(url)
-                ]
-                if wrapped_left:
-                    logging.getLogger(__name__).warning(
-                        "UNRESOLVED WRAPPED LINK inf=%s ch=%s tag=%s links=%s — the wrapper hid its "
-                        "destination; attribution is unverified and the deal is treated as "
-                        "unmonetised (retried while nothing else pays)",
-                        inf.get("id"), ch.get("id"), effective_amz_tag, wrapped_left[:3],
-                    )
-
-            urls = link_router.find_urls(render_text)
-            kinds = {link_router.classify_url(url) for url in urls}
-            has_amz = "amazon" in kinds
-            present_affiliate_kinds = kinds.intersection(
-                {"amazon", "merchant", "hypd", "meesho", "lehlah"}
+            per_channel[ch["id"]] = await _render_and_deliver_destination(
+                inf, ch, deal_text, sig=sig, source_channel=source_channel,
+                force_unconverted=force_unconverted, role=role, strip_amz=strip_amz,
+                effective_amz_tag=effective_amz_tag, ek_cache=ek_cache,
+                seen_physical_in_this_run=seen_physical_in_this_run,
+                seen_content_in_this_run=seen_content_in_this_run,
             )
-
-            # 4. Settings are combined conservatively across the profile and
-            # channel. Strings such as "all" and "unrestricted" mean enabled,
-            # not truthy special states that accidentally turn on only-Amazon.
-            allow_amz = (
-                _setting_enabled(ch.get("allow_amazon"), True)
-                and _setting_enabled(inf.get("allow_amazon"), True)
-            )
-            allow_ek = (
-                _setting_enabled(ch.get("allow_earnkaro"), True)
-                and _setting_enabled(inf.get("allow_earnkaro"), True)
-            )
-            allow_hypd = (
-                _setting_enabled(ch.get("allow_hypd"), True)
-                and _setting_enabled(inf.get("allow_hypd"), True)
-            )
-            only_amz = (
-                _setting_enabled(ch.get("only_amazon"), False, unrestricted=False)
-                or _setting_enabled(inf.get("only_amazon"), False, unrestricted=False)
-            )
-            # Network switches are independent: Amazon can post alongside
-            # selected EarnKaro/HYPD links. only_amazon is the explicit
-            # exclusive-mode override.
-            if only_amz:
-                allow_amz, allow_ek, allow_hypd = True, False, False
-            if strip_amz:
-                allow_amz = False
-            if role == "approval":
-                allow_ek = allow_hypd = False
-
-            allowed_kinds = set()
-            if allow_amz:
-                allowed_kinds.add("amazon")
-            if allow_ek:
-                allowed_kinds.add("merchant")
-            if allow_hypd:
-                # HYPD owns the Meesho route. Existing HYPD affiliate links
-                # can be retagged; raw Meesho URLs stay intact until an official
-                # HYPD generator contract is configured.
-                allowed_kinds.update({"hypd", "meesho"})
-            # LehLah-tagged Meesho links carry an existing publisher attribution.
-            # Keep them (unless the channel is explicitly Amazon-only/approval)
-            # and never route them through EarnKaro or strip their query params.
-            if not only_amz and role != "approval":
-                allowed_kinds.add("lehlah")
-
-            # Approval and only-Amazon channels need a native Amazon link. If
-            # every supported merchant in a mixed post is disabled, skip it;
-            # otherwise keep the deal and remove only the disabled URLs.
-            if (role == "approval" or only_amz) and not has_amz:
-                per_channel[ch["id"]] = "skipped"
-                continue
-            if present_affiliate_kinds and not present_affiliate_kinds.intersection(allowed_kinds):
-                per_channel[ch["id"]] = "skipped"
-                continue
-            # ADVANCED QUALITY FILTER: Only post B-tier and above (score 50+) to prevent 'motham vachinave' spam
-            # S=90-100 (must post), A=75-89 (good), B=50-74 (average), C<50 (skip)
-            # Priority: channel -> creator -> global setting.
-            try:
-                min_tier = str(
-                    ch.get("min_deal_tier")
-                    or inf.get("min_deal_tier")
-                    or db.get_global_setting("min_deal_tier", "C")
-                ).strip().upper()
-                if min_tier not in {"S", "A", "B", "C"}:
-                    min_tier = "C"
-                if min_tier != "C" and not link_router.is_high_quality_deal(deal_text, min_tier=min_tier):
-                    # Still allow if it has strong affiliate (Amazon) and price is very low (flash loot)
-                    adv = link_router.calculate_advanced_loot_score(deal_text)
-                    # Don't skip if it's S/A tier or has very low price (<199) even if overall C
-                    if adv["tier"] not in {"S", "A", "B"}:
-                        price = link_router.extract_price(deal_text)
-                        if price is None or price > 199:
-                            per_channel[ch["id"]] = f"skipped:quality_tier_{adv['tier']}_lt_{min_tier}"
-                            continue
-            except Exception:
-                pass
-            # Wrappers were already unwrapped above (step 3b), so filtering an
-            # affiliate kind now drops links the channel really disabled —
-            # including the ones a wrapper was hiding.
-            render_text = link_router.filter_disallowed_affiliate_links(render_text, allowed_kinds)
-
-            # 8. Smart Dedup Guard: never post the same deal/product twice to the same channel
-            if db.already_posted(inf["id"], ch["id"], sig):
-                per_channel[ch["id"]] = "skipped"
-                continue
-            # 8b. GLOBAL physical channel dedup: same deal already posted to same Telegram/WhatsApp identifier by ANY influencer?
-            # This stops duplicates when multiple influencers are configured to post to same @loots_channel (screenshot case).
-            try:
-                if db.already_posted_to_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), sig):
-                    per_channel[ch["id"]] = "skipped:global_identifier_dedup"
-                    continue
-                # In-memory cross-influencer dedup for this run (race-safe for same batch)
-                phys_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), sig)
-                if phys_key in seen_physical_in_this_run:
-                    per_channel[ch["id"]] = "skipped:run_batch_dedup"
-                    continue
-            except Exception:
-                pass
-
-            if allow_ek:
-                if ek_map_cache is None:
-                    ek_map_cache = await _earnkaro_map_for(render_text)
-                channel_ek_map = ek_map_cache
-            else:
-                channel_ek_map = {}
-
-            # Bitly token priority: channel -> influencer -> global key explicitly
-            # allowlisted for this owned influencer profile. No other influencer
-            # can consume the operator's global token by default.
-            influencer_key = str(inf.get("bitly_api_key") or "").strip()
-            channel_key = str(ch.get("bitly_api_key") or "").strip()
-            global_key = (
-                config.BITLY_API_KEY
-                if str(inf.get("id") or "") in config.BITLY_GLOBAL_INFLUENCER_IDS
-                else ""
-            )
-            effective_bitly_key = channel_key or influencer_key or global_key
-            # EarnKaro and Meesho/HYPD are OUR accounts: with central accounts
-            # on (default) the HYPD store is always ours, whatever the row says.
-            effective_hypd_store = accounts.hypd_store_for(inf, ch)
-            shortened_map = {}
-            # Money Radar switches (global, read once per channel).
-            try:
-                meesho_fallback = meesho_earnkaro_fallback_enabled()
-            except Exception:
-                meesho_fallback = bool(config.MEESHO_EARNKARO_FALLBACK)
-            try:
-                allow_unconverted_posts = allow_unconverted_posts_enabled()
-            except Exception:
-                allow_unconverted_posts = bool(config.ALLOW_UNCONVERTED_POSTS)
-            try:
-                only_earning = only_earning_deals_enabled()
-            except Exception:
-                only_earning = bool(config.ONLY_EARNING_DEALS)
-
-            if effective_bitly_key and role != "approval":
-                # Check if ADVANCED ONLY-OUR-LINKS mode is enabled (user requested "ONLY MANA LINK KI")
-                # When enabled, generic merchant Bitly is DISABLED; only OUR Amazon/HYPD via advanced shortener will be shortened
-                try:
-                    _db_only_our = str(db.get_global_setting("advanced_only_our_links", "")).strip().lower()
-                    if _db_only_our:
-                        _only_our_enabled = _db_only_our in {"1", "true", "yes", "on"}
-                    else:
-                        _only_our_enabled = bool(config.ADVANCED_ONLY_OUR_LINKS)
-                except Exception:
-                    _only_our_enabled = bool(config.ADVANCED_ONLY_OUR_LINKS)
-
-                if _only_our_enabled:
-                    # ADVANCED MODE: Skip generic merchant Bitly, ONLY OUR links via advanced shortener later
-                    shortened_map = {}
-                else:
-                    # Classic mode: Bitly for long merchant links (Flipkart etc. not yet converted)
-                    # Render base version to identify final URLs that will appear
-                    base_rendered = link_router.render_for_influencer(
-                        render_text, effective_amz_tag, channel_ek_map, role=role, strip_amazon=strip_amz,
-                        clean_promos=True, hypd_store_id=effective_hypd_store,
-                        meesho_earnkaro_fallback=meesho_fallback,
-                    )
-                    # Amazon, HYPD, and existing LehLah affiliate URLs never go
-                    # through generic Bitly. Their first-party routes are applied later.
-                    # EarnKaro shorteners (ekaro.in, fktr.in, etc.) are already short and must stay as-is.
-                    from urllib.parse import urlparse as _bt_urlparse
-                    _ek_shortener_hosts = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "myntr.it"}
-                    def _is_earnkaro_short(url: str) -> bool:
-                        try:
-                            h = (_bt_urlparse(url).hostname or "").lower()
-                            return h in _ek_shortener_hosts or (h.startswith("www.") and h[4:] in _ek_shortener_hosts)
-                        except Exception:
-                            return False
-                    final_urls = [
-                        url for url in link_router.find_urls(base_rendered)
-                        if link_router.classify_url(url) not in {"amazon", "hypd", "meesho", "lehlah"}
-                        and not _is_earnkaro_short(url)
-                    ]
-                    # PERFECT CHECK: Ensure Amazon product links are never Bitly-shortened via generic path
-                    # Only shorten if multiple links or excessively long URL (>65 chars)
-                    should_shorten = (len(final_urls) >= 2) or any(len(url) > 65 for url in final_urls)
-                    if should_shorten:
-                        shortened_map = await bitly_client.shorten_urls(final_urls, token=effective_bitly_key)
-
-            rendered = link_router.render_for_influencer(
-                render_text, effective_amz_tag, channel_ek_map, shortened_links=shortened_map,
-                role=role, strip_amazon=strip_amz, hypd_store_id=effective_hypd_store,
-                meesho_earnkaro_fallback=meesho_fallback,
-            )
-            # ADVANCED SHORTENER: ONLY OUR affiliate links are shortened
-            # - HYPD links with OUR store ID (93944) -> first-party /m/<code> or Bitly fallback
-            # - Amazon links with OUR tag (e.g. mytag-21) -> verified first-party /a/<code>?tag= or Bitly fallback
-            # Generic merchant links (Flipkart etc.) are already handled via EarnKaro's ekaro.in, no extra Bitly needed
-            # This advanced system ensures ONLY MANA LINK KI MATHARME short avtundi, vere vallavi kaadu
-            if role != "approval":
-                from . import advanced_shortener
-                rendered = await advanced_shortener.shorten_our_links_advanced(
-                    rendered, effective_amz_tag, effective_hypd_store, bitly_token=effective_bitly_key
-                )
-                if config.LEHLAH_SHORTLINKS_ENABLED:
-                    rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
-                # Deduplicate identical short URLs (e.g., amzn.to + long link both became same bit.ly)
-                rendered = link_router.deduplicate_urls_in_text(rendered)
-
-                # === COMMISSION GUARD: perfect verification that every shortened/posted link is OUR affiliate ===
-                # User: "SHORTEN LINK CHETHE PEREFCTGA CORRECT GA MANA AFFILAT ELINK RAVALI OOKAYNAA"
-                # We audit FINAL rendered text before dispatch. Any non-OUR leak is logged and sanitized.
-                try:
-                    from . import commission_guard
-                    log = logging.getLogger(__name__)
-                    expected_pubid = (db.get_global_setting("earnkaro_publisher_id") or config.EARNKARO_PUBLISHER_ID or "").strip()
-                    audit = commission_guard.audit_rendered_text(
-                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
-                        bitly_map=shortened_map, allowed_kinds=allowed_kinds,
-                        # Provenance: a wrapper that also sits in the untouched
-                        # source post belongs to the source, not to us.
-                        source_text=deal_text,
-                    )
-                    if not audit["ok"]:
-                        log.warning(
-                            "COMMISSION GUARD leak inf=%s ch=%s tag=%s store=%s pubid=%s allowed=%s issues=%s snippet=%.200s",
-                            inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid, allowed_kinds,
-                            "; ".join(audit["issues"])[:500], rendered[:200]
-                        )
-                        # Sanitize: remove wrong-tag Amazon / wrong-store HYPD links so
-                        # nobody else's attribution can ride along with our post.
-                        sanitized, _ = commission_guard.sanitize_rendered_text(
-                            rendered, effective_amz_tag, effective_hypd_store, expected_pubid, bitly_map=shortened_map, allowed_kinds=allowed_kinds
-                        )
-                        if commission_guard.our_affiliate_urls(
-                            sanitized, effective_amz_tag, effective_hypd_store, expected_pubid,
-                            bitly_map=shortened_map, source_text=deal_text,
-                        ):
-                            rendered = sanitized
-                        else:
-                            # No OUR affiliate left — posting would earn zero. Skip this channel.
-                            per_channel[ch["id"]] = "skipped:no_our_affiliate_after_guard"
-                            continue
-                    elif not commission_guard.our_affiliate_urls(
-                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
-                        bitly_map=shortened_map, source_text=deal_text,
-                    ):
-                        # The hard checks passed but nothing in the post pays us.
-                        # Every link is informational, or a merchant link EarnKaro
-                        # never converted, or a raw Meesho URL (nothing can mint
-                        # an affiliate link from those by design).
-                        unmonetised = commission_guard.unmonetised_links(audit, allowed_kinds)
-                        # Wrappers are channel-independent: they are reported even
-                        # when every affiliate kind is enabled.
-                        wrapped = commission_guard.unmonetised_links(
-                            audit,
-                            set(allowed_kinds) | set(commission_guard.WRAPPED_KINDS),
-                            kinds=commission_guard.WRAPPED_KINDS,
-                        )
-                        # A conversion failure on a store EarnKaro is known to
-                        # cover is worth retrying: hold the deal back and let the
-                        # worker re-read the source post, so it goes out converted
-                        # a few minutes later instead of posting a free link now.
-                        # Unknown hosts stay posted: an unsupported store earns
-                        # nothing whether or not we delay it.
-                        retryable = [
-                            detail for detail in unmonetised
-                            if link_router.is_known_merchant_host(str(detail.get("url") or ""))
-                        ]
-                        # A wrapper whose destination we could not resolve is the
-                        # same problem as a failed conversion: the link may pay
-                        # nobody, so hold the deal and let the worker retry it.
-                        pending_wrappers = [
-                            str(detail.get("url") or "")
-                            for detail in wrapped
-                            if str(detail.get("url") or "")
-                            and not link_router.is_amazon_short_host(str(detail.get("url") or ""))
-                        ]
-                        park_reason = "earnkaro_unconverted" if retryable else "unresolved_wrapper"
-                        if ((retryable or pending_wrappers) and not allow_unconverted_posts
-                                and not force_unconverted
-                                and earnkaro.credentials_configured()):
-                            log.warning(
-                                "UNMONETISED DEAL PARKED FOR A RETRY inf=%s ch=%s tag=%s "
-                                "store=%s pubid=%s reason=%s unconverted=%s wrapped=%s (set "
-                                "ALLOW_UNCONVERTED_POSTS=1 to post unconverted/wrapped links anyway)",
-                                inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid,
-                                park_reason,
-                                [d.get("url") for d in retryable][:5], pending_wrappers[:5],
-                            )
-                            try:
-                                db.defer_deal(
-                                    deal_text, source=source_channel, reason=park_reason,
-                                    delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
-                                    max_attempts=DEFERRED_MAX_ATTEMPTS,
-                                )
-                            except Exception:  # pragma: no cover - a retry gap must never break posting
-                                log.exception("could not park the deal for a retry")
-                            per_channel[ch["id"]] = "skipped:no_our_affiliate_after_guard"
-                            continue
-                        if unmonetised:
-                            # Zero-commission by design or unsupported store: the
-                            # deal still goes out, but never silently.
-                            log.warning(
-                                "ZERO-COMMISSION post inf=%s ch=%s tag=%s store=%s pubid=%s unconverted=%s "
-                                "wrapped=%s meesho_by_design=%s",
-                                inf.get("id"), ch.get("id"), effective_amz_tag, effective_hypd_store, expected_pubid,
-                                [d.get("url") for d in unmonetised][:5],
-                                pending_wrappers[:5],
-                                [d.get("url") for d in commission_guard.unmonetised_links(
-                                    audit, allowed_kinds, kinds=commission_guard.UNMONETISABLE_KINDS
-                                )][:3],
-                            )
-                except Exception as _guard_exc:
-                    logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
-
-            # 8b-2. MONEY FILTER: never spend a post on a deal that pays nothing.
-            # Off by default so volume is never reduced without the operator's
-            # say; the Money Radar recommends it when it sees free posts.
-            if only_earning:
-                try:
-                    from . import money_radar
-
-                    expected_pubid = (
-                        db.get_global_setting("earnkaro_publisher_id")
-                        or config.EARNKARO_PUBLISHER_ID or ""
-                    ).strip()
-                    audit = money_radar.audit_text(
-                        rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
-                        bitly_map=shortened_map,
-                    )
-                    if audit["earning"] == 0 and audit["monetisable"] > 0:
-                        per_channel[ch["id"]] = "skipped:no_commission_link"
-                        continue
-                except Exception as _money_exc:  # pragma: no cover - defensive
-                    logging.getLogger(__name__).exception("money filter failed: %s", _money_exc)
-            # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
-            # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
-            try:
-                content_hash = _content_hash_for_dedup(rendered)
-                phys_content_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), content_hash)
-                if phys_content_key in seen_content_in_this_run:
-                    per_channel[ch["id"]] = "skipped:content_dedup_in_run"
-                    continue
-                if db.already_posted_content_hash(str(ch.get("platform","")), str(ch.get("identifier","")), content_hash, hours=24):
-                    per_channel[ch["id"]] = "skipped:content_dedup_24h"
-                    continue
-            except Exception:
-                content_hash = ""
-                phys_content_key = None
-            # 8d. NEAR-DUPLICATE FUZZY CHECK — catches 4-5-56x where same product has slightly different title wording
-            # Uses 65% token overlap + same price, checks last 12h. This is the deep-think advanced fix for severe spam.
-            try:
-                if db.is_near_duplicate_in_window(str(ch.get("platform","")), str(ch.get("identifier","")), rendered, hours=12, threshold=0.60):
-                    per_channel[ch["id"]] = "skipped:near_duplicate_12h"
-                    continue
-            except Exception:
-                pass
-            # 8e. RATE LIMITER — ultimate safety net against any bug causing 56 posts
-            # Even if dedup somehow fails, this throttles to max 20/hour and 5/10min per physical channel. No more spam.
-            try:
-                # Check hourly limit
-                if db.get_recent_post_count_for_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), hours=1) >= 20:
-                    per_channel[ch["id"]] = "skipped:rate_limit_20_per_hour"
-                    continue
-                # Check 10-minute burst limit (0.17h ≈ 10min)
-                if db.get_recent_post_count_for_identifier(str(ch.get("platform","")), str(ch.get("identifier","")), hours=0.17) >= 5:
-                    per_channel[ch["id"]] = "skipped:rate_limit_5_per_10min"
-                    continue
-            except Exception:
-                pass
-            status = await dispatch_to_channel(inf, ch, rendered)
-            # Mark physical channel + sig and content as seen for this run (prevents same-batch duplicates to same @channel)
-            try:
-                phys_key = (str(ch.get("platform","")).strip().lower(), str(ch.get("identifier","")).strip().lower(), sig)
-                seen_physical_in_this_run.add(phys_key)
-                if 'phys_content_key' in locals() and phys_content_key:
-                    seen_content_in_this_run.add(phys_content_key)
-            except Exception:
-                pass
-            db.record_post(inf["id"], ch["id"], sig,
-                           status="posted" if status == "posted" else "failed",
-                           error="" if status == "posted" else status,
-                           deal_text=rendered if status == "posted" else "")
-            per_channel[ch["id"]] = status
+        # Mirror the main Telegram channel into this creator's WhatsApp side:
+        # whatever the main channel accepted also lands on WhatsApp, rendered
+        # for that surface and signed with the creator's own Amazon tag.
+        per_channel.update(await _mirror_main_posts_to_whatsapp(
+            inf, channels, deal_text, sig=sig, source_channel=source_channel,
+            force_unconverted=force_unconverted, per_channel=per_channel,
+            ek_cache=ek_cache,
+            seen_physical_in_this_run=seen_physical_in_this_run,
+            seen_content_in_this_run=seen_content_in_this_run,
+        ))
         results[inf["id"]] = per_channel
     return results
 
