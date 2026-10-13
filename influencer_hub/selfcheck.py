@@ -390,6 +390,35 @@ def _amazon_links_check() -> dict:
                   detail + " Every one is signed with its creator's own tag.")
 
 
+def _assignments_check() -> dict:
+    """Nobody's money (or channel) may be attached to somebody else."""
+    try:
+        from . import guard
+
+        findings = guard.scan()
+    except Exception as exc:  # pragma: no cover - defensive
+        return _check("assignments", "Money map (tags & channels)", WARN,
+                      f"The assignment scan could not run: {type(exc).__name__}.",
+                      "Open /setup → 🛡️ Money map on the dashboard, or run "
+                      "`python -m influencer_hub.cli assignments --fix-hint`.")
+    counted = guard.counts(findings)
+    if counted["high"]:
+        worst = next(item for item in findings if item["severity"] == guard.HIGH)
+        return _check(
+            "assignments", "Money map (tags & channels)", WARN,
+            f"{counted['high']} assignment problem(s) would pay or post for the wrong "
+            f"person: {worst['label']} — {', '.join(c['name'] for c in worst['creators'])}.",
+            "Open the dashboard → /setup → 🛡️ Money map (or run `python -m "
+            "influencer_hub.cli assignments --fix-hint`): give each creator their own "
+            "Amazon tag, and keep every channel on one profile only.",
+        )
+    detail = "Every creator owns their Amazon tag and their channels."
+    if counted["medium"]:
+        detail += (f" {counted['medium']} tidy-up note(s) (a creator still on the "
+                   "hub-wide tag, or a duplicate name).")
+    return _check("assignments", "Money map (tags & channels)", OK, detail)
+
+
 def _history_check() -> dict:
     """The daily snapshot is what turns "how is it now" into a trend."""
     if not db.snapshot_table_exists():
@@ -498,6 +527,7 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
         _guard("creators", "Creator readiness", lambda: _creators_check(plan)),
         _guard("mirror", "Main → WhatsApp mirror", lambda: _mirror_check(plan)),
         _guard("history", "Ops history", _history_check),
+        _guard("assignments", "Money map (tags & channels)", _assignments_check),
         _guard("amazon_links", "Amazon links in real posts", _amazon_links_check),
         _guard("access", "Admin & team access", _access_check),
         _guard("whatsapp", "WhatsApp hub", lambda: _whatsapp_check(live)),

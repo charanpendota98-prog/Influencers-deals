@@ -272,6 +272,87 @@ in a backup, so a copy is safe to move to another machine.
   with three example rows (the template is parsed by the same code that imports
   it, so a filled-in spreadsheet always loads).
 
+### 🛡️ The money map: one Amazon tag belongs to one creator
+
+Two mistakes cost real money and are invisible until the payout report: two
+creators posting with **one** Amazon tag (Amazon pays one account for both
+people's clicks), and one destination saved on **two** creators (every deal
+posted twice, each copy signed with a different tag). The hub now looks for both
+everywhere — and refuses them at the door.
+
+```bash
+python -m influencer_hub.cli assignments             # exit 1 when money is mixed
+python -m influencer_hub.cli assignments --json
+python -m influencer_hub.cli assignments --fix-hint
+curl -s http://127.0.0.1:5000/api/assignments        # admin only
+```
+
+`/setup → 🛡️ Money map` lists every finding with the creators (linked) and the
+fix, and the self-check has a **Money map (tags & channels)** item that turns
+amber the moment anything would pay the wrong person. A scan of 1000 creators +
+1000 channels takes ~45 ms, so it is cheap enough for a card and a cron.
+
+| Finding | Severity | Why it matters |
+|---|---|---|
+| Two creators share one Amazon tag | ⛔ high | the clicks earn for one account only |
+| One destination saved on two creators | ⛔ high | the deal is posted twice, signed differently |
+| A saved tag that is not usable | ⛔ high | the links fall back to the hub-wide tag |
+| Creator still on the hub-wide tag | ⚠️ medium | earns, but under the shared id |
+| Same channel as preview **and** main | ⚠️ medium | the preview is the broadcast |
+| Two profiles with one name | ⚠️ medium | a paste could match the wrong one |
+
+Channel identity is compared properly: `@Ravi_Loots`, `t.me/ravi_loots`,
+`https://t.me/Ravi_Loots/` and a trailing `?query` are the **same** channel, and a
+WhatsApp newsletter JID never collides with a Telegram handle.
+
+**The door.** Every add path — the team page, Easy Setup, a bulk paste and the
+inventory import — runs the guard *before* writing: a row that would reuse
+somebody's tag or channel is refused with that creator's name and the reason
+(`⛔ Amazon tag “ravi-21” already belongs to Ravi Loots`), and the attempt is
+audited (`add_blocked_duplicate`). Inside one paste the index stays honest too, so
+two lines of the same file cannot create the collision. Updating a creator's own
+tag or channel is of course still allowed (its own id is ignored).
+
+### ✍️ Adding creators the easy way: one line, anything you have
+
+Whoever is onboarding does not need a column order. This is all the same row:
+
+```
+Ravi Loots ravi-21 @ravi_loots @ravi_amazon_deals 120363012345678901@newsletter +91 98765 43210
+Sita Deals | sita-21 | t.me/sita_loots | https://t.me/sita_approval | 120363019999999999@g.us
+Kiran, kiran-21, @kiran_main, @kiran_approval, , 9876543210, electronics, 09-23, budget, VIP
+```
+
+Commas, tabs, pipes, semicolons or just spaces; the Amazon tag, both Telegram
+channels, the WhatsApp id and a phone number in any order; `key=value` extras
+(`notes="instagram 12k"`, `price=premium`, `hours=09-23`, `store=93944`); a header
+row from any CSV export; `#` comments and blank lines skipped. The parser says
+what it understood (`main channel ← @ravi_loots`) and, on the team page,
+**🔎 Check these lines first** shows the table before anything is written — the
+same code path as the add itself, so the preview cannot lie. A value in the wrong
+column is moved and reported (`1203…@newsletter → WhatsApp, was in the main
+column`); a plainly wrong tag stays wrong, so the row is refused with the reason
+instead of being guessed at. After the six documented columns the order is
+`categories, posting hours, price filter, notes`, and a note typed into the price
+column is kept as a note.
+
+### 👥 New-creator defaults: set once, every add inherits
+
+The team should never have to decide which networks are on, which HYPD store
+earns, or whether the main channel mirrors into WhatsApp:
+
+```
+/setup → 👥 New-creator defaults   (or: python -m influencer_hub.cli add-defaults --only-amazon on)
+```
+
+Amazon / EarnKaro / HYPD switches, Amazon-only, the mirror, categories, posting
+hours, the price filter and the HYPD store id — stored in the hub's own settings
+(they travel with the database), audited (`add_defaults_changed`), and shown to
+the team as one sentence on their page: *“New creators start with: Amazon,
+EarnKaro, HYPD · mirror on · HYPD store 93944.”* Precedence is always: the pasted
+row → the form on screen → your presets → the code defaults, so a specific paste
+still wins and nothing that was set once gets silently overridden.
+
 ### 📦 Creator inventory: export EVERYTHING, edit in Excel, paste it back
 
 The owner can take the whole hub out in one click and put it back — with the

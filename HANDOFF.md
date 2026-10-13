@@ -866,3 +866,85 @@ batch, the team page "Added on", the 300-creator query-count gate and the stash
 which is what the old "blank every credential" form did not achieve: blanking
 `TELEGRAM_API_ID` also disabled the documented default and broke three tests on
 the VM).
+
+## 15. This session, part 10: the money map, one-line adds, and add defaults
+
+Three things, all aimed at the same sentence: **easy for the team, impossible to
+get somebody's money wrong, advanced for the owner.**
+
+### `influencer_hub/guard.py` — the assignment guard (new)
+
+* `channel_key(platform, identifier)` normalises `@handle`, `t.me/handle`,
+  `https://t.me/Handle/`, a trailing query and `telegram.me/`, and keeps WhatsApp
+  newsletter / group / phone keys in their own namespace.
+* `scan(influencers=None, channels=None)` — read-only, worst-first findings:
+  `tag_collision` (⛔ two creators on one tag), `tag_invalid` (⛔ unusable tag),
+  `tag_shared_default` (⚠ still on the hub-wide tag), `channel_collision`
+  (⛔ one destination on two creators), `role_clash` (⚠ same channel as preview and
+  main), `name_collision` (⚠ two profiles, one name). Every finding carries a
+  label, a detail that names the value, the creators (id/name/url) and a fix.
+* `counts`, `is_clear` (high == 0), `summary_line`, `render_report`.
+* `GuardIndex` — `from_db()`, `note()`, `preflight(name, tag, ignore_id,
+  approval, main, whatsapp)` → `{errors, warnings}`, `explain()`. Errors stop a
+  write; warnings are honest notes (missing/shared tag, duplicate name). Used
+  **while adding**, so a bad row is refused by name instead of written.
+* 1000 creators + 1000 channels: `scan` 45 ms, `from_db` 15 ms, one preflight
+  < 0.1 ms — cheap enough for a page and a cron.
+
+### `influencer_hub/creators.py` — the tolerant parser (new)
+
+`parse_line` / `parse` / `preview` / `explain`. Delimited rows keep the documented
+order (`name, tag, main, approval, whatsapp, phone` then `categories, schedule,
+price_filter, notes`); a header row re-maps the columns; a line with no separator
+is classified token by token (name first, then tag / Telegram / WhatsApp / phone /
+`key=value`). Values in the wrong column are moved with a note in `how`; a plainly
+wrong tag stays wrong so the row is refused with the reason. `preview` returns
+`{rows, total, ready, problems, unparsed}` with `problems` per row.
+
+`dashboard/app.py:parse_bulk_creators` is now a two-line delegate to
+`creators.parse`, so the dashboard, the team page and the CLI cannot disagree.
+
+### `influencer_hub/presets.py` — what every new creator starts with (new)
+
+`load/resolved/save/apply_to/describe/summary_line`, stored as JSON in
+`global_settings['add_defaults']` (travels with the DB, no `.env` edit). Keys:
+`allow_amazon/earnkaro/hypd`, `only_amazon`, `categories`, `posting_schedule`,
+`price_filter`, `mirror_whatsapp`, `hypd_store_id`. Precedence everywhere: pasted
+row → form on screen → presets → code defaults. `save` audits
+`add_defaults_changed`. **An untouched hub behaves exactly as before** (the code
+defaults are the same values), which is what keeps the old tests green.
+
+Wired in: `_easy_setup_defaults()` now starts from `presets.resolved()` (a switch
+the screen does not send inherits the preset; a switch the screen sends as 0/1
+still wins for that import), `team_add`'s defaults come from
+`_new_creator_defaults()`, and `_apply_creator` writes the row's
+`phone_number/categories/posting_schedule/price_filter/notes` (on an update only
+when non-empty, so a channel-only paste never wipes a saved field).
+
+### Surfaces
+
+* `/setup → 🛡️ Money map` (`id="money-map"`, findings table with linked creators
+  and the fix, pills for high/medium/creator count, JSON link) and
+  `/setup → 👥 New-creator defaults` (`id="add-defaults"`, one form that saves
+  every preset, with the same one-sentence summary the team sees).
+* Routes: `GET /api/assignments` (admin-only JSON), `POST /setup/add-defaults`,
+  `POST /team/preview` (read-only, team-allowed, added to
+  `security.TEAM_ALLOWED_ENDPOINTS`).
+* Team page: the presets sentence, the "paste anything" examples, and
+  **🔎 Check these lines first** (inline JS → `/team/preview`, writes nothing).
+* CLI: `assignments [--json] [--fix-hint]` (exit 1 when money is mixed),
+  `add-defaults --amazon/--earnkaro/--hypd/--only-amazon/--mirror-whatsapp
+  on|off --categories --hours --price --store [--dry-run] [--json]`.
+* Self-check: a fourteenth item, **Money map (tags & channels)** — amber with the
+  value and both creators when something would pay the wrong person, green with a
+  tidy-up note count otherwise.
+* Inventory: `plan_import` now returns `warnings` (the money map read once), so an
+  edited spreadsheet that would leave two creators on one tag is shown before
+  Apply.
+* `dashboard/templates/team.html`, `setup.html`; `dashboard/app.py` team +
+  easy-setup add loops run the guard and audit `add_blocked_duplicate`.
+
+Tests: `tests/test_guard.py` (32) and `tests/test_smart_add.py` (25). Full suite
+**583 passed** (`HUB_SKIP_DOTENV=1`). Live-verified on a 60-creator demo hub: the
+refusal, the preview JSON, the defaults save, the money-map API/CLI and the
+self-check item (VERIFICATION §0).

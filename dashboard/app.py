@@ -37,8 +37,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from influencer_hub import (
-    amazon_shortlinks, amazon_watch, config, db, hypd_shortlinks, inventory,
-    lehlah_shortlinks, link_router, ops, security,
+    amazon_shortlinks, amazon_watch, config, creators, db, guard, hypd_shortlinks,
+    inventory, lehlah_shortlinks, link_router, ops, presets, security,
     polls, pipeline, puller, readiness, selfcheck, telegram_ops, whatsapp_client,
 )  # noqa: E402
 
@@ -960,6 +960,8 @@ def team_home():
         added_total=len(mine),
         audit_rows=audit_rows,
         bulk_max=BULK_MAX_ROWS,
+        add_defaults=presets.resolved(),
+        add_defaults_line=presets.summary_line(),
     )
 
 
@@ -975,14 +977,11 @@ def team_add():
               f"{quota['limit']}). Ask the owner to raise it, or continue in a while.", "warning")
         return redirect(url_for("team_home"))
 
-    # The same safe defaults Easy Setup uses: every network on, OUR central HYPD
-    # store, WhatsApp mirroring on for the main channel.
-    defaults = {
-        "name": "", "amazon_tag": config.AMAZON_ASSOCIATE_TAG,
-        "only_amazon": False, "allow_amazon": True, "allow_earnkaro": True,
-        "allow_hypd": True, "hypd_store_id": _effective_hypd_store_id(),
-        "mirror_whatsapp": True,
-    }
+    # The owner set these once (👥 New-creator defaults on /setup): every network
+    # on, OUR central HYPD store, WhatsApp mirroring on for the main channel.
+    defaults = {"name": "", **_new_creator_defaults(),
+                "hypd_store_id": (presets.resolved().get("hypd_store_id")
+                                  or _effective_hypd_store_id())}
     rows: list[dict] = []
     if str(request.form.get("bulk_lines", "")).strip():
         rows = parse_bulk_creators(request.form.get("bulk_lines", ""))
@@ -1003,12 +1002,24 @@ def team_add():
         str(profile.get("name") or "").strip().lower(): profile
         for profile in db.list_influencers()
     }
+    # The assignment guard, read once: a row that would put two creators on one
+    # Amazon tag (or one channel on two creators) is refused by name, not added.
+    index = guard.GuardIndex.from_db()
     results: list[dict] = []
     for row in rows[:BULK_MAX_ROWS]:
         values, approval_ident, main_ident, error = _bulk_prepare_row(row, defaults)
         name = str(row.get("name") or "?").strip() or "?"
         if error:
             results.append({"name": name, "status": "failed", "detail": error})
+            continue
+        taken = index.preflight(name=values["name"], tag=values["amazon_tag"],
+                               approval=approval_ident, main=main_ident,
+                               whatsapp=values.get("whatsapp") or "")
+        if taken["errors"]:
+            results.append({"name": name, "status": "failed",
+                            "detail": "⛔ " + index.explain(taken)})
+            security.audit(member, security.TEAM, "add_blocked_duplicate",
+                           target=name, detail=index.explain(taken)[:180], ip=_client_ip())
             continue
         # The team may only ADD: a name that already exists is reported, never
         # silently updated (that would be an edit through the back door).
@@ -1041,6 +1052,12 @@ def team_add():
         if whatsapp_note:
             detail_bits.append(f"⚠ {whatsapp_note}")
         known_profiles[name.lower()] = db.get_influencer(inf_id) or {"id": inf_id, "name": name}
+        index.note(inf_id, values["amazon_tag"], name=values["name"],
+                   channels=[{"platform": "telegram", "identifier": identifier, "role": role}
+                             for role, identifier in (("approval", approval_ident),
+                                                      ("broadcast", main_ident)) if identifier]
+                   + ([{"platform": "whatsapp", "identifier": values["whatsapp"], "role": "whatsapp"}]
+                      if values.get("whatsapp") else []))
         security.audit(member, security.TEAM, "creator_added", target=values["name"],
                        detail=f"tag {values['amazon_tag']} · {' · '.join(detail_bits) or 'no channels'}",
                        ip=_client_ip())
@@ -1703,6 +1720,60 @@ def setup_inventory_import():
     return redirect(url_for("setup") + "#inventory")
 
 
+@app.route("/api/assignments")
+def api_assignments():
+    """The money map: who owns which tag / channel, and what is mixed (read-only)."""
+    try:
+        findings = guard.scan()
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
+    return jsonify({
+        "ok": guard.is_clear(findings),
+        "counts": guard.counts(findings),
+        "summary": guard.summary_line(findings),
+        "findings": findings,
+    })
+
+
+@app.route("/setup/add-defaults", methods=["POST"])
+def save_add_defaults():
+    """Save what every NEW creator starts with (the team never has to decide)."""
+    updates = {}
+    for key in presets.FLAGS:
+        if key == "mirror_whatsapp":
+            # A checkbox: present in the form means on, absent means off.
+            updates[key] = str(request.form.get(key, "")).strip().lower() in {"1", "on", "yes"}
+        else:
+            updates[key] = str(request.form.get(key, "")).strip().lower() in {"1", "on", "yes"}
+    for key in presets.TEXTS:
+        if key in request.form:
+            updates[key] = request.form.get(key, "")
+    try:
+        presets.save(updates, actor=_session_actor(), ip=_client_ip())
+    except Exception as exc:  # pragma: no cover - storage problem
+        flash(f"⚠ Could not save the new-creator defaults: {exc}", "error")
+        return redirect(url_for("setup") + "#add-defaults")
+    flash("✅ New-creator defaults saved: " + presets.summary_line(), "success")
+    return redirect(url_for("setup") + "#add-defaults")
+
+
+@app.route("/team/preview", methods=["POST"])
+def team_preview():
+    """Read-only: what the hub understood from a paste, before anything is added.
+
+    The team uses it to check their lines; it writes nothing, needs no unlock and
+    is the same parser the add itself uses, so the preview cannot lie.
+    """
+    text = request.form.get("bulk_lines", "") or request.form.get("inventory_lines", "")
+    try:
+        result = creators.preview(text, limit=100)
+    except Exception as exc:  # pragma: no cover - defensive
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 400
+    result["ok"] = True
+    result["defaults"] = presets.summary_line()
+    return jsonify(result)
+
+
 @app.route("/api/amazon-report")
 def api_amazon_report():
     """Amazon attribution in the posts we really sent (read-only)."""
@@ -1814,7 +1885,27 @@ def setup():
         import_error=request.args.get("import_error", ""),
         team_access=_team_access_snapshot(),
         inventory_card=_inventory_snapshot(),
+        assignments=_assignments_snapshot(),
     )
+
+
+def _assignments_snapshot() -> dict:
+    """The setup card's money map: findings + the add defaults, in one read."""
+    try:
+        findings = guard.scan()
+    except Exception as exc:  # pragma: no cover - display only
+        return {"error": str(exc)[:200], "findings": [], "counts": guard.counts([]),
+                "summary": "", "defaults": [], "defaults_line": ""}
+    return {
+        "findings": findings[:40],
+        "counts": guard.counts(findings),
+        "summary": guard.summary_line(findings),
+        "clear": guard.is_clear(findings),
+        "defaults": presets.describe(),
+        "defaults_line": presets.summary_line(),
+        "defaults_values": presets.resolved(),
+        "creators": len(db.list_influencers()),
+    }
 
 
 def _inventory_snapshot() -> dict:
@@ -3252,20 +3343,22 @@ def add_manual_channel(inf_id):
 
 
 def _easy_setup_defaults() -> dict:
-    return {
+    """The starting point for any add, from the owner's presets (set once).
+
+    ``/setup → 👥 New-creator defaults`` decides these; until they are set, the
+    code defaults below are what this function has always returned.
+    """
+    values = presets.resolved()
+    values.update({
         "name": "",
         "amazon_tag": config.AMAZON_ASSOCIATE_TAG,
         "approval": "",
         "main": "",
         "whatsapp": "",
-        "allow_amazon": True,
-        "allow_earnkaro": True,
-        "allow_hypd": True,
-        "only_amazon": False,
-        "hypd_store_id": _effective_hypd_store_id(),
-        # Main Telegram channel -> the creator's WhatsApp channel mirror.
-        "mirror_whatsapp": True,
-    }
+        "hypd_store_id": (str(values.get("hypd_store_id") or "").strip()
+                          or _effective_hypd_store_id()),
+    })
+    return values
 
 
 def _easy_setup_form_values() -> dict:
@@ -3281,14 +3374,25 @@ def _easy_setup_form_values() -> dict:
         # default (all three on) instead of silently disabling every network.
         # The screen's switches send an explicit 0/1 pair, so an operator can
         # still switch any of them off.
-        "allow_amazon": bool(_form_flag("allow_amazon", default=True)),
-        "allow_earnkaro": bool(_form_flag("allow_earnkaro", default=True)),
-        "allow_hypd": bool(_form_flag("allow_hypd", default=True)),
-        "only_amazon": bool(_form_flag("only_amazon", default=False)),
-        "mirror_whatsapp": bool(_form_flag("mirror_whatsapp", default=True)),
+        # A switch the screen actually sends (an explicit 0/1 pair) wins for this
+        # import; a switch the screen does not carry inherits the owner's preset.
+        "allow_amazon": bool(_form_flag("allow_amazon", default=bool(values["allow_amazon"]))),
+        "allow_earnkaro": bool(_form_flag("allow_earnkaro",
+                                          default=bool(values["allow_earnkaro"]))),
+        "allow_hypd": bool(_form_flag("allow_hypd", default=bool(values["allow_hypd"]))),
+        "only_amazon": bool(_form_flag("only_amazon", default=bool(values["only_amazon"]))),
+        "mirror_whatsapp": bool(_form_flag("mirror_whatsapp",
+                                           default=bool(values["mirror_whatsapp"]))),
         "hypd_store_id": (
-            request.form.get("hypd_store_id", "").strip() or _effective_hypd_store_id()
+            request.form.get("hypd_store_id", "").strip()
+            or str(values.get("hypd_store_id") or "").strip()
+            or _effective_hypd_store_id()
         ),
+        # The owner's presets travel with the row, so a bulk import also sets the
+        # categories / hours / price filter they chose once.
+        "categories": str(values.get("categories") or "").strip(),
+        "posting_schedule": str(values.get("posting_schedule") or "").strip(),
+        "price_filter": str(values.get("price_filter") or "all").strip() or "all",
     })
     return values
 
@@ -3573,15 +3677,31 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
         "hypd_store_id": values["hypd_store_id"],
         "active": True,
     }
+    # Optional profile details a row may carry (phone, categories, hours, price
+    # filter, notes). None of them is written as an empty value on an update, so
+    # a paste that only mentions channels never wipes a saved field.
+    extras = {
+        "phone_number": (str(values.get("phone_number") or "").strip() or None),
+        "categories": (str(values.get("categories") or "").strip() or None),
+        "posting_schedule": (str(values.get("posting_schedule") or "").strip() or None),
+        "price_filter": (str(values.get("price_filter") or "").strip() or None),
+        "notes": (str(values.get("notes") or "").strip() or None),
+    }
     if existing:
         inf_id = int(existing["id"])
-        db.update_influencer(inf_id, name=name, amazon_tag=values["amazon_tag"], **settings)
+        db.update_influencer(inf_id, name=name, amazon_tag=values["amazon_tag"],
+                             **settings, **extras)
         action = "updated"
     else:
         inf_id = db.add_influencer(
             name, values["amazon_tag"], allow_amazon=values["allow_amazon"],
             allow_earnkaro=values["allow_earnkaro"], allow_hypd=values["allow_hypd"],
             only_amazon=values["only_amazon"], hypd_store_id=values["hypd_store_id"],
+            phone_number=str(values.get("phone_number") or "").strip(),
+            categories=str(values.get("categories") or "").strip(),
+            posting_schedule=str(values.get("posting_schedule") or "").strip(),
+            price_filter=str(values.get("price_filter") or "").strip() or "all",
+            notes=str(values.get("notes") or "").strip(),
         )
         action = "created"
     if known_profiles is not None:
@@ -3683,66 +3803,64 @@ def _remember_bulk_result(summary: dict) -> str:
 # One line per creator. Positional order is the same order the single-screen
 # form asks for; a header row (or a CSV file with these column names) overrides
 # the order so a spreadsheet export works unchanged.
-BULK_COLUMNS = {
-    "name": "name", "creator": "name", "creator_name": "name",
-    "amazon_tag": "tag", "tag": "tag", "associate_tag": "tag",
-    "main_channel": "main", "main": "main", "broadcast_tg": "main",
-    "broadcast": "main", "main_tg": "main",
-    "approval_channel": "approval", "approval": "approval", "approval_tg": "approval",
-    "whatsapp_channel": "whatsapp", "whatsapp": "whatsapp", "whatsapp_id": "whatsapp",
-    "phone": "phone", "phone_number": "phone",
-}
+# The column names a paste or a CSV may use. The real map lives in
+# influencer_hub.creators (one place, used by the CLI too); this alias stays for
+# callers that imported it.
+BULK_COLUMNS = dict(creators.ALIASES)
 BULK_FIELDS = ("name", "tag", "main", "approval", "whatsapp", "phone")
 
 
 def parse_bulk_creators(text: str) -> list[dict]:
-    """Parse pasted lines or CSV into ``{line, name, tag, main, approval, whatsapp}``.
+    """Parse pasted lines or CSV into ``{line, name, tag, main, approval, whatsapp, …}``.
 
-    Accepts comma, tab, pipe or semicolon separators, ignores blank lines and
-    ``#`` comments, and understands a header row in either the short form
-    (``name, tag, main, approval, whatsapp``) or the CSV export column names.
+    Handles comma/tab/pipe/semicolon rows (documented column order, or a header
+    row) **and** plain white-space lines like
+
+    ``Ravi Loots ravi-21 @ravi_loots @ravi_amazon_deals 1203630…@newsletter +91 98765 43210``
+
+    where every token is recognised for what it is. ``creators.parse`` owns the
+    logic, so the dashboard, the team page and the CLI can never disagree.
     """
-    rows: list[dict] = []
-    order = ["name", "tag", "main", "approval", "whatsapp", "phone"]
-    header_seen = False
-    for number, raw in enumerate(str(text or "").splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = [part.strip() for part in re.split(r"[,\t|;]", line)]
-        if not header_seen and rows == [] and parts:
-            first = parts[0].strip().lower().replace(" ", "_")
-            if first in BULK_COLUMNS:
-                header_seen = True
-                mapped = [BULK_COLUMNS.get(part.strip().lower().replace(" ", "_"))
-                          for part in parts]
-                if any(mapped):
-                    order = []
-                    for part in parts:
-                        key = BULK_COLUMNS.get(part.strip().lower().replace(" ", "_"))
-                        if key:
-                            order.append(key)
-                    if "name" not in order:
-                        order.insert(0, "name")
-                continue
-        row = {"line": number}
-        for index, key in enumerate(order):
-            row[key] = parts[index] if index < len(parts) else ""
-        row["raw"] = line
-        if any(str(row.get(key) or "").strip() for key in BULK_FIELDS):
-            rows.append(row)
-    return rows
+    return creators.parse(text)
+
+
+def _new_creator_defaults() -> dict:
+    """What every new creator starts with: the owner's presets, then the code.
+
+    Read once per request and handed to ``_bulk_row_values``, so the team page,
+    Easy Setup, a bulk paste and the inventory import all create creators the
+    same way (see ``/setup → 👥 New-creator defaults``).
+    """
+    values = presets.resolved()
+    values["mirror_whatsapp"] = bool(values.get("mirror_whatsapp", True))
+    return values
 
 
 def _bulk_row_values(row: dict, defaults: dict) -> dict:
-    """Turn one parsed row into the values dict the creator upsert expects."""
-    values = dict(defaults)
+    """Turn one parsed row into the values dict the creator upsert expects.
+
+    Precedence, most specific first: the pasted row → the form on screen → the
+    owner's new-creator presets → the code defaults.
+    """
+    values = {**_new_creator_defaults(), **dict(defaults or {})}
     values.update({
         "name": str(row.get("name") or "").strip(),
-        "amazon_tag": str(row.get("tag") or "").strip() or config.AMAZON_ASSOCIATE_TAG,
+        "amazon_tag": (str(row.get("tag") or "").strip()
+                       or str(values.get("amazon_tag") or "").strip()
+                       or config.AMAZON_ASSOCIATE_TAG),
         "approval": str(row.get("approval") or "").strip(),
         "main": str(row.get("main") or "").strip(),
         "whatsapp": str(row.get("whatsapp") or "").strip(),
+        "phone_number": str(row.get("phone") or "").strip(),
+        "categories": (str(row.get("categories") or "").strip()
+                       or str(values.get("categories") or "").strip()),
+        "posting_schedule": (str(row.get("schedule") or "").strip()
+                             or str(values.get("posting_schedule") or "").strip()),
+        "price_filter": (str(row.get("price_filter") or "").strip()
+                         or str(values.get("price_filter") or "").strip() or "all"),
+        "notes": str(row.get("notes") or "").strip(),
+        "hypd_store_id": (str(row.get("hypd_store_id") or "").strip()
+                          or str(values.get("hypd_store_id") or "").strip()),
     })
     return values
 
@@ -3839,11 +3957,24 @@ def easy_setup_bulk():
         str(profile.get("name") or "").strip().lower(): profile
         for profile in db.list_influencers()
     }
+    # The assignment guard: an update of the same creator is fine (its own tag and
+    # channels are ignored by id); giving somebody else's tag or channel to a new
+    # creator is refused with a name and a reason.
+    index = guard.GuardIndex.from_db()
     for row in rows[:BULK_MAX_ROWS]:
         values, approval_ident, main_ident, error = _bulk_prepare_row(row, defaults)
         if error:
             results.append({"line": row.get("line"), "name": str(row.get("name") or "?"),
                             "status": "failed", "detail": error})
+            continue
+        existing = known_profiles.get(str(values["name"]).strip().lower()) or {}
+        taken = index.preflight(name=values["name"], tag=values["amazon_tag"],
+                               ignore_id=int(existing.get("id") or 0),
+                               approval=approval_ident, main=main_ident,
+                               whatsapp=values.get("whatsapp") or "")
+        if taken["errors"]:
+            results.append({"line": row.get("line"), "name": values["name"],
+                            "status": "failed", "detail": "⛔ " + index.explain(taken)})
             continue
         try:
             applied = _apply_creator(values, approval_ident, main_ident,
@@ -3852,6 +3983,12 @@ def easy_setup_bulk():
             results.append({"line": row.get("line"), "name": values["name"],
                             "status": "failed", "detail": str(exc)[:200]})
             continue
+        index.note(applied["inf_id"], values["amazon_tag"], name=applied["name"],
+                   channels=[{"platform": "telegram", "identifier": identifier, "role": role}
+                             for role, identifier in (("approval", approval_ident),
+                                                      ("broadcast", main_ident)) if identifier]
+                   + ([{"platform": "whatsapp", "identifier": values["whatsapp"], "role": "whatsapp"}]
+                      if values.get("whatsapp") else []))
         whatsapp_saved, whatsapp_note = _bulk_whatsapp(
             values, int(applied["inf_id"]))
         channels = [name for name in (approval_ident, main_ident) if name]

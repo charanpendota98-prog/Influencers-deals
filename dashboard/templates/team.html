@@ -52,8 +52,13 @@
   <p class="hint">
     Creator name and their <strong>own Amazon Associate tag</strong> (for example <code>ravi-21</code>) —
     that tag is used for every Amazon deal posted to their channels. Fill the channels you were given;
-    the WhatsApp link can be pasted now or after the phone is paired.
+    the WhatsApp link can be pasted now or after the phone is paired. One form, one save: the channels
+    inherit that tag automatically, and posting starts on its own once each channel is ready.
   </p>
+  {% if add_defaults_line %}
+    <p class="hint"><strong>{{ add_defaults_line }}</strong> Everything else is already decided for you —
+      the owner sets these once on the setup page.</p>
+  {% endif %}
   <form method="post" action="{{ url_for('team_add') }}" class="auth-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
     <div class="form-grid">
@@ -83,16 +88,30 @@
 </section>
 
 <section class="card" style="margin-bottom:16px;">
-  <h2 style="margin-top:0;">📋 Add many at once (paste)</h2>
+  <h2 style="margin-top:0;">📋 Add many at once (paste anything)</h2>
   <p class="hint">
-    One creator per line: <code>name, amazon_tag, main_channel, approval_channel, whatsapp_id</code>.
-    A CSV exported from the dashboard can be pasted as-is ({{ bulk_max }} rows at a time). Creators already
-    in the hub are <em>not</em> changed — the row is reported back to you and the owner edits it.
+    One creator per line, and <strong>the hub works out what each value is</strong> — write it however you
+    have it. Commas, tabs, pipes or just spaces; the Amazon tag, Telegram channels, the WhatsApp id and a
+    phone number can be in any order:
   </p>
-  <form method="post" action="{{ url_for('team_add') }}" class="auth-form">
+  <pre class="hint" style="margin:6px 0; white-space:pre-wrap;">Ravi Loots ravi-21 @ravi_loots @ravi_amazon_deals 120363012345678901@newsletter +91 98765 43210
+Sita Deals | sita-21 | t.me/sita_loots | https://t.me/sita_approval | 120363019999999999@g.us
+Kiran Deals, kiran-21, @kiran_main, @kiran_approval, , 9876543210, electronics, 09-23, budget</pre>
+  <p class="hint">
+    A CSV exported from the dashboard can be pasted as-is ({{ bulk_max }} rows at a time).
+    Creators already in the hub are <em>not</em> changed — the row comes back to you and the owner edits it.
+    Two rules the hub enforces for you: one Amazon tag belongs to one creator, and one channel belongs to
+    one creator.
+  </p>
+  <form method="post" action="{{ url_for('team_add') }}" class="auth-form" id="team-bulk-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
-    <textarea name="bulk_lines" rows="6" placeholder="Ravi Loots, ravi-21, @ravi_loots, @ravi_amazon_deals, 120363012345678901@newsletter&#10;Sita Deals, sita-21, @sita_loots, @sita_amazon_deals,"></textarea>
-    <button type="submit" class="button-primary">Add every line</button>
+    <textarea name="bulk_lines" id="team-bulk-lines" rows="6" placeholder="Ravi Loots ravi-21 @ravi_loots @ravi_amazon_deals 120363012345678901@newsletter&#10;Sita Deals, sita-21, @sita_loots, @sita_amazon_deals,"></textarea>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+      <button type="submit" class="button-primary">Add every line</button>
+      <button type="button" class="btn btn-secondary" id="team-bulk-check">🔎 Check these lines first</button>
+      <span class="hint" id="team-bulk-note">Checking writes nothing.</span>
+    </div>
+    <div id="team-bulk-preview" aria-live="polite"></div>
   </form>
 </section>
 
@@ -147,4 +166,57 @@
   </table>
 </section>
 {% endif %}
+
+<script>
+(function () {
+  "use strict";
+  var button = document.getElementById("team-bulk-check");
+  var box = document.getElementById("team-bulk-lines");
+  var out = document.getElementById("team-bulk-preview");
+  var note = document.getElementById("team-bulk-note");
+  if (!button || !box || !out) { return; }
+  var rows = function (items) {
+    var html = '<table class="table"><thead><tr><th>Line</th><th>Understood</th>' +
+               '<th>Channels</th><th>Check</th></tr></thead><tbody>';
+    items.forEach(function (row) {
+      var understood = [];
+      if (row.name) { understood.push('name: ' + row.name); }
+      if (row.tag) { understood.push('tag: ' + row.tag); }
+      var channels = [row.main, row.approval, row.whatsapp, row.phone].filter(Boolean);
+      html += '<tr><td class="hint">' + row.line + '</td><td>' + understood.join('<br>') +
+              '</td><td class="hint">' + (channels.join('<br>') || '—') + '</td><td>' +
+              (row.problems.length ? '⛔ ' + row.problems.join('<br>⛔ ')
+                                   : '✅ ready to add') + '</td></tr>';
+    });
+    return html + '</tbody></table>';
+  };
+  button.addEventListener("click", function () {
+    var form = document.getElementById("team-bulk-form");
+    var token = form ? form.querySelector('input[name="_csrf_token"]') : null;
+    var body = new URLSearchParams();
+    body.set("bulk_lines", box.value);
+    if (token) { body.set("_csrf_token", token.value); }
+    button.disabled = true;
+    if (note) { note.textContent = "Checking…"; }
+    fetch("{{ url_for('team_preview') }}", {
+      method: "POST",
+      headers: {"Content-Type": "application/x-www-form-urlencoded"},
+      body: body.toString(),
+      credentials: "same-origin"
+    }).then(function (response) { return response.json(); }).then(function (data) {
+      if (!data.ok) {
+        out.innerHTML = '<p class="alert alert-error">' + (data.error || "Could not read that.") + '</p>';
+        return;
+      }
+      var head = '<p class="hint">' + data.total + ' line(s) read · ' + data.ready +
+                 ' ready · ' + data.problems + ' need attention' +
+                 (data.unparsed ? ' · ' + data.unparsed + ' not shown' : '') + '</p>';
+      out.innerHTML = head + (data.rows.length ? rows(data.rows) : '');
+      if (note) { note.textContent = data.defaults || "Nothing was written."; }
+    }).catch(function (error) {
+      out.innerHTML = '<p class="alert alert-error">Check failed: ' + error + '</p>';
+    }).then(function () { button.disabled = false; });
+  });
+})();
+</script>
 {% endblock %}

@@ -43,7 +43,7 @@ TEAM_ADDS_PER_HOUR = 120
 # new route is private by default — the safe direction for a mistake.
 TEAM_ALLOWED_ENDPOINTS = {
     "static", "healthz", "logout",
-    "team_login", "team_home", "team_add", "team_creators",
+    "team_login", "team_home", "team_add", "team_creators", "team_preview",
     "amazon_short_link", "meesho_hypd_short_link", "lehlah_meesho_short_link",
 }
 

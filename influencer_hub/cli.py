@@ -19,6 +19,9 @@ Examples
   python -m influencer_hub.cli amazon-scan --report --check               # what we really sent
   python -m influencer_hub.cli export-inventory --out /tmp/hub-creators.csv
   python -m influencer_hub.cli import-inventory --file /tmp/hub-creators.csv --apply
+  python -m influencer_hub.cli assignments        # whose tag / channel is whose (read-only)
+  python -m influencer_hub.cli add-defaults --show                     # what new creators start with
+  python -m influencer_hub.cli add-defaults --only-amazon off --mirror-whatsapp on
   python -m influencer_hub.cli totp --new        # admin two-factor secret for the authenticator app
   python -m influencer_hub.cli snapshot          # one row of history per day
   python -m influencer_hub.cli backup --out /var/backups/hub --keep 14
@@ -564,6 +567,72 @@ def _cmd_digest(args):
     return 0 if not error else 1
 
 
+def _cmd_assignments(args):
+    """The money map: two creators on one tag, one channel on two creators."""
+    from . import guard
+
+    findings = guard.scan()
+    if args.json:
+        print(json.dumps({
+            "ok": guard.is_clear(findings),
+            "counts": guard.counts(findings),
+            "summary": guard.summary_line(findings),
+            "findings": findings,
+        }, indent=2))
+        return 0 if guard.is_clear(findings) else 1
+    print(guard.render_report(findings))
+    if args.fix_hint:
+        print("\nFix them on the dashboard (/setup → 🛡️ Money map) or with the "
+              "inventory export: edit the amazon_tag column and paste it back "
+              "(`import-inventory --file … --apply`).")
+    return 0 if guard.is_clear(findings) else 1
+
+
+def _cmd_add_defaults(args):
+    """Read or write what every NEW creator starts with."""
+    from . import presets
+
+    def _flag(value):
+        if value is None:
+            return None
+        return str(value).strip().lower() in {"on", "1", "true", "yes"}
+
+    updates: dict = {}
+    for key in ("only_amazon", "amazon", "earnkaro", "hypd", "mirror_whatsapp"):
+        setattr(args, key, _flag(getattr(args, key)))
+    if args.only_amazon is not None:
+        updates["only_amazon"] = args.only_amazon
+    if args.amazon is not None:
+        updates["allow_amazon"] = args.amazon
+    if args.earnkaro is not None:
+        updates["allow_earnkaro"] = args.earnkaro
+    if args.hypd is not None:
+        updates["allow_hypd"] = args.hypd
+    if args.mirror_whatsapp is not None:
+        updates["mirror_whatsapp"] = args.mirror_whatsapp
+    for name, value in (("categories", args.categories), ("posting_schedule", args.hours),
+                        ("price_filter", args.price), ("hypd_store_id", args.store)):
+        if value is not None:
+            updates[name] = value
+    if updates and not args.dry_run:
+        try:
+            presets.save(updates, actor=args.actor or "cli")
+        except Exception as exc:
+            print(f"could not save the new-creator defaults: {exc}")
+            return 1
+    if args.json:
+        print(json.dumps({"defaults": presets.resolved(),
+                          "summary": presets.summary_line(),
+                          "changed": sorted(updates)}, indent=2))
+        return 0
+    if updates and args.dry_run:
+        print("dry run — nothing saved. Would set: " + ", ".join(sorted(updates)))
+    print(presets.summary_line())
+    for row in presets.describe():
+        print(f"  {row['label']:24s} {row['shown']:12s} {row['hint']}")
+    return 0
+
+
 def _cmd_export_inventory(args):
     """Write the whole creator inventory (with dates and channels) to a file."""
     from . import inventory
@@ -985,6 +1054,31 @@ def build_parser() -> argparse.ArgumentParser:
     dg.add_argument("--send", action="store_true", help="post the card to OPS_TELEGRAM_CHANNEL")
     dg.add_argument("--json", action="store_true", help="machine-readable output")
     dg.set_defaults(func=_cmd_digest)
+
+    asg = sub.add_parser("assignments",
+                         help="whose Amazon tag / channel is whose (read-only, exit 1 on a mix)")
+    asg.add_argument("--json", action="store_true", help="machine-readable findings")
+    asg.add_argument("--fix-hint", action="store_true", help="print how to fix them")
+    asg.set_defaults(func=_cmd_assignments)
+
+    ad = sub.add_parser("add-defaults",
+                        help="what every NEW creator starts with (presets for the team)")
+    ad.add_argument("--show", action="store_true", help="just print them (the default)")
+    for name, flag, help_text in (("amazon", "--amazon", "Amazon links on/off"),
+                                  ("earnkaro", "--earnkaro", "EarnKaro on/off"),
+                                  ("hypd", "--hypd", "HYPD / Meesho on/off"),
+                                  ("only_amazon", "--only-amazon", "Amazon-only channels on/off"),
+                                  ("mirror_whatsapp", "--mirror-whatsapp",
+                                   "new main channels mirror to WhatsApp")):
+        ad.add_argument(flag, dest=name, choices=["on", "off"], default=None, help=help_text)
+    ad.add_argument("--categories", default=None, help="default deal categories")
+    ad.add_argument("--hours", default=None, help="default posting hours")
+    ad.add_argument("--price", default=None, help="default price filter")
+    ad.add_argument("--store", default=None, help="HYPD store id ('' = hub default)")
+    ad.add_argument("--dry-run", action="store_true", help="show what would be saved")
+    ad.add_argument("--actor", default="cli", help="name recorded in the audit log")
+    ad.add_argument("--json", action="store_true", help="machine-readable output")
+    ad.set_defaults(func=_cmd_add_defaults)
 
     ex = sub.add_parser("export-inventory",
                         help="write every creator (date added, channels, ids, settings) as CSV")

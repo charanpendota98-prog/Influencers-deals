@@ -345,6 +345,14 @@ def plan_import(text: str, *, create: bool = False, known: dict[int, dict] | Non
             channels_by_creator.setdefault(inf_id, {}).setdefault(role, channel)
     except Exception:  # pragma: no cover - display only
         channels_by_creator = {}
+    try:
+        from . import guard
+
+        # The money map, read once: the plan warns when the edited spreadsheet
+        # would leave two creators on one tag or one channel on two creators.
+        assignment_index = guard.GuardIndex.from_db()
+    except Exception:  # pragma: no cover - display only
+        assignment_index = None
     from . import link_router
 
     operations: list[dict] = []
@@ -478,6 +486,24 @@ def plan_import(text: str, *, create: bool = False, known: dict[int, dict] | Non
             "before": before, "channels_before": channels_before,
         })
 
+    warnings: list[dict] = []
+    if assignment_index is not None:
+        for operation in operations:
+            changes = operation.get("changes") or {}
+            channels = operation.get("channels") or {}
+            tag = str(changes.get("amazon_tag") or operation.get("tag") or "")
+            taken = assignment_index.preflight(
+                name=str(operation.get("name") or "") if operation.get("create") else "",
+                tag=tag,
+                ignore_id=0 if operation.get("create") else int(operation.get("creator_id") or 0),
+                approval=str((channels.get("approval") if "approval" in channels else "") or ""),
+                main=str((channels.get("broadcast") if "broadcast" in channels else "") or ""),
+                whatsapp=str((channels.get("whatsapp") if "whatsapp" in channels else "") or ""),
+            )
+            if taken["errors"]:
+                warnings.append({"line": operation.get("line"), "name": operation.get("name"),
+                                 "detail": assignment_index.explain(taken)})
+
     to_change = [op for op in operations if op["changes"] or op["channels"] or op["create"]]
     for operation in to_change:
         operation.setdefault("before", {})
@@ -493,6 +519,7 @@ def plan_import(text: str, *, create: bool = False, known: dict[int, dict] | Non
         "created": created,
         "unchanged": len(operations) - len(to_change),
         "issues": issues,
+        "warnings": warnings,
         "ok": not issues,
     }
 

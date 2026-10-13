@@ -11,6 +11,41 @@ git fetch origin arena/3496cf5b-influencers-deals
 git checkout -B arena/3496cf5b-influencers-deals FETCH_HEAD
 ```
 
+## 0. The two new guarantees (money map + one-line adds)
+
+```bash
+# 1. nobody's money is attached to somebody else (read-only, exit 1 when it is)
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli assignments --fix-hint
+curl -s -b cookies "http://127.0.0.1:5000/api/assignments" | head -c 400
+
+# 2. the door refuses a row that would mix (team page, with the team sign-in)
+curl -s -b team-cookies -L -d "_csrf_token=$CSRF&name=Copy Cat&amazon_tag=ravi-21" \
+     -d "main_channel=@copycat_loots" http://127.0.0.1:5000/team/add | grep -o 'already belongs to[^<]*'
+#   ⛔ Amazon tag "ravi-21" already belongs to Ravi Loots …   (nothing was added)
+
+# 3. the same line in any shape is understood, before it is written
+curl -s -b team-cookies -d "_csrf_token=$CSRF" \
+     --data-urlencode $'bulk_lines=Ravi Loots ravi-21 @ravi_loots @ravi_amazon_deals 120363012345678901@newsletter +91 98765 43210' \
+     http://127.0.0.1:5000/team/preview
+#   {"total":1,"ready":1,…,"rows":[{"name":"Ravi Loots","tag":"ravi-21","main":"@ravi_loots",…}]}
+
+# 4. what every new creator starts with (set once for the team)
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli add-defaults --only-amazon on --store 93944
+PYTHONPATH=. .venv/bin/python -m influencer_hub.cli add-defaults --show
+```
+
+**Observed on a 60-creator demo hub** (branch code, gunicorn on :5000):
+
+| Check | Result |
+|---|---|
+| `cli assignments` with one duplicated tag | exit `1`, `⛔ Two creators share one Amazon tag — Ravi Loots (#1), Ravi Ratnam (#60)`, the tag and both fixes printed |
+| `GET /api/assignments` | `200`, `ok:false`, `counts.high:1`, the finding naming both creators |
+| team member on `/team/add` with `ravi-21` | refused, page says *already belongs to Ravi Loots*; creator count unchanged; audit `add_blocked_duplicate` |
+| `/team/preview` with three scrappy lines | `200` in **~4 ms**: line 1 understood (name, tag, main, approval, WhatsApp, phone), line 2 reported twice (no tag, no channel), line 3 fine |
+| `add-defaults --only-amazon on --store 93944` | saved, audited (`add_defaults_changed`), team page sentence updated |
+| money-map scan, 1000 creators + 1000 channels | **45 ms**; `GuardIndex.from_db` 15 ms; one preflight < 0.1 ms |
+| self-check | 14 items, `Money map (tags & channels)` amber while mixed, green after the fix |
+
 ## 1. Code tests (services stopped, no credential read at all)
 
 ```bash
@@ -22,7 +57,7 @@ RC=$?; rm -f "$TEST_DB"; echo "pytest exit code: $RC"
 cd wa_hub && node --test
 ```
 
-**Expected:** `526 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
+**Expected:** `583 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
 the run ignore the VM's private `.env` entirely (`config._load_dotenv` returns
 before reading the file), so no real Telegram session, affiliate key, shortener
 token or bot credential exists for the duration of the run: no real post, no
