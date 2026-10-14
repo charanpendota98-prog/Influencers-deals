@@ -551,6 +551,21 @@ def _cmd_self_check(args):
             decision = alert.get("decision") or {}
             state = "sent" if alert.get("sent") else f"not sent ({decision.get('reason', 'n/a')})"
             print(f"ops alert: {state}" + (f" — {alert['error']}" if alert.get("error") else ""))
+        if getattr(args, "blocking", False):
+            failures = int(report["summary"].get("fail") or 0)
+            warnings = int(report["summary"].get("warn") or 0)
+            if failures:
+                print(f"self-check: {failures} real failure(s) above — fix these")
+            else:
+                headline = f"self-check: no failures · {warnings} warning(s), advisory only"
+                note = ("  a warning is how a hub looks while it is being set up: a worker that\n"
+                        "  is starting, a creator whose phone is not paired yet, a snapshot not\n"
+                        "  taken yet. None of it blocks an update or rolls a deploy back.")
+                print(headline + "\n" + note)
+    if getattr(args, "blocking", False):
+        # What a deploy gates on: a *real* failure. Warnings are normal operating
+        # notices and must never roll a deploy back.
+        return 1 if report["summary"].get("fail") else 0
     return 0 if report["verdict"] == "ready" else 1
 
 
@@ -1232,6 +1247,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "(cooldown applies)")
     sc.add_argument("--force", action="store_true",
                     help="with --alert: send even if the verdict improved or is in cooldown")
+    sc.add_argument("--blocking", action="store_true",
+                    help="exit non-zero only on a real failure (what a deploy gates on)")
     sc.set_defaults(func=_cmd_self_check)
 
     dg = sub.add_parser("digest", help="operational summary for the ops channel or a terminal")

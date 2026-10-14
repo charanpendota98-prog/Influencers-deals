@@ -8,8 +8,9 @@ restart, and the deploy refuses to continue when a check fails.
 > `deploy.sh`. తర్వాత ప్రతి update కి `git pull` బదులు `./deploy/deploy.sh` ఒక్కటే
 > చాలు: అది ముందు **read-only check** చేస్తుంది, DB **backup** తీస్తుంది, code ను
 > fast-forward మాత్రమే చేస్తుంది, migrations వేసి, services restart చేసి, `/healthz` +
-> self-check + tag-proof చూస్తుంది — ఏదైనా fail అయితే **వెంటనే rollback** (పాత code +
-> అదే backup) చేస్తుంది. Credentials ఎప్పుడూ print అవ్వవు (ఉన్నాయా/లేవా మాత్రమే).
+> self-check (`--blocking`) + tag-proof చూస్తుంది — ⛔ నిజమైన failure అయితే మాత్రమే
+> **వెంటనే rollback** (పాత code + అదే backup); ⚠️ warnings మాత్రం వాటి fix తో print
+> అవుతాయి, ఎప్పుడూ rollback చేయవు. Credentials ఎప్పుడూ print అవ్వవు (ఉన్నాయా/లేవా మాత్రమే).
 
 ---
 
@@ -82,8 +83,16 @@ What it does, in order — and what it refuses to do:
 | 6 | WhatsApp deps | `npm ci --no-audit --no-fund`, only when `package-lock.json` changed. **`npm audit fix` is never run** — your verified lock stays exactly as it is |
 | 7 | migrate | `cli init` adds the new columns; safe to re-run |
 | 8 | restart | systemd units when they are installed, otherwise `deploy/start_services.sh` (which supervises and restarts every service) |
-| 9 | health | `/healthz`, then `cli self-check`, then `cli tag-proof` |
+| 9 | health | `/healthz`, then `cli self-check --blocking`, then `cli tag-proof`. ⛔ a real failure rolls the deploy back; ⚠️ warnings are printed with their fixes and never do |
 | 10 | rollback | if 9 fails: previous commit + the backup from step 2 + restart, then a non-zero exit |
+
+Step 9 is what gates the deploy, and it gates on **failures only**: a check in the
+⛔ state rolls the code and the database back; a check in the ⚠️ state — a worker
+that is still starting, a creator whose phone is not paired yet, a snapshot not
+taken yet — is printed with the one command that clears it and never rolls a
+deploy back. That is why the script calls `cli self-check --blocking` and not the
+plain form: on a hub that has not finished onboarding, the plain form would undo
+every deploy.
 
 The last lines are the receipt you can paste into Telegram:
 
@@ -91,7 +100,7 @@ The last lines are the receipt you can paste into Telegram:
 [2026-10-14T09:12:33+00:00] DEPLOY OK · branch main · commit 5b5696f
   started:    2026-10-14T09:11:02+00:00
   backup:     /home/ubuntu/Influencers-deals/backups/hub-20261014-091102.sqlite3
-  health:     http://127.0.0.1:5000/healthz answered · self-check passed · tag-proof passed
+  health:     http://127.0.0.1:5000/healthz answered · self-check: no failures · tag-proof passed
   rollback:   ./deploy/deploy.sh --from-backup …   (database only)
               git reset --hard 5b5696f && ./deploy/deploy.sh --no-restart  (code)
 ```
