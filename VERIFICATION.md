@@ -36,7 +36,7 @@ HUB_ENV=development HUB_DB_PATH="$(mktemp /tmp/onb.XXXXXX.sqlite3)" HUB_SKIP_DOT
 PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_creator_onboarding.py \
                                                  tests/test_telegram_channel_names.py \
                                                  tests/test_demo_wa_hub.py
-#   29 passed (of the full 739): the add form carries everything, names are shown and saved, the
+#   29 passed (of the full 742): the add form carries everything, names are shown and saved, the
 #   admin list is filtered, a down hub yields an empty picker (never an error),
 #   the gap is a random 60–80 s, and the Telegram peek is read-only.
 
@@ -266,13 +266,22 @@ sha256sum <the database>          # unchanged after --dry-run
 # 3. the tests that hold those promises
 HUB_ENV=development HUB_DB_PATH="$(mktemp /tmp/deploy.XXXXXX.sqlite3)" HUB_SKIP_DOTENV=1 \
 PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_deploy.py
-#   12 passed: bash syntax, the plan order (backup before anything that changes
+#   13 passed: bash syntax, the plan order (backup before anything that changes
 #   code), --dry-run prints and does not act, no `npm audit fix` in any command,
-#   the preflight is read-only and never prints a secret, a modified tracked file
-#   blocks a deploy while an untracked one does not, the units cover all four
-#   services, and the guide documents the rollbacks.
+#   **every `cli self-check` the deploy runs carries `--blocking`**, the preflight
+#   is read-only and never prints a secret, a modified tracked file blocks a
+#   deploy while an untracked one does not, the units cover all four services, and
+#   the guide documents the rollbacks.
 
-# 4. on the VM, the real thing (operator):
+# 4. the gate itself: a warning must never roll a deploy back
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_self_check.py
+#   12 passed. The two new ones run the CLI on a synthetic report: ⚠️ warnings only
+#   → `cli self-check --blocking` exits 0 (the deploy continues) while the plain
+#   `cli self-check` still exits 1; a ⛔ failure → both exit 1. What it prints, not
+#   just what it returns: "self-check: no failures · 3 warning(s), advisory only",
+#   and the deploy script + guide are checked for `self-check --blocking`.
+
+# 5. on the VM, the real thing (operator):
 ./deploy/deploy.sh --check          # then
 ./deploy/deploy.sh                  # backup → fast-forward → migrate → restart → health
 #   ends with: DEPLOY OK · backup: …/hub-<ts>.sqlite3 · health: /healthz answered
@@ -281,8 +290,11 @@ PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_deploy.py
 
 **What is expected:** `--check` never writes anything; a required `[XX]` stops the
 deploy before the backup; the deploy ends with `DEPLOY OK` only after `/healthz`,
-the self-check and the fleet tag-proof pass; a failure rolls the code and the
-database back to exactly what they were and exits non-zero.
+the self-check and the fleet tag-proof pass; **a ⛔ failure rolls the code and the
+database back to exactly what they were and exits non-zero, while ⚠️ warnings are
+printed with their fixes and never do** — a hub that has not finished onboarding
+(worker starting, phone not paired yet, no snapshot yet) is full of warnings, and
+rolling back over one would undo every deploy.
 
 ## 1. Code tests (services stopped, no credential read at all)
 
@@ -295,7 +307,7 @@ RC=$?; rm -f "$TEST_DB"; echo "pytest exit code: $RC"
 cd wa_hub && node --test
 ```
 
-**Expected:** `709 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
+**Expected:** `742 passed` and `# pass 8 / # fail 0`. `HUB_SKIP_DOTENV=1` makes
 the run ignore the VM's private `.env` entirely (`config._load_dotenv` returns
 before reading the file), so no real Telegram session, affiliate key, shortener
 token or bot credential exists for the duration of the run: no real post, no

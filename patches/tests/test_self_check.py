@@ -7,12 +7,15 @@ honest (a missing key, a dead worker or an unpaired phone is never reported as
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
 import dashboard.app as dashboard_module
 from dashboard.app import app
 from influencer_hub import config, db, selfcheck
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture
@@ -226,3 +229,58 @@ def test_the_panel_never_renders_a_secret(client, monkeypatch, tmp_path):
 
     assert "top-secret-token-123" not in body
     assert "ek-secret-value" not in body
+
+
+# --------------------------------------------------------------------------
+# 3. The deploy gate: a warning must never roll a deploy back
+# --------------------------------------------------------------------------
+def _synthetic_report(*, failures: int, warnings: int) -> dict:
+    """The shape ``run_checks`` returns, with only the states that matter here."""
+    checks = [{"id": f"fail{index}", "label": f"Broken {index}", "state": "fail",
+               "detail": "it is broken", "fix": "the one command that fixes it",
+               "ok": False}
+              for index in range(failures)]
+    checks += [{"id": f"warn{index}", "label": f"Amber {index}", "state": "warn",
+                "detail": "not finished being set up", "fix": "the one command "
+                "that fixes it", "ok": False}
+               for index in range(warnings)]
+    return {
+        "generated_at": "2026-10-14T00:00:00+00:00",
+        "live": False,
+        "verdict": "fail" if failures else ("attention" if warnings else "ready"),
+        "ok": not failures,
+        "checks": checks,
+        "summary": {"ok": 0, "warn": warnings, "fail": failures, "skip": 0},
+        "next": checks,
+    }
+
+
+def test_only_a_real_failure_blocks_a_deploy(capsys, monkeypatch):
+    """`--blocking` is the deploy's gate: ⛔ stops it, ⚠️ is advice, never a stop."""
+    from influencer_hub import cli
+
+    warn_only = _synthetic_report(failures=0, warnings=3)
+    monkeypatch.setattr(selfcheck, "run_checks", lambda live=False: warn_only)
+
+    assert cli.main(["self-check", "--blocking"]) == 0     # the deploy continues
+    assert cli.main(["self-check"]) == 1                   # the plain report is honest
+    printed = capsys.readouterr().out
+    assert "no failures · 3 warning(s), advisory only" in printed
+    assert "rolls a deploy back" in printed                # …and says so in words
+
+    real_failure = _synthetic_report(failures=1, warnings=1)
+    monkeypatch.setattr(selfcheck, "run_checks", lambda live=False: real_failure)
+
+    assert cli.main(["self-check", "--blocking"]) == 1     # this one does stop it
+    assert cli.main(["self-check"]) == 1
+    assert "1 real failure(s) above" in capsys.readouterr().out
+
+
+def test_a_deploy_only_looks_at_failures():
+    """The script and the guide must run the form a deploy can trust."""
+    script = (REPO / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+    guide = (REPO / "deploy" / "DEPLOY.md").read_text(encoding="utf-8")
+
+    assert "self-check --blocking" in script
+    assert "self-check --blocking" in guide
+    assert "⚠️" in guide and "⛔" in guide   # both states are explained to the operator

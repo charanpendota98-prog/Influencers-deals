@@ -85,6 +85,24 @@ def test_the_dry_run_prints_the_plan_and_changes_nothing():
     assert "if [[ \"$DRY_RUN\" == \"1\" ]]; then" in text
 
 
+def test_every_self_check_the_deploy_runs_gates_on_failures_only():
+    """The one form a deploy may run is ``cli self-check --blocking``.
+
+    The plain form exits non-zero on a ⚠️ warning too, and a hub that has not
+    finished onboarding is full of them (a worker still starting, a phone not
+    paired yet, no snapshot taken yet) — gating on those would roll back every
+    deploy. Only a ⛔ failure may stop it.
+    """
+    invocations = [line.strip()
+                   for line in SCRIPT.read_text(encoding="utf-8").splitlines()
+                   if "-m influencer_hub.cli self-check" in line]
+    assert invocations, "the deploy must run the hub self-check"
+    for line in invocations:
+        assert "--blocking" in line, (
+            f"this self-check in the deploy would stop on a warning too: {line}"
+        )
+
+
 # --------------------------------------------------------------------------
 # 2. the preflight
 # --------------------------------------------------------------------------

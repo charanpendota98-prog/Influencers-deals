@@ -1031,7 +1031,7 @@ undo itself**:
 | 4 | `pip install` / `npm ci` | only when the locks changed — **`npm audit fix` never runs** |
 | 5 | `cli init` | new columns added; safe to re-run |
 | 6 | restart | systemd units, or `start_services.sh` (supervised) |
-| 7 | health | `/healthz` → `cli self-check` → `cli tag-proof` |
+| 7 | health | `/healthz` → `cli self-check --blocking` → `cli tag-proof`: ⛔ a real failure rolls back, ⚠️ warnings are printed with their fixes and never do |
 | 8 | rollback | any failure: previous commit + the backup + restart, then a non-zero exit |
 
 `--check` prints one line per thing it looked at — branch and commit, whether the

@@ -268,8 +268,13 @@ if [[ "$NO_RESTART" != "1" && "$DRY_RUN" != "1" ]]; then
   wait_for_health 20 || rollback "the dashboard never answered $HEALTH_URL"
 fi
 log "running the hub self-check"
-if ! run "$PY" -m influencer_hub.cli self-check; then
-  rollback "the hub self-check failed after the deploy"
+# `--blocking` is deliberate: only a *real* failure (a check in the ⛔ state)
+# rolls a deploy back. Warnings are how a healthy hub looks mid-setup — a worker
+# that is still starting, a creator whose phone is not paired yet, a snapshot not
+# taken yet — and rolling back over those would undo every deploy on a hub that
+# has not finished onboarding. The warnings are printed, with their fixes.
+if ! run "$PY" -m influencer_hub.cli self-check --blocking; then
+  rollback "the hub self-check found a real failure after the deploy"
   exit 1
 fi
 log "checking that every Amazon link still carries its creator's own tag"
@@ -294,7 +299,7 @@ cat <<EOF
 [$(date -Is)] DEPLOY OK · branch $BRANCH · commit $(git rev-parse --short HEAD 2>/dev/null || echo '?')
   started:    $STARTED_AT
   backup:     ${NEW_BACKUP:-$BACKUP_DIR}
-  health:     $HEALTH_URL answered · self-check passed · tag-proof passed
+  health:     $HEALTH_URL answered · self-check: no failures · tag-proof passed
   rollback:   ./deploy/deploy.sh --from-backup ${NEW_BACKUP:-<backup>}   (database only)
               git reset --hard ${PREVIOUS_SHA:0:12} && ./deploy/deploy.sh --no-restart  (code)
   dashboard:  http://<this-box>:5000  ·  logs: journalctl -u influencer-dashboard -f
