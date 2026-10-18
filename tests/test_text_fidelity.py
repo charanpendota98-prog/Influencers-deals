@@ -45,6 +45,9 @@ def _creator(name="Fidelity Creator", tag="fidelity-21", **kwargs) -> int:
 
 
 def _wired(monkeypatch):
+    # These cases isolate text-fidelity behavior; strict attribution is tested
+    # separately and is explicitly disabled because this source is unconverted.
+    db.set_global_setting("strict_commission_mode", "off")
     posted: list[tuple[str, str]] = []
 
     async def fake_dispatch(_influencer, _channel, text):

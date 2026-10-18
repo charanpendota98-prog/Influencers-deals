@@ -2,11 +2,11 @@
 
 The configured integration posts a cleaned merchant URL plus
 `"convert_option": "convert_only"` to the EarnKaro converter endpoint with a
-Bearer credential and parses a returned affiliate link. When a publisher ID is configured, direct results must include a matching
-ID; known shorteners receive a best-effort redirect check. If credentials are
-absent, conversion fails, or the result cannot be validated, the original
-merchant URL is returned so the deal is not dropped. This code cannot guarantee
-external merchant support or commission attribution.
+Bearer credential and parses a returned affiliate link. Every accepted result requires the configured publisher ID. Direct results
+must carry matching provenance and land on a supported merchant; short results
+must resolve successfully to a supported merchant with matching provenance. If
+any check fails, the original URL is returned for the strict pipeline to hold.
+This validates known link provenance, not a sale or payout.
 
 Amazon URLs are routed separately by ``link_router`` with the selected
 influencer/channel Associate tag.
@@ -22,8 +22,8 @@ import aiohttp
 
 from . import config, db, link_router
 
-# Affiliate shorteners whose resolved URL carries affExtParam2. We accept the
-# short link but verify (best-effort) that it redirects to OUR publisher id.
+# Affiliate shorteners whose resolved URL carries affExtParam2. A result is
+# accepted only after its redirect and publisher ID are verified.
 SHORTENER_HOSTS = {"fktr.in", "ekaro.in", "ekaro.app", "clnk.in", "clnk.app", "myntr.it"}
 
 
@@ -56,7 +56,10 @@ def _publisher_id_values(link: str, expected_pubid: str = "") -> list[str]:
 
 async def _resolve_final_url(session: aiohttp.ClientSession, link: str,
                              timeout: float = 8.0) -> str | None:
-    """Follow redirects and return the final URL (best-effort)."""
+    """Follow redirects and return the final URL, or ``None`` on any failure.
+
+    Callers must treat ``None`` as unverified and fail closed.
+    """
     try:
         async with session.get(
             link, allow_redirects=True,
@@ -70,7 +73,7 @@ async def _resolve_final_url(session: aiohttp.ClientSession, link: str,
 
 async def _resolve_affextparam2(session: aiohttp.ClientSession, link: str,
                                 timeout: float = 8.0) -> str | None:
-    """Follow redirects and return the affExtParam2 of the final URL (best-effort)."""
+    """Return the final publisher signal, or ``None`` when it cannot be proven."""
     final = await _resolve_final_url(session, link, timeout=timeout)
     if final is None:
         return None
@@ -85,6 +88,23 @@ async def _resolve_publisher_id(session: aiohttp.ClientSession, link: str,
     if final is None:
         return None
     return next(iter(_publisher_id_values(final, expected_pubid)), None)
+
+def _verified_landing_url(
+    final_url: str | None, expected_pubid: str, *, source_kind: str = "merchant",
+) -> bool:
+    """Check redirect destination belongs to the source store family and publisher."""
+    final = str(final_url or "").strip()
+    expected = str(expected_pubid or "").strip()
+    if not final or not expected:
+        return False
+    ids = _publisher_id_values(final, expected)
+    if not ids or any(value != expected for value in ids):
+        return False
+    kind = link_router.classify_url(final)
+    if source_kind == "meesho":
+        return kind in {"meesho", "lehlah"}
+    return kind == "merchant" and link_router.is_known_merchant_host(final)
+
 
 CACHE: dict[str, tuple[float, str]] = {}
 CACHE_TTL = 60 * 60 * 12  # 12h — successful EarnKaro links are stable
@@ -202,17 +222,15 @@ def parse_ek_response(body: str, expected_pubid: str | None = None) -> str | Non
 
 
 def credentials_configured() -> bool:
-    """True when an EarnKaro API key is configured (dashboard vault or env).
-
-    Without a key no merchant link can ever be converted, so callers must not
-    treat a raw merchant URL as a transient conversion failure in that state.
-    """
+    """True only when both converter credential and publisher ID are configured."""
     try:
-        if str(db.get_global_setting("earnkaro_api_key") or "").strip():
-            return True
+        db_key = str(db.get_global_setting("earnkaro_api_key") or "").strip()
+        db_pubid = str(db.get_global_setting("earnkaro_publisher_id") or "").strip()
     except Exception:  # pragma: no cover - defensive (DB unavailable)
-        pass
-    return bool(str(config.EARNKARO_API_KEY or "").strip())
+        db_key = db_pubid = ""
+    key = db_key or str(config.EARNKARO_API_KEY or "").strip()
+    pubid = db_pubid or str(config.EARNKARO_PUBLISHER_ID or "").strip()
+    return bool(key and pubid)
 
 
 async def convert_one(session: aiohttp.ClientSession, url: str,
@@ -235,18 +253,27 @@ async def convert_one(session: aiohttp.ClientSession, url: str,
     effective_ek_key = db_ek_key if db_ek_key else config.EARNKARO_API_KEY
     effective_ek_pubid = db_ek_pubid if db_ek_pubid else config.EARNKARO_PUBLISHER_ID
 
-    if not effective_ek_key:
-        # Keep the source link, but don't cache this fallback: the operator may
-        # configure credentials in the dashboard before the next dispatch.
+    if not effective_ek_key or not str(effective_ek_pubid or "").strip():
+        # Without both credentials there is no way to verify who receives the
+        # attribution. Keep the source link and do not cache the fallback.
         return url
 
     key = _cache_key(url, effective_ek_pubid, effective_ek_key)
     now = time.time()
     cached = _cache_get(key, url, now)
     if cached is not None:
-        return cached
+        if cached == url:
+            return cached
+        try:
+            proof = db.verified_earnkaro_link(cached, effective_ek_pubid)
+        except Exception:
+            proof = None
+        if proof:
+            return cached
+        # A cache entry without durable provenance is not trusted. Re-query and
+        # verify it instead of allowing an old/best-effort result through.
+        CACHE.pop(key, None)
 
-    last: Exception | None = None
     # Pre-clean dirty third-party affiliate tracking params (hypd, clickid, appsflyer, etc.)
     api_deal_url = clean_merchant_url_for_api(url)
     for attempt in range(3):
@@ -273,24 +300,40 @@ async def convert_one(session: aiohttp.ClientSession, url: str,
                     # so the deal still posts without an affiliate conversion.
                     _cache_set(key, url)
                     return url
-                # Short-link provenance: fktr.in/ekaro.in etc. don't carry
-                # affExtParam2 directly, so follow the redirect (best-effort) and
-                # confirm it lands on OUR publisher id. A mismatch -> reject.
-                if effective_ek_pubid and _is_shortener(converted):
-                    resolved_pubid = await _resolve_publisher_id(
-                        session, converted, effective_ek_pubid
-                    )
-                    if resolved_pubid and resolved_pubid != effective_ek_pubid:
+                # Short links are accepted only if the redirect resolves to a
+                # supported store carrying our exact publisher ID. Direct links
+                # must satisfy the same destination/provenance checks. Unknown,
+                # mismatched, or temporarily unresolvable results stay raw so
+                # the strict dispatch gate can hold rather than leak them.
+                if _is_shortener(converted):
+                    final_url = await _resolve_final_url(session, converted)
+                    if not _verified_landing_url(
+                        final_url, effective_ek_pubid, source_kind=kind
+                    ):
                         _cache_set(key, url)
                         return url
+                elif not _verified_landing_url(
+                    converted, effective_ek_pubid, source_kind=kind
+                ):
+                    _cache_set(key, url)
+                    return url
                 if _clean(converted) == _clean(url):
                     # Provenance guard: never accept an echoed source URL.
                     _cache_set(key, url)
                     return url
+                try:
+                    recorded = db.record_verified_earnkaro_link(
+                        converted, effective_ek_pubid,
+                        final_url if _is_shortener(converted) else converted,
+                    )
+                except Exception:
+                    recorded = False
+                if not recorded:
+                    _cache_set(key, url)
+                    return url
                 _cache_set(key, converted)
                 return converted
-        except Exception as exc:  # retry with jitter
-            last = exc
+        except Exception:  # retry with jitter
             await asyncio.sleep(min(2.5, 0.4 * (2 ** attempt) + (time.time() % 1) * 0.3))
     # Give up gracefully — keep the original link rather than drop the deal.
     _cache_set(key, url)
@@ -341,6 +384,8 @@ async def verify_earnkaro(test_url: str = "https://www.flipkart.com/p/itmEXAMPLE
     effective_ek_pubid = db_ek_pubid if db_ek_pubid else config.EARNKARO_PUBLISHER_ID
     if not effective_ek_key:
         return {"ok": False, "error": "EarnKaro API credential is not configured"}
+    if not str(effective_ek_pubid or "").strip():
+        return {"ok": False, "error": "EarnKaro publisher ID is required for attribution verification"}
 
     async with aiohttp.ClientSession() as session:
         try:
@@ -370,28 +415,31 @@ async def verify_earnkaro(test_url: str = "https://www.flipkart.com/p/itmEXAMPLE
         expected_pubid = str(effective_ek_pubid or "").strip()
         link = parse_ek_response(body, expected_pubid or None)
         provenance_verified: bool | None = None
+        destination_verified: bool | None = None
         if link and expected_pubid:
             if _is_shortener(link):
-                resolved_pubid = await _resolve_publisher_id(
-                    session, link, expected_pubid
+                final_url = await _resolve_final_url(session, link)
+                final_ids = _publisher_id_values(final_url or "", expected_pubid)
+                provenance_verified = bool(final_ids) and all(
+                    value == expected_pubid for value in final_ids
                 )
-                if resolved_pubid is not None:
-                    provenance_verified = resolved_pubid == expected_pubid
+                destination_verified = _verified_landing_url(
+                    final_url, expected_pubid, source_kind="merchant"
+                )
             else:
-                publisher_ids = _publisher_id_values(link, expected_pubid)
-                provenance_verified = bool(publisher_ids) and all(
-                    publisher_id == expected_pubid for publisher_id in publisher_ids
+                ids = _publisher_id_values(link, expected_pubid)
+                provenance_verified = bool(ids) and all(value == expected_pubid for value in ids)
+                destination_verified = _verified_landing_url(
+                    link, expected_pubid, source_kind="merchant"
                 )
 
-    verified = bool(link) and (
-        not expected_pubid or provenance_verified is True
-    )
+    verified = bool(link) and provenance_verified is True and destination_verified is True
     if not link:
         error = "response did not contain a valid link for the configured publisher"
-    elif expected_pubid and provenance_verified is None:
-        error = "publisher provenance could not be verified from the short link"
-    elif expected_pubid and provenance_verified is False:
-        error = "returned link does not match the configured publisher ID"
+    elif provenance_verified is not True:
+        error = "publisher provenance could not be verified or does not match the configured publisher ID"
+    elif destination_verified is not True:
+        error = "returned link did not resolve to a supported merchant destination"
     else:
         error = None
     return {
@@ -402,5 +450,6 @@ async def verify_earnkaro(test_url: str = "https://www.flipkart.com/p/itmEXAMPLE
         "converted_link": link,
         "publisher_id": expected_pubid or None,
         "publisher_provenance_verified": provenance_verified,
+        "destination_verified": destination_verified,
         "raw_response": body[:500],
     }

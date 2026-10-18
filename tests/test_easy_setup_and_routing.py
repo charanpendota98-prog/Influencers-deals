@@ -359,20 +359,24 @@ def test_easy_setup_then_a_source_deal_posts_on_each_route(hub, monkeypatch):
 
     flipkart = "https://www.flipkart.com/product/p/itmEASY123"
     converted = "https://ekaro.in/ravi-loot"
+    raw_meesho = "https://www.meesho.com/sample/p/itmeasy"
+    converted_meesho = "https://ekaro.in/ravi-meesho"
     captured: dict[int, list[str]] = {}
 
     async def fake_dispatch(_influencer, channel, text):
         captured.setdefault(int(channel["id"]), []).append(text)
         return "posted"
 
-    monkeypatch.setattr(pipeline, "_earnkaro_map_for", AsyncMock(return_value={flipkart: converted}))
+    monkeypatch.setattr(pipeline, "_earnkaro_map_for", AsyncMock(return_value={
+        flipkart: converted, raw_meesho: converted_meesho,
+    }))
     monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
 
     deal = (
         "🔥 Portronics Mini Fan at Rs.799\n"
         "https://www.amazon.in/dp/B0EASYSETUP?tag=source-21\n"
         f"Flipkart: {flipkart}\n"
-        "Meesho: https://www.meesho.com/sample/p/itmeasy\n"
+        f"Meesho: {raw_meesho}\n"
         "HYPD: https://hypd.store/11111/afflink/easytoken"
     )
     result = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer["id"]]))
@@ -383,7 +387,7 @@ def test_easy_setup_then_a_source_deal_posts_on_each_route(hub, monkeypatch):
     assert "tag=ravi-21" in main_post and "source-21" not in main_post
     assert converted in main_post and flipkart not in main_post
     assert "https://hypd.store/93944/afflink/easytoken" in main_post
-    assert "https://www.meesho.com/sample/p/itmeasy" in main_post
+    assert converted_meesho in main_post and raw_meesho not in main_post
 
     # Approval channel: Amazon only, native, with the disclosure.
     assert result[influencer["id"]][channels["approval"]["id"]] == "posted"

@@ -120,6 +120,7 @@ test('transient disconnect clears stale socket and re-establishes live connected
   assert.equal(session.phone, '919876543210')
 
   assert.deepEqual(JSON.parse(fs.readFileSync(sessionsFile, 'utf8')), [{ key, meta }])
+  assert.equal(fs.statSync(sessionsFile).mode & 0o777, 0o600)
 })
 
 test('saved session identity resumes after Hub restart and status is re-read from the live socket', async (t) => {

@@ -76,9 +76,21 @@ def only_earning_deals_enabled() -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-# A deal parked because its only link was a merchant URL EarnKaro had not
-# converted yet is retried after this long, this many times, then posted anyway
-# (see influencer_hub/worker.py:drain_deferred_deals).
+def strict_commission_mode_enabled() -> bool:
+    """Fail closed if any posted link cannot be tied to our configured attribution."""
+    try:
+        value = db.get_global_setting("strict_commission_mode", config.STRICT_COMMISSION_MODE)
+    except Exception:
+        # A settings-store outage must not silently disable the safety default.
+        return bool(config.STRICT_COMMISSION_MODE)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# A deal with unverified attribution is retried after this delay. In strict
+# mode, exhausting the short retry budget increases the backoff; it never
+# permits an unconverted post.
 #: Channels already warned about an unusable Amazon tag (one warning per
 #: channel, not one per deal).
 _TAG_FALLBACK_WARNED: set[tuple] = set()
@@ -91,10 +103,9 @@ def allow_unconverted_posts_enabled() -> bool:
     """Post deals whose links would all earn nothing (default: no).
 
     The commission guard parks such a deal in the retry queue instead of
-    spending a post on it, and the worker posts it converted as soon as
-    EarnKaro answers. Set ``ALLOW_UNCONVERTED_POSTS=1`` (or the
-    ``allow_unconverted_posts`` global setting) to post the raw link straight
-    away — volume over commission, e.g. during a long converter outage.
+    spending a post on it. ``ALLOW_UNCONVERTED_POSTS=1`` is a legacy
+    volume-over-commission option and cannot bypass the default-on strict
+    attribution lock; strict mode must be explicitly disabled to use it.
     """
     value = db.get_global_setting("allow_unconverted_posts", config.ALLOW_UNCONVERTED_POSTS)
     if isinstance(value, bool):
@@ -201,59 +212,80 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
 
 
 async def _dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str:
-    """Post `text` to one channel. Returns a status string.
+    """Post `text` to one destination, with optional creator-scoped navigation.
 
-    WhatsApp sends use conservative per-session pacing, but pacing cannot
-    guarantee account safety or prevent platform enforcement.
-
-    Telegram Navigation Button: If custom_button_enabled is True on channel, influencer,
-    OR globally in Settings, attaches an inline navigation button underneath the post
-    directing users to our main channel (e.g. 'Join Shpsy Loots ❤️' -> link).
+    Smart navigation is opt-in per influencer. It discovers only that creator's
+    other ready Telegram channels, so each profile gets its own cross-channel
+    buttons and no other influencer's destinations can leak into a post.
     """
+    from . import channel_navigation
+
     platform = channel["platform"]
     try:
-        # Resolve button configuration with priority: Channel -> Influencer -> Global
+        # Custom CTAs are creator/channel scoped: channel wins, then creator,
+        # then the legacy global CTA. Each configured level may supply up to two.
         global_btn_en = db.get_global_setting("nav_button_enabled", "0") == "1"
-        global_btn_text = db.get_global_setting("nav_button_text", "Join Shpsy Loots ❤️")
-        global_btn_url = db.get_global_setting("nav_button_url", "")
+        global_cta = {
+            "custom_button_text": db.get_global_setting("nav_button_text", "Join Shpsy Loots ❤️"),
+            "custom_button_url": db.get_global_setting("nav_button_url", ""),
+        }
+        ch_btn_en = bool(channel.get("custom_button_enabled"))
+        inf_btn_en = bool(influencer.get("custom_button_enabled"))
+        candidates = []
+        if ch_btn_en:
+            candidates.append((channel, False))
+        if inf_btn_en:
+            candidates.append((influencer, True))
+        if global_btn_en:
+            candidates.append((global_cta, False))
 
-        ch_btn_en = channel.get("custom_button_enabled")
-        inf_btn_en = influencer.get("custom_button_enabled")
-
-        # Enabled if specifically enabled on channel or influencer, or if global is enabled
-        btn_enabled = bool(ch_btn_en or inf_btn_en or global_btn_en)
-        btn_text = (
-            channel.get("custom_button_text")
-            or influencer.get("custom_button_text")
-            or global_btn_text
-            or "Join Shpsy Loots ❤️"
-        ).strip()
-        btn_url = (
-            channel.get("custom_button_url")
-            or influencer.get("custom_button_url")
-            or global_btn_url
-            or ""
-        ).strip()
+        cta_buttons = []
+        smart_nav = False
+        for candidate, creator_level in candidates:
+            first_url = str(candidate.get("custom_button_url") or "").strip()
+            if creator_level and first_url == channel_navigation.SMART_CHANNEL_NAV:
+                smart_nav = True
+                break
+            cta_buttons = channel_navigation.custom_post_buttons(candidate)
+            if cta_buttons:
+                break
+        nav_buttons = (
+            channel_navigation.creator_channel_buttons(
+                int(influencer["id"]), channel.get("id")
+            ) if smart_nav else []
+        )
 
         if platform == "telegram":
-            if btn_enabled and btn_url:
-                await telegram_ops.post_to_channel(channel["identifier"], text,
-                                                    button_text=btn_text, button_url=btn_url)
+            if nav_buttons:
+                await telegram_ops.post_to_channel(
+                    channel["identifier"], text, buttons=nav_buttons
+                )
+            elif len(cta_buttons) == 1:
+                # Preserve the existing one-button client contract; two CTAs use
+                # the richer keyboard form and render side by side.
+                await telegram_ops.post_to_channel(
+                    channel["identifier"], text,
+                    button_text=cta_buttons[0]["text"], button_url=cta_buttons[0]["url"],
+                )
+            elif cta_buttons:
+                await telegram_ops.post_to_channel(
+                    channel["identifier"], text, buttons=cta_buttons
+                )
             else:
                 await telegram_ops.post_to_channel(channel["identifier"], text)
         elif platform in ("whatsapp", "whatsapp_group", "whatsapp_channel"):
-            # Support separate WA session per channel if configured, else default influencer session
             key = channel.get("wa_session_key") or WA_SESSION_KEY(influencer["id"])
-
-            # If custom navigation link is enabled, append clean text footer to WhatsApp posts
             wa_text = text
-            if btn_enabled and btn_url and btn_url not in wa_text:
-                wa_text = f"{text}\n\n👉 {btn_text}: {btn_url}"
+            visible_buttons = nav_buttons or cta_buttons
+            footer = channel_navigation.whatsapp_navigation_footer(visible_buttons)
+            missing_urls = [button["url"] for button in visible_buttons if button["url"] not in wa_text]
+            if footer and missing_urls:
+                missing_buttons = [button for button in visible_buttons if button["url"] in missing_urls]
+                wa_text = f"{text}\n\n{channel_navigation.whatsapp_navigation_footer(missing_buttons)}"
 
             # Apply the configured anti-ban gap (60-80s by default) plus the
             # hourly rest, through the durable per-session slot.
             await apply_whatsapp_safety_pacing(key)
-
             await whatsapp_client.send_text(key, channel["identifier"], wa_text)
         else:
             return "skipped"
@@ -624,8 +656,12 @@ async def _render_and_deliver_destination(
         only_earning = only_earning_deals_enabled()
     except Exception:
         only_earning = bool(config.ONLY_EARNING_DEALS)
+    try:
+        strict_commission = strict_commission_mode_enabled()
+    except Exception:
+        strict_commission = bool(config.STRICT_COMMISSION_MODE)
 
-    if effective_bitly_key and role != "approval":
+    if effective_bitly_key and role != "approval" and not strict_commission:
         # Check if ADVANCED ONLY-OUR-LINKS mode is enabled (user requested "ONLY MANA LINK KI")
         # When enabled, generic merchant Bitly is DISABLED; only OUR Amazon/HYPD via advanced shortener will be shortened
         try:
@@ -693,11 +729,15 @@ async def _render_and_deliver_destination(
             inf.get("id"), ch.get("id"), info.get("creator"), info.get("tag") or "(none)",
         )
         try:
-            db.defer_deal(deal_text, source=source_channel,
-                          reason=tag_proof.HOLD_REASON,
-                          delay_seconds=DEFERRED_RETRY_DELAY_SECONDS)
-        except Exception:  # pragma: no cover - parking must never break a run
+            hold_id = db.defer_deal(
+                deal_text, source=source_channel, reason=tag_proof.HOLD_REASON,
+                delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
+            )
+        except Exception:  # pragma: no cover - retain source cursor on persistence failure
+            hold_id = None
             __import__("logging").getLogger(__name__).exception("could not park the held deal")
+        if not hold_id:
+            return "failed:commission_hold_persistence"
         try:
             from . import security
             security.audit("pipeline", "system", "amazon_tag_hold",
@@ -766,10 +806,11 @@ async def _render_and_deliver_destination(
     # - Amazon links with OUR tag (e.g. mytag-21) -> verified first-party /a/<code>?tag= or Bitly fallback
     # Generic merchant links (Flipkart etc.) are already handled via EarnKaro's ekaro.in, no extra Bitly needed
     # This advanced system ensures ONLY MANA LINK KI MATHARME short avtundi, vere vallavi kaadu
-    if role != "approval":
+    if role != "approval" or strict_commission:
         from . import advanced_shortener
         rendered = await advanced_shortener.shorten_our_links_advanced(
-            rendered, effective_amz_tag, effective_hypd_store, bitly_token=effective_bitly_key
+            rendered, effective_amz_tag, effective_hypd_store, bitly_token=effective_bitly_key,
+            allow_bitly_fallback=not strict_commission,
         )
         if config.LEHLAH_SHORTLINKS_ENABLED:
             rendered = lehlah_shortlinks.shorten_lehlah_links(rendered)
@@ -790,6 +831,36 @@ async def _render_and_deliver_destination(
                 # source post belongs to the source, not to us.
                 source_text=deal_text,
             )
+            strict_failures = []
+            if strict_commission:
+                strict_failures = commission_guard.strict_link_failures(
+                    rendered, effective_amz_tag, effective_hypd_store, expected_pubid,
+                    bitly_map=shortened_map, source_text=deal_text,
+                    generated_earnkaro_links={
+                        converted for original, converted in channel_ek_map.items()
+                        if original != converted
+                    },
+                )
+            if strict_failures:
+                log.error(
+                    "STRICT COMMISSION HOLD inf=%s ch=%s failures=%s",
+                    inf.get("id"), ch.get("id"), "; ".join(strict_failures)[:1000],
+                )
+                # Keep every strict hold durable, including unsupported or
+                # newly discovered stores. It is never published raw; an operator
+                # can fix credentials/routing and the worker will re-evaluate it.
+                try:
+                    hold_id = db.defer_deal(
+                        deal_text, source=source_channel, reason="strict_commission_unverified",
+                        delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
+                        max_attempts=DEFERRED_MAX_ATTEMPTS,
+                    )
+                except Exception:
+                    hold_id = None
+                    log.exception("could not persist strict commission hold")
+                return ("skipped:strict_commission_unverified" if hold_id
+                        else "failed:commission_hold_persistence")
+
             if not audit["ok"]:
                 log.warning(
                     "COMMISSION GUARD leak inf=%s ch=%s tag=%s store=%s pubid=%s allowed=%s issues=%s snippet=%.200s",
@@ -880,10 +951,24 @@ async def _render_and_deliver_destination(
                     )
         except Exception as _guard_exc:
             __import__("logging").getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
+            if strict_commission:
+                try:
+                    hold_id = db.defer_deal(
+                        deal_text, source=source_channel, reason="commission_guard_error",
+                        delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
+                        max_attempts=DEFERRED_MAX_ATTEMPTS,
+                    )
+                except Exception:
+                    hold_id = None
+                    __import__("logging").getLogger(__name__).exception(
+                        "could not persist commission-guard failure hold"
+                    )
+                return ("skipped:commission_guard_error" if hold_id
+                        else "failed:commission_hold_persistence")
 
     # 8b-2. MONEY FILTER: never spend a post on a deal that pays nothing.
-    # Off by default so volume is never reduced without the operator's
-    # say; the Money Radar recommends it when it sees free posts.
+    # This zero-earning filter is on by default; strict mode additionally blocks
+    # mixed or otherwise unverified posts before this lower-level check.
     if only_earning:
         try:
             from . import money_radar

@@ -40,7 +40,7 @@ from influencer_hub import (
     age, amazon_shortlinks, amazon_watch, config, creators, db, guard, hypd_shortlinks,
     inventory, lehlah_shortlinks, link_router, onboarding, ops, presets, security,
     polls, pipeline, puller, readiness, selfcheck, sources, tag_proof,
-    telegram_ops, whatsapp_client,
+    telegram_ops, whatsapp_client, channel_navigation,
 )  # noqa: E402
 
 def _running_under_pytest() -> bool:
@@ -317,6 +317,15 @@ def _shutdown_async_loop():  # pragma: no cover - process shutdown
 
 
 atexit.register(_shutdown_async_loop)
+
+
+def _custom_button_urls_valid(*urls: str | None) -> bool:
+    """Custom post CTAs require HTTPS URLs or supported Telegram @handles."""
+    return all(
+        not str(url or "").strip()
+        or bool(channel_navigation.normalize_custom_button_url(str(url)))
+        for url in urls
+    )
 
 
 def clean_identifier(raw: str) -> str:
@@ -1545,6 +1554,39 @@ def index():
         paging["prev"] = paging["prev"] if offset else None
         paging["first_shown"] = offset + 1 if plan["returned"] else 0
         paging["last_shown"] = offset + plan["returned"]
+
+    ready_count = int((plan or {}).get("summary", {}).get("ready", 0))
+    worker_ready = bool((plan or {}).get("globals", {}).get("worker", {}).get("done"))
+    launch_steps = [
+        {"label": "Add a creator", "done": bool(influencers), "url": url_for("easy_setup"),
+         "detail": "Create a creator profile and assign their own Amazon tag."},
+        {"label": "Connect deal sources", "done": active_sources > 0,
+         "url": url_for("setup") + "#source-pool",
+         "detail": f"{active_sources} active source(s) · sources feed every creator."},
+        {"label": "Verify a destination", "done": ready_count > 0,
+         "url": url_for("index") + "#command-center",
+         "detail": f"{ready_count} creator(s) ready to receive deals."},
+        {"label": "Start the worker", "done": worker_ready, "url": url_for("vm"),
+         "detail": "The background worker moves deals from sources to channels."},
+    ]
+    launch_done = sum(step["done"] for step in launch_steps)
+    if not influencers:
+        quick_action = {"label": "Create your first creator", "detail": "Use the guided flow, or fill the one-screen Easy Setup.",
+                        "url": url_for("guided_setup")}
+    elif not active_sources:
+        quick_action = {"label": "Connect deal sources", "detail": "Choose already-joined Telegram sources; this does not join invite links.",
+                        "url": url_for("setup") + "#source-pool"}
+    elif plan and plan.get("actions"):
+        next_action = plan["actions"][0]
+        quick_action = {"label": next_action["label"], "detail": next_action["action"],
+                        "url": next_action.get("url") or (url_for("index") + "#self-check")}
+    elif report and report.get("verdict") != "ready":
+        quick_action = {"label": "Review system health", "detail": "Open the read-only self-check to see what needs attention.",
+                        "url": url_for("index") + "#self-check"}
+    else:
+        quick_action = {"label": "Add another creator", "detail": "Your current creators and worker look ready.",
+                        "url": url_for("easy_setup")}
+
     return render_template(
         "index.html",
         creator_count=len(influencers),
@@ -1560,6 +1602,9 @@ def index():
         query=query,
         state=state,
         paging=paging,
+        launch_steps=launch_steps,
+        launch_done=launch_done,
+        launch_action=quick_action,
         # How long the fleet has been running, for the command-center chips.
         hub_age=age.summarise(influencers),
         recent_creators=_recent_creators(age_since_days=30, influencers=influencers),
@@ -2325,6 +2370,10 @@ def _team_access_snapshot() -> dict:
 # ---------- Money Radar: where commission leaks out of posted deals ----------
 # Each switch is a global setting; the pipeline reads it on every render.
 MONEY_SWITCHES: dict[str, tuple[str, str]] = {
+    "strict_commission_mode": (
+        "Strict attribution lock (recommended)",
+        "Default ON. Hold every post with an unverified, mixed, unknown-store, or unresolved short link; retry with backoff and never force-post raw links after retries. This can reduce posts and cannot guarantee a network payout.",
+    ),
     "meesho_earnkaro_fallback": (
         "Meesho → EarnKaro fallback",
         "HYPD cannot turn a raw meesho.com product URL into an affiliate link, "
@@ -2338,10 +2387,9 @@ MONEY_SWITCHES: dict[str, tuple[str, str]] = {
     ),
     "allow_unconverted_posts": (
         "Post unconverted links anyway",
-        "Off (recommended): a deal whose only link is a merchant URL EarnKaro "
-        "has not converted yet is parked and retried, so it is posted with OUR "
-        "link a few minutes later instead of earning nothing. On: post the raw "
-        "merchant link immediately, for volume over commission.",
+        "Legacy volume option: post a raw merchant link immediately when strict "
+        "attribution lock is disabled. The default-on strict lock takes priority "
+        "and prevents this switch from publishing unverified links.",
     ),
 }
 
@@ -2402,6 +2450,7 @@ def money_dashboard():
         "meesho_earnkaro_fallback": bool(config.MEESHO_EARNKARO_FALLBACK),
         "only_earning_deals": bool(config.ONLY_EARNING_DEALS),
         "allow_unconverted_posts": bool(config.ALLOW_UNCONVERTED_POSTS),
+        "strict_commission_mode": bool(config.STRICT_COMMISSION_MODE),
     }
     switches = [
         {
@@ -2428,6 +2477,14 @@ def money_dashboard():
             "creators": [],
             "suggestions": [],
         }
+
+    try:
+        data["commission_holds"] = db.list_deferred_deals(limit=50)
+        data["commission_hold_count"] = db.count_deferred_deals()
+    except Exception:
+        app.logger.exception("could not load pending commission holds")
+        data["commission_holds"] = []
+        data["commission_hold_count"] = 0
 
     return render_template(
         "money.html",
@@ -2795,6 +2852,11 @@ def quick_add():
     btn_enabled = request.form.get("custom_button_enabled") == "1"
     btn_text = request.form.get("custom_button_text", "Join Shpsy Loots ❤️").strip()
     btn_url = request.form.get("custom_button_url", "").strip()
+    btn2_text = request.form.get("custom_button2_text", "").strip()
+    btn2_url = request.form.get("custom_button2_url", "").strip()
+    if not _custom_button_urls_valid(btn_url, btn2_url):
+        flash("Post-button links must be HTTPS URLs or Telegram @handles.", "error")
+        return redirect(url_for("setup"))
 
     # Fallback to defaults so form never fails silently if minor details missed
     if not name:
@@ -2810,9 +2872,12 @@ def quick_add():
                             allow_earnkaro=allow_earnkaro, allow_hypd=allow_hypd,
                             hypd_store_id=hypd_store_id)
 
-    if btn_enabled or btn_url:
-        db.update_influencer(iid, custom_button_enabled=btn_enabled,
-                             custom_button_text=btn_text, custom_button_url=btn_url)
+    if btn_enabled or btn_url or btn2_url:
+        db.update_influencer(
+            iid, custom_button_enabled=btn_enabled,
+            custom_button_text=btn_text, custom_button_url=btn_url,
+            custom_button2_text=btn2_text, custom_button2_url=btn2_url,
+        )
 
     # 1. Approval Channel — Telegram names it for us (read-only peek; never joins)
     add_notes: list[str] = []
@@ -2915,10 +2980,21 @@ def update_profile(inf_id):
     active_str = request.form.get("active")
     active = (active_str == "1") if active_str is not None else None
 
-    # Custom navigation button fields
-    btn_enabled = request.form.get("custom_button_enabled") == "1"
+    # Creator-scoped smart navigation links each ready Telegram destination to
+    # the other ready channels owned by this same influencer.
+    smart_channel_nav = request.form.get("smart_channel_nav") == "1"
+    btn_enabled = request.form.get("custom_button_enabled") == "1" or smart_channel_nav
     btn_text = request.form.get("custom_button_text", "").strip()
-    btn_url = request.form.get("custom_button_url", "").strip()
+    btn_url = (channel_navigation.SMART_CHANNEL_NAV if smart_channel_nav
+               else request.form.get("custom_button_url", "").strip())
+    btn2_text = request.form.get("custom_button2_text", "").strip()
+    btn2_url = request.form.get("custom_button2_url", "").strip()
+    if not _custom_button_urls_valid(
+        "" if btn_url == channel_navigation.SMART_CHANNEL_NAV else btn_url,
+        btn2_url,
+    ):
+        flash("Post-button links must be HTTPS URLs or Telegram @handles.", "error")
+        return redirect(url_for("influencer_detail", inf_id=inf_id))
 
     # Deal quality floor: an empty selection inherits the global setting.
     min_deal_tier = request.form.get("min_deal_tier")
@@ -2944,6 +3020,8 @@ def update_profile(inf_id):
         custom_button_enabled=btn_enabled,
         custom_button_text=btn_text,
         custom_button_url=btn_url,
+        custom_button2_text=btn2_text,
+        custom_button2_url=btn2_url,
         min_deal_tier=min_deal_tier,
         notes=notes if notes else None,
         active=active,
@@ -2990,6 +3068,11 @@ def update_channel_route(channel_id):
     btn_en = _form_flag("custom_button_enabled", default=None)
     btn_text = request.form.get("custom_button_text")
     btn_url = request.form.get("custom_button_url")
+    btn2_text = request.form.get("custom_button2_text")
+    btn2_url = request.form.get("custom_button2_url")
+    if not _custom_button_urls_valid(btn_url, btn2_url):
+        flash("Post-button links must be HTTPS URLs or Telegram @handles.", "error")
+        return redirect(url_for("influencer_detail", inf_id=owner_id))
     invite_link = None
     needs_test = False
 
@@ -3058,6 +3141,8 @@ def update_channel_route(channel_id):
         custom_button_enabled=btn_en,
         custom_button_text=btn_text,
         custom_button_url=btn_url,
+        custom_button2_text=btn2_text,
+        custom_button2_url=btn2_url,
         min_deal_tier=channel_min_tier,
         mirror_whatsapp=mirror_whatsapp,
         title=channel_title,
@@ -5135,6 +5220,8 @@ def undo_channel_delete():
         custom_button_enabled=bool(snapshot.get("custom_button_enabled")),
         custom_button_text=snapshot.get("custom_button_text") or "",
         custom_button_url=snapshot.get("custom_button_url") or "",
+        custom_button2_text=snapshot.get("custom_button2_text") or "",
+        custom_button2_url=snapshot.get("custom_button2_url") or "",
     )
     flash(
         f"Restored the {snapshot.get('platform')} destination "
@@ -5398,6 +5485,7 @@ def influencer_detail(inf_id):
         source_default=sources.default_token(),
         source_line=sources.selection_line(inf.get("allowed_sources") or ""),
         wa_sessions=wa_sessions, stats=stats, wa_key=wa_key,
+        navigation_preview=channel_navigation.navigation_matrix(inf_id, channels),
         wa_hub_url=config.WA_HUB_URL, wa_status_info=wa_status_info,
         wa_pairing=wa_pairing, mirror=mirror_info,
         poll_targets=poll_targets, poll_target_counts=poll_target_counts,

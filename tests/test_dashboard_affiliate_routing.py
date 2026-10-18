@@ -334,9 +334,9 @@ def test_raw_meesho_uses_hypd_toggle_and_never_earnkaro(monkeypatch, tmp_path):
         )
     )
 
-    assert result[hypd_id][hypd_channel] == "posted"
+    assert result[hypd_id][hypd_channel] == "skipped:strict_commission_unverified"
     assert result[no_hypd_id][no_hypd_channel] == "skipped"
-    assert raw_meesho in sent[0]
+    assert sent == []
     # HYPD still owns Meesho; it simply cannot mint an affiliate link from a
     # raw meesho.com product URL. The fallback offers that URL to EarnKaro (the
     # only route that can monetise it) and keeps the source URL when no
@@ -345,7 +345,7 @@ def test_raw_meesho_uses_hypd_toggle_and_never_earnkaro(monkeypatch, tmp_path):
     for call in earnkaro_converter.await_args_list:
         assert raw_meesho in call.args[0]
         assert call.kwargs["include_meesho"] is True
-    assert "bit.ly" not in sent[0]
+    assert "bit.ly" not in "\n".join(sent)
 
 
 def test_meesho_fallback_off_keeps_meesho_off_the_earnkaro_route(monkeypatch, tmp_path):
@@ -377,8 +377,8 @@ def test_meesho_fallback_off_keeps_meesho_off_the_earnkaro_route(monkeypatch, tm
         )
     )
 
-    assert result[influencer_id][channel_id] == "posted"
-    assert raw_meesho in sent[0]
+    assert result[influencer_id][channel_id] == "skipped:strict_commission_unverified"
+    assert sent == []
     for call in earnkaro_converter.await_args_list:
         assert raw_meesho not in call.args[0]
 
@@ -431,8 +431,8 @@ def test_amazon_earnkaro_and_hypd_switches_route_independently(monkeypatch, tmp_
             influencer_ids=[influencer_id],
         )
     )
-    assert second[influencer_id][channel_id] == "posted"
-    assert "flipkart.com" in posted[1]
+    assert second[influencer_id][channel_id] == "skipped:strict_commission_unverified"
+    assert len(posted) == 1
     db.delete_influencer(influencer_id)
 
 

@@ -61,6 +61,14 @@ happens from a channel that did not actually post the deal, never double-posts
 a deal a destination already received, and is off entirely until that creator
 has a **ready** WhatsApp destination (paired phone + one successful test post).
 
+### Creator-scoped smart channel navigation
+
+On a creator's profile, enable **Smart cross-channel buttons (this creator only)** to add a Telegram inline-button menu under posts. The buttons point to that creator's *other* ready Telegram destinations; the channel currently receiving the post is omitted. WhatsApp destinations get the same links as a readable footer. Public `@handles` and saved `t.me` invite links are supported, unlinked/private destinations are safely omitted, and the menu is capped at eight links. The feature is opt-in per creator, does not mix links across creators, and leaves the existing manual/global CTA behavior unchanged when switched off.
+
+A creator or individual destination can also enable and configure **up to two manual post buttons** (custom text + destination). Telegram renders the two buttons side by side; WhatsApp receives the same destinations as a readable text footer because the current WhatsApp integration does not provide equivalent inline URL buttons. Channel-level CTAs take precedence over creator-level CTAs, then the legacy global CTA. Custom button targets must be HTTPS URLs or Telegram `@handles`; unsafe schemes are rejected. Smart navigation uses dynamically discovered creator-owned channels instead of the manual CTA at that selected settings level.
+
+Affiliate routing remains separate from CTA buttons: Amazon product links use the creator's Associates tag (or a saved channel override); supported merchant URLs are converted through the configured EarnKaro publisher account when that route is enabled; existing HYPD links use the configured HYPD store. `Only Amazon` is exclusive and suppresses the other affiliate routes. Raw Meesho conversion is provider-dependent: the configured fallback may use EarnKaro when enabled and credentials are valid; an HYPD toggle alone cannot manufacture an HYPD affiliate link if the provider does not supply a raw-Meesho converter.
+
 ### Native engagement polls (manual + no-repeat)
 The influencer detail page includes an explicit poll composer for native Telegram
 polls and WhatsApp **groups**. Questions and answer options are validated,
@@ -929,9 +937,10 @@ Deal** or save a channel. It shows a real `/a/<code>?tag=<creator-tag>` link;
 open it once and verify its `302` location is the printed canonical Amazon URL
 with the same tag. Do not enable generic Bitly merely to hide attribution:
 EarnKaro outputs (`ekaro.in`/`fktr.in`/…) are already network-short and retain
-our publisher proof; HYPD uses `/m/<code>`; approved LehLah uses `/l/<code>`.
-Raw, foreign, unresolved, or unverified links are not branded—they are converted,
-held for retry, or logged instead of being presented as ours.
+our publisher proof; verified HYPD links may use `/m/<code>`. A LehLah `/l/<code>`
+redirect preserves the source link but is not proof of this hub's account.
+Raw, foreign, unresolved, or unverified links are not presented as ours; strict
+mode holds them for retry or operator review.
 
 - HYPD is reserved for Meesho; raw Meesho URLs are never sent through EarnKaro.
   Existing HYPD affiliate URLs are first rewritten to the effective HYPD store
@@ -947,9 +956,10 @@ held for retry, or logged instead of being presented as ours.
 - Meesho links carrying LehLah/AppsFlyer attribution (`pid` containing `lehlah`,
   `af_siteid=lehlah`, or `mcn=LEHLAH`) are detected separately from raw Meesho
   merchant links. Their complete original URL is preserved and they are not sent
-  through EarnKaro/HYPD/Bitly. Short-link wrapping is disabled by default and is
-  only enabled with `LEHLAH_SHORTLINKS_ENABLED=true` after account approval, plus
-  an operator-owned `MEESHO_SHORT_LINK_BASE_URL`.
+  through EarnKaro/HYPD/Bitly. Since this identifies the source network rather
+  than this hub's publisher account, strict commission mode holds these links;
+  no LehLah account-ID verification is configured. Optional `/l/<code>` wrapping
+  is disabled by default and does not turn source attribution into our proof.
 - Generic Bitly shortening requires a valid API token, with priority channel
   token -> influencer token -> global `BITLY_API_KEY` only for influencer IDs in
   `BITLY_GLOBAL_INFLUENCER_IDS`. The allowlist is empty by default, so the global
@@ -1008,7 +1018,7 @@ python -c 'import secrets; print(secrets.token_urlsafe(48))'  # Flask session si
 python -c 'import secrets; print(secrets.token_urlsafe(48))'  # WA_HUB_TOKEN; keep it private
 ```
 
-Set `DASHBOARD_ADMIN_PASSWORD` to the first value, `DASHBOARD_SECRET_KEY` to the second, `WA_HUB_TOKEN` to the third, plus `HUB_ENV=production`. The admin password must be at least 16 characters; the signing key must remain stable across restarts and workers. Leave `ADMIN_DELETE_PASSWORD` unset to reuse the dashboard password for destructive confirmations. Production mode enables Secure cookies on HTTPS requests (over plain HTTP the flag is dropped so sign-in still works), and the dashboard listens on `0.0.0.0:5000` so it is reachable on the VM IP — keep that port firewalled or fronted by HTTPS. The WhatsApp hub binds to loopback and refuses production startup without its private token. `/healthz` is the sole unauthenticated health endpoint besides validated first-party affiliate redirects. Do not deploy publicly with missing/weak dashboard credentials.
+Set `DASHBOARD_ADMIN_PASSWORD` to the first value, `DASHBOARD_SECRET_KEY` to the second, `WA_HUB_TOKEN` to the third, plus `HUB_ENV=production`. The admin password must be at least 16 characters; the signing key must remain stable across restarts and workers. Leave `ADMIN_DELETE_PASSWORD` unset to reuse the dashboard password for destructive confirmations. Production mode enables Secure cookies on HTTPS requests (over plain HTTP the flag is dropped so sign-in still works), and the dashboard listens on `0.0.0.0:5000` so it is reachable on the VM IP — keep that port firewalled or fronted by HTTPS. The WhatsApp hub binds to loopback by default, refuses non-loopback production binding, and requires a strong private token for any non-loopback bind in every environment. `/healthz` is the sole unauthenticated health endpoint besides validated first-party affiliate redirects. Do not deploy publicly with missing/weak dashboard credentials.
 
 ### 🚀 Deploying and updating in one command (`deploy/deploy.sh`)
 
@@ -1168,45 +1178,52 @@ never shows an earnings figure.
 
 | State | What it means |
 | --- | --- |
-| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link with our publisher · LehLah · a verified stored branded `/a/`, `/m/`, or `/l/` short link on our configured HTTPS origin |
-| 🔴 Leak | Amazon tagged for someone else (or untagged) · HYPD on another store · EarnKaro for another publisher · raw merchant with no EarnKaro conversion · raw Meesho |
+| 🟢 Earning | Amazon with our tag · HYPD afflink on our store · EarnKaro link whose publisher and supported destination are explicitly or durably verified · a verified stored branded `/a/` or `/m/` short link on our configured HTTPS origin |
+| 🔴 Leak | Amazon tagged for someone else (or untagged) · HYPD on another store · EarnKaro for another publisher · raw merchant with no EarnKaro conversion · raw Meesho · source-owned LehLah links without our own account proof |
 | ⚪ Neutral | Informational links, and generic short links whose attribution sits behind the redirect |
 
-Two switches turn the findings into money (both password-confirmed like every
-other setup change):
+Money Radar switches control what is posted. Attribution checks verify link
+shape/provenance only; affiliate approval, clicks, cookies, product eligibility,
+provider uptime and payout remain external and cannot be guaranteed by code.
 
-* **Meesho → EarnKaro fallback** *(on by default)* — HYPD owns Meesho but cannot
-  mint an affiliate link from a raw `meesho.com` product URL, so that deal posts
-  for free. With this on, the raw URL goes to EarnKaro, which runs a Meesho
-  programme, and the deal converts instead of leaking. Meesho still never goes
-  through generic Bitly shortening, and the source URL is kept whenever EarnKaro
-  returns nothing.
-* **Only post deals that earn** *(off by default — your call)* — holds back a
-  deal when none of its links would carry our attribution
-  (`skipped:no_commission_link`). It trades volume for earnings, so it starts
-  off and the Radar recommends it only once it has seen free posts.
+* **Meesho → EarnKaro fallback** *(on by default)* — HYPD cannot mint an
+  affiliate link from a raw `meesho.com` product URL. When enabled, the URL is
+  offered to EarnKaro; it is posted only if conversion returns a link whose
+  attribution passes the strict checks. Otherwise the whole deal is held. Meesho
+  is never sent through generic Bitly shortening.
+* **Strict attribution lock** *(on by default; `STRICT_COMMISSION_MODE=true`)* —
+  fail closed if any URL in the post is unverified, mixed with a raw merchant,
+  unresolved, from an unrecognized store, or lacks our publisher/tag/store
+  proof. It holds the entire post, records it in the Pending attribution holds
+  panel, and retries with backoff; a retry limit never forces a raw post. This
+  can substantially reduce volume during provider outages.
+* **Only post deals that earn** *(on by default)* — an additional zero-earning
+  filter (`ONLY_EARNING_DEALS=true`). Strict attribution lock is broader: it
+  also blocks a mixed post with one earning link and another unverified link.
 * **Post unconverted links anyway** *(off by default)* — mirrored by
-  `ALLOW_UNCONVERTED_POSTS=1`. See the retry queue below: when a merchant link
-  did not convert, the deal is parked and retried, so this switch is only for an
-  operator who prefers volume over commission during a converter outage.
+  `ALLOW_UNCONVERTED_POSTS=1`. This legacy volume-over-commission option is
+  subordinate to Strict attribution lock; it cannot bypass the default-on
+  strict gate. Turning strict mode off is an explicit weakening of protection.
 
 #### Conversion guarantees, link shape by link shape
 
-Every link kind a source deal can carry has exactly one defined outcome:
+Known link types have a defined routing policy; strict mode holds anything whose
+attribution or destination cannot be verified:
 
 | Source link | What is posted |
 | --- | --- |
 | Amazon `/dp/<ASIN>`, `/gp/product/<ASIN>`, `?asin=<ASIN>`, search, storefront | One canonical `https://www.amazon.in/dp/<ASIN>` (or the same search/store page) carrying exactly **our** tag; every other `tag=` is removed |
 | Amazon short (`amzn.to`, `amzn.in`, `amzn.eu`, `amzn.asia`, `a.co`), long link for the same product in the same post | Both collapse into that one canonical OUR link |
-| Amazon short alone | Resolved over the network into `https://www.amazon.in/dp/<ASIN>?tag=<OURS>`; if the network cannot resolve it, the short is kept with our tag appended and the run logs `UNRESOLVED AMAZON SHORT` |
-| Flipkart / Shopsy / Myntra / Ajio / Nykaa / Croma / TataCliq… | The EarnKaro short link (`ekaro.in`, `fktr.in`, `myntr.it`, …) carrying our publisher id, verified by following the redirect |
+| Amazon short alone | Resolved over the network into a canonical link carrying the creator tag; if unresolved, strict mode holds it for review/retry rather than posting an opaque short best-effort |
+| Flipkart / Shopsy / Myntra / Ajio / Nykaa / Croma / TataCliq… | A supported EarnKaro link is accepted only after its redirect reaches a supported store with our publisher ID; verified provenance is stored for later Money Radar audits |
 | Same merchants while EarnKaro is down | The deal is **parked** (see below) instead of posting a raw zero-commission URL |
-| Raw Meesho | Sent to EarnKaro when the fallback is on; otherwise posted as-is, because HYPD cannot mint an affiliate link from a product URL (with a `ZERO-COMMISSION post` log line) |
+| Raw Meesho | Sent to EarnKaro when fallback is on; if it is not converted to a verifiable supported affiliate URL, strict mode holds the entire post |
 | HYPD `hypd.store/<store>/afflink/<token>` | Retagged to our store id |
-| LehLah Meesho (`mcn=LEHLAH`, `af_siteid=lehlah`, `pid=lehlah`) | Kept exactly as it is — it already pays us |
+| LehLah Meesho (`mcn=LEHLAH`, `af_siteid=lehlah`, `pid=lehlah`) | Identified as source-owned attribution; strict mode holds it because this hub has no verified LehLah publisher/account ID |
 | Wrapper (`bit.ly`, `tinyurl.com`, `cutt.ly`, `dl.flipkart.com/…`, `fkrt.it/…`) | Resolved first: an Amazon destination becomes the canonical OUR link, a merchant destination is converted by EarnKaro; if the destination cannot be resolved the deal is parked and the run logs `UNRESOLVED WRAPPED LINK` |
 | Link written without `http://` (`flipkart.com/…`, `amazon.in/dp/…`, `amzn.to/…`) | Promoted to a real URL before anything else, then handled like every other link above (retagged/converted) |
-| Anything else (news, YouTube, blog) | Untouched |
+| Known neutral links (Telegram/social destinations) | Allowed alongside at least one verified earning link |
+| Anything else (news, YouTube, blog or a newly discovered product host) | Unknown product/merchant hosts are held in strict mode; recognized neutral informational links are allowed |
 
 #### Add a channel → it posts with your tag
 
@@ -1237,25 +1254,27 @@ Read-only: prints every link, its kind, where a wrapper really points, the text
 that would be published and the verdict — exit code `0` when at least one of OUR
 links is present, `1` when the worker would hold the deal instead of posting it.
 
-#### The retry queue — no free posts, no lost deals
+#### The retry queue — unverified posts stay held
 
 When the only link in a deal is a merchant URL EarnKaro should have converted
 but did not (key missing/expired, API outage, transient error), posting now
 would earn nothing and posting later would be too late. The same applies to a
 wrapper link (`bit.ly`, `fkrt.it`, …) whose destination could not be resolved —
 until it is, nobody can say whether the link pays us. Instead the deal is
-parked in `deferred_deals` and the worker retries it every
-`DEFERRED_RETRY_DELAY_SECONDS` (5 min) up to `DEFERRED_MAX_ATTEMPTS` (6) times —
-the source cursor has already moved on, so this queue is the only way the deal
-can still go out. As soon as EarnKaro converts, the deal is posted with OUR
-link. If the outage outlasts the retry budget the deal is posted anyway and the
-log says why, so a converter outage delays a deal instead of dropping it.
+parked in `deferred_deals` and retried every
+`DEFERRED_RETRY_DELAY_SECONDS` (5 min) for the first `DEFERRED_MAX_ATTEMPTS`
+(6) attempts. With strict mode on, retry exhaustion only changes the schedule
+to capped backoff (up to six hours); the worker never force-posts the unverified
+URL. Held items remain visible on Money Radar until they become verifiable or
+an operator reviews them. This durable queue still depends on the database and
+worker being healthy; it cannot guarantee a deal is ultimately converted or
+paid.
 
 `/api/flow` reports the queue as `deferred: {waiting, retry_seconds,
-allow_unconverted_posts}` and adds a note to the flow board, and the Money page
-carries the `Post unconverted links anyway` switch. Two link shapes stay
-zero-commission by design and are logged rather than delayed: a raw Meesho URL
-(nothing can mint it) and a store EarnKaro does not cover.
+allow_unconverted_posts}` and adds a note to the flow board. Money Radar shows
+pending attribution holds and their retry reasons. Strict mode also holds raw
+Meesho and unsupported/unrecognized product hosts rather than knowingly
+posting a zero-commission link.
 
 Per-creator and per-channel **⭐ Minimum Deal Quality** (S/A/B/C, resolved
 channel → creator → global) keeps a channel's attention for the deals worth a
@@ -1313,12 +1332,12 @@ python -m influencer_hub.cli verify-earnkaro --url "<real supported merchant pro
 
 This command makes a live request. `ok: true` means it received a parseable
 link and verified the configured publisher ID (for a short link, the redirect
-must resolve to that ID). This checks link provenance for the test URL, not a
-sale or commission attribution. The current automated tests use mocked
-responses, and no production credential, source URL, or live conversion was
-tested in this workspace. Normal dispatch also checks direct-link publisher
-provenance; short-link checks there are best-effort if redirect resolution
-fails.
+must resolve to a supported store with that ID). This checks link provenance
+for the test URL, not a sale or commission attribution. The current automated
+tests use mocked responses, and no production credential, source URL, or live
+conversion was tested in this workspace. Normal dispatch fails closed: a short
+link that cannot resolve to a supported destination with matching publisher
+provenance is held rather than posted.
 
 ---
 

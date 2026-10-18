@@ -115,7 +115,17 @@ export class Hub {
 
   _save() {
     const data = [...this.sessions.values()].map(s => ({ key: s.key, meta: s.meta }))
-    fs.writeFileSync(this.sessionsFile, JSON.stringify(data, null, 2), { mode: 0o600 })
+    const temporaryFile = `${this.sessionsFile}.${process.pid}.tmp`
+    try {
+      // A crash during write must not truncate the only durable session index.
+      // Explicit chmod also tightens permissions when replacing an older file.
+      fs.writeFileSync(temporaryFile, JSON.stringify(data, null, 2), { mode: 0o600 })
+      fs.chmodSync(temporaryFile, 0o600)
+      fs.renameSync(temporaryFile, this.sessionsFile)
+    } catch (error) {
+      try { fs.rmSync(temporaryFile, { force: true }) } catch (_) { /* best effort cleanup */ }
+      throw error
+    }
   }
 
   list() {

@@ -141,11 +141,33 @@ def test_installer_fresh_apply_and_mismatch(tmp_path):
     import shutil
     import tarfile
     root = Path(__file__).resolve().parents[1]
-    archive = subprocess.check_output(['git', 'archive', 'd288364a824cfea5d2ceae7881a16d92b7b5f07f'], cwd=root)
+    # Build a current source fixture from HEAD plus the working tree. The bundle
+    # can then be reversed to its original baseline without relying on an
+    # unavailable historical commit (Arena checkouts may be shallow).
+    archive = subprocess.check_output(['git', 'archive', 'HEAD'], cwd=root)
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         tar.extractall(tmp_path)
+    paths = subprocess.check_output(
+        ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=root
+    ).split(b'\0')
+    for encoded in paths:
+        if not encoded:
+            continue
+        relative = Path(encoded.decode())
+        if relative.as_posix() == 'patches/delivery-safety.patch':
+            continue  # copied below; a patch cannot contain itself
+        source = root / relative
+        if source.is_file():
+            destination = tmp_path / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
     for name in ('apply-delivery-safety.py', 'delivery-safety.patch'):
         shutil.copyfile(root / 'patches' / name, tmp_path / 'patches' / name)
+    baseline = subprocess.run(
+        ['git', 'apply', '--reverse', str(tmp_path / 'patches/delivery-safety.patch')],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert baseline.returncode == 0, baseline.stdout + baseline.stderr
     script = tmp_path / 'patches/apply-delivery-safety.py'
     def run(*args):
         return subprocess.run([sys.executable, str(script), *args], cwd=tmp_path,

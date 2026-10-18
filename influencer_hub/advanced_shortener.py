@@ -94,7 +94,8 @@ async def shorten_our_links_advanced(
         text: str,
         amazon_tag: str,
         hypd_store_id: str,
-        bitly_token: str | None = None) -> str:
+        bitly_token: str | None = None,
+        allow_bitly_fallback: bool = True) -> str:
     """
     Advanced shortener that ONLY shortens OUR affiliate links.
 
@@ -165,7 +166,7 @@ async def shorten_our_links_advanced(
         rendered = amazon_shortlinks.shorten_amazon_links(rendered)
         # If first-party didn't shorten (no base URL) and Bitly fallback enabled +
         # token available, use Bitly for OUR Amazon links
-        if rendered == before and bitly_fallback_enabled and bitly_token:
+        if rendered == before and bitly_fallback_enabled and bitly_token and allow_bitly_fallback:
             # Find OUR Amazon links that are still present
             our_amazon_urls = get_our_amazon_links(rendered, effective_tag)
             if our_amazon_urls:
@@ -181,7 +182,7 @@ async def shorten_our_links_advanced(
     if hypd_advanced and effective_store:
         before = rendered
         rendered = hypd_shortlinks.shorten_hypd_links(rendered)
-        if rendered == before and bitly_fallback_enabled and bitly_token:
+        if rendered == before and bitly_fallback_enabled and bitly_token and allow_bitly_fallback:
             our_hypd_urls = get_our_hypd_links(rendered, effective_store)
             if our_hypd_urls:
                 from . import bitly_client
@@ -197,7 +198,10 @@ def sync_shorten_our_links_advanced(
         text: str,
         amazon_tag: str,
         hypd_store_id: str,
-        bitly_token: str | None = None) -> str:
+        bitly_token: str | None = None,
+        allow_bitly_fallback: bool = True) -> str:
     """Sync wrapper for testing."""
     import asyncio
-    return asyncio.run(shorten_our_links_advanced(text, amazon_tag, hypd_store_id, bitly_token))
+    return asyncio.run(shorten_our_links_advanced(
+        text, amazon_tag, hypd_store_id, bitly_token, allow_bitly_fallback
+    ))

@@ -420,10 +420,10 @@
     <div style="grid-column: 1 / -1; background:#1e1b4b; border:1px solid #4338ca; padding:14px; border-radius:8px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         <label style="font-size: 13px; font-weight: 700; color:#c7d2fe; margin:0; display:flex; align-items:center; gap:8px;">
-          🔘 <b>Telegram / WhatsApp Post Navigation Button</b> (e.g. Join Shpsy Loots ❤️)
+          🔘 <b>Telegram / WhatsApp Post Buttons</b> · add up to 2
         </label>
         <label style="font-size:12px; color:#a5b4fc; cursor:pointer; display:flex; align-items:center; gap:6px;">
-          <input type="checkbox" name="custom_button_enabled" value="1" /> Enable Custom Button on Posts
+          <input type="checkbox" name="custom_button_enabled" value="1" /> Enable Custom Buttons on Posts
         </label>
       </div>
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
@@ -432,8 +432,16 @@
           <input name="custom_button_text" value="Join Shpsy Loots ❤️" placeholder="Join Shpsy Loots ❤️" style="width:100%; font-size:12px;" />
         </div>
         <div>
-          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Target Channel Invite Link / Username</label>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button 1 target</label>
           <input name="custom_button_url" placeholder="https://t.me/your_main_channel or @channel" style="width:100%; font-size:12px; font-family:monospace;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button 2 label (optional)</label>
+          <input name="custom_button2_text" placeholder="Shop Amazon" maxlength="64" style="width:100%; font-size:12px;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button 2 target (optional)</label>
+          <input name="custom_button2_url" placeholder="https://example.com or @channel" maxlength="2048" style="width:100%; font-size:12px; font-family:monospace;" />
         </div>
       </div>
     </div>

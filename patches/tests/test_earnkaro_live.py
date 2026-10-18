@@ -13,9 +13,10 @@ from influencer_hub import earnkaro as ek, config
 
 
 class _FakeResp:
-    def __init__(self, status, body):
+    def __init__(self, status, body, url=""):
         self.status = status
         self._body = body
+        self.url = url
 
     async def __aenter__(self):
         return self
@@ -49,6 +50,7 @@ def test_convert_links_uses_bearer_and_body():
     ek.CACHE.clear()
     fake = _FakeSession()
     with patch("influencer_hub.earnkaro.config.EARNKARO_API_KEY", "dummy-jwt-key"), \
+         patch("influencer_hub.earnkaro.config.EARNKARO_PUBLISHER_ID", "5478322"), \
          patch("influencer_hub.earnkaro.aiohttp.ClientSession", return_value=fake):
         out = asyncio.run(ek.convert_links({"https://www.flipkart.com/p/itm1"}))
     assert out == {"https://www.flipkart.com/p/itm1": "https://ekaro.in/AbC123"}

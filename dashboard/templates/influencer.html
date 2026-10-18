@@ -258,26 +258,59 @@
     <div style="grid-column: 1 / -1; background:#1e1b4b; border:1px solid #6366f1; padding:14px; border-radius:8px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
         <label style="font-size: 13px; font-weight: 700; color:#c7d2fe; margin:0; display:flex; align-items:center; gap:8px;">
-          🔘 <b>Telegram / WhatsApp Post Navigation Button</b> (e.g. Join Shpsy Loots ❤️ ↗️)
+          🔘 <b>Telegram / WhatsApp Post Buttons</b> · up to 2 custom buttons
         </label>
         <div style="display:flex; align-items:center; gap:6px;">
           <input type="hidden" name="custom_button_enabled" value="0" />
           <label style="font-size:12px; color:#a5b4fc; cursor:pointer; display:flex; align-items:center; gap:6px;">
-            <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if inf.custom_button_enabled else '' }} /> Enable Navigation Button on Posts
+            <input type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if inf.custom_button_enabled else '' }} /> Enable Custom Buttons on Posts
           </label>
         </div>
       </div>
       <p class="hint" style="font-size:11px; margin-top:0; color:#94a3b8;">
-        ఇన్‌ఫ్లుయెన్సర్ పోస్ట్ క్రింద మన సొంత ఛానల్ బటన్ అమర్చవచ్చు! క్లిక్ చేయగానే యూజర్లు మన మెయిన్ ఛానల్‌కు నావిగేట్ అవుతారు (Empty unte Universal Settings nunchi teesukuntundi).
+        ఈ creator కి మాత్రమే CTA చూపించండి. Telegramలో రెండు custom buttons ఒకే rowలో వస్తాయి; WhatsAppలో అవి safe clickable links‌గా footerలో వస్తాయి. Smart mode ON చేస్తే custom CTAకి బదులుగా అదే creator యొక్క ఇతర ready Telegram channels buttons వస్తాయి.
       </p>
+      <label style="display:flex; align-items:flex-start; gap:9px; padding:10px; margin:8px 0; border:1px solid #4f46e5; border-radius:7px; background:#111638; color:#e0e7ff; font-size:12px;">
+        <input type="checkbox" name="smart_channel_nav" value="1" {{ 'checked' if inf.custom_button_url == '__smart_creator_channels__' else '' }} />
+        <span><b>✨ Smart cross-channel buttons (this creator only)</b><br><small>Automatically adds up to 8 links to this creator’s other ready Telegram channels. WhatsApp posts get the same links as a neat footer. Needs a public channel username or saved invite link.</small></span>
+      </label>
+      <details open style="margin:10px 0; padding:10px; border:1px solid #334155; border-radius:7px; background:#0b1220;">
+        <summary style="cursor:pointer; color:#bfdbfe; font-size:12px; font-weight:700;">🧭 Live route simulator · {{ 'ACTIVE' if inf.custom_button_url == '__smart_creator_channels__' else 'PREVIEW ONLY — smart mode is off' }} · read-only (no messages sent)</summary>
+        <p style="font-size:11px; color:#94a3b8; margin:8px 0;">
+          {{ navigation_preview.ready_channels }} ready Telegram channel(s) · {{ navigation_preview.linkable_channels }} have usable join links · {{ navigation_preview.offline_channels }} pending/paused.
+          {% if navigation_preview.unlinked_channels %}<span style="color:#fbbf24;">{{ navigation_preview.unlinked_channels }} ready channel(s) need a public @username or saved invite link to appear as a button.</span>{% endif %}
+        </p>
+        {% if navigation_preview.rows %}
+          <div style="display:grid; gap:6px;">
+            {% for route in navigation_preview.rows %}
+              <div style="display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:11px;">
+                <b style="color:#e2e8f0;">{{ route.channel }}</b><span style="color:#64748b;">→</span>
+                {% if route.buttons %}
+                  {% for button in route.buttons %}<span style="padding:3px 6px; border:1px solid #2563eb; border-radius:999px; color:#bfdbfe;">{{ button.text }}</span>{% endfor %}
+                {% else %}<span style="color:#94a3b8;">No other linkable channel yet</span>{% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p style="font-size:11px; color:#94a3b8; margin:8px 0 0;">Connect and successfully test Telegram destinations to preview the buttons here.</p>
+        {% endif %}
+      </details>
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:8px;">
         <div>
           <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button Title / Tag Name (e.g. Join Shpsy Loots ❤️)</label>
           <input name="custom_button_text" value="{{ inf.custom_button_text or '' }}" placeholder="Join Shpsy Loots ❤️" style="width:100%; font-size:12px; font-weight:bold;" />
         </div>
         <div>
-          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Target Channel Invite Link / Username</label>
-          <input name="custom_button_url" value="{{ inf.custom_button_url or '' }}" placeholder="https://t.me/our_vip_deals or @our_deals" style="width:100%; font-size:12px; font-family:monospace;" />
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button 1 target (HTTPS link or @Telegram)</label>
+          <input name="custom_button_url" value="{{ '' if inf.custom_button_url == '__smart_creator_channels__' else (inf.custom_button_url or '') }}" placeholder="https://t.me/our_vip_deals or @our_deals" style="width:100%; font-size:12px; font-family:monospace;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button 2 label (optional)</label>
+          <input name="custom_button2_text" value="{{ inf.custom_button2_text or '' }}" placeholder="Shop Amazon" maxlength="64" style="width:100%; font-size:12px; font-weight:bold;" />
+        </div>
+        <div>
+          <label style="font-size:11px; color:#cbd5e1; display:block; margin-bottom:4px;">Button 2 target (HTTPS link or @Telegram)</label>
+          <input name="custom_button2_url" value="{{ inf.custom_button2_url or '' }}" placeholder="https://example.com or @channel" maxlength="2048" style="width:100%; font-size:12px; font-family:monospace;" />
         </div>
       </div>
     </div>
@@ -468,7 +501,9 @@
                     <input form="channel-update-{{ c.id }}" type="checkbox" name="custom_button_enabled" value="1" {{ 'checked' if c.custom_button_enabled else '' }} /> 🔘 Custom Button
                   </label>
                 <input form="channel-update-{{ c.id }}" name="custom_button_text" value="{{ c.custom_button_text or '' }}" placeholder="Join Shpsy Loots ❤️" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px;" title="Button Label" />
-                <input form="channel-update-{{ c.id }}" name="custom_button_url" value="{{ c.custom_button_url or '' }}" placeholder="https://t.me/channel" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px; font-family:monospace;" title="Target Channel Link" />
+                <input form="channel-update-{{ c.id }}" name="custom_button_url" value="{{ c.custom_button_url or '' }}" placeholder="Button 1 URL" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px; font-family:monospace;" title="Button 1 target (HTTPS or @Telegram)" />
+                <input form="channel-update-{{ c.id }}" name="custom_button2_text" value="{{ c.custom_button2_text or '' }}" placeholder="Button 2 label" maxlength="64" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px;" title="Button 2 label" />
+                <input form="channel-update-{{ c.id }}" name="custom_button2_url" value="{{ c.custom_button2_url or '' }}" placeholder="Button 2 URL" maxlength="2048" style="font-size: 10px; padding: 2px 4px; width: 95px; margin-top: 2px; font-family:monospace;" title="Button 2 target (HTTPS or @Telegram)" />
               </div>
             </div>
           </td>

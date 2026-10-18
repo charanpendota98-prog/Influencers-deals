@@ -204,6 +204,19 @@ CREATE TABLE IF NOT EXISTS lehlah_short_links (
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Successful EarnKaro conversions whose publisher ID and final supported
+-- destination were verified at conversion time. This durable provenance lets
+-- later Money Radar audits verify opaque provider short links without
+-- assuming that every ekaro.in/fktr.in URL belongs to this account.
+CREATE TABLE IF NOT EXISTS verified_earnkaro_links (
+    url           TEXT PRIMARY KEY,
+    publisher_id  TEXT NOT NULL,
+    destination_url TEXT NOT NULL,
+    verified_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_verified_earnkaro_publisher_time
+    ON verified_earnkaro_links(publisher_id, verified_at);
+
 -- Engagement polls are manually created and globally de-duplicated by a
 -- normalized question. The creator id intentionally has no FK so deleting an
 -- influencer cannot erase question history and permit a repeated poll later.
@@ -382,6 +395,8 @@ def migrate() -> None:
             ("custom_button_enabled", "INTEGER NOT NULL DEFAULT 0"),
             ("custom_button_text", "TEXT NOT NULL DEFAULT ''"),
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
+            ("custom_button2_text", "TEXT NOT NULL DEFAULT ''"),
+            ("custom_button2_url", "TEXT NOT NULL DEFAULT ''"),
             ("min_deal_tier", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in inf_cols:
@@ -413,6 +428,8 @@ def migrate() -> None:
             ("custom_button_enabled", "INTEGER NOT NULL DEFAULT 0"),
             ("custom_button_text", "TEXT NOT NULL DEFAULT ''"),
             ("custom_button_url", "TEXT NOT NULL DEFAULT ''"),
+            ("custom_button2_text", "TEXT NOT NULL DEFAULT ''"),
+            ("custom_button2_url", "TEXT NOT NULL DEFAULT ''"),
             ("min_deal_tier", "TEXT NOT NULL DEFAULT ''"),
             # '' = inherit the global setting, '1' = mirror this channel's posts
             # into the creator's WhatsApp destinations, '0' = never mirror.
@@ -519,7 +536,9 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
                    posting_schedule: str = "", only_amazon: bool = False,
                    allow_amazon: bool = True, allow_earnkaro: bool = True,
                    allow_hypd: bool = True, hypd_store_id: str | None = None,
-                   min_deal_tier: str = "") -> int:
+                   min_deal_tier: str = "", custom_button_enabled: bool = False,
+                   custom_button_text: str = "", custom_button_url: str = "",
+                   custom_button2_text: str = "", custom_button2_url: str = "") -> int:
     # Ensure schema exists for fresh DBs (pytest tmp_path without explicit init)
     try:
         ensure_schema()
@@ -540,8 +559,8 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
         )
         cur = con.execute(
             "INSERT INTO influencers "
-            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, min_deal_tier, added_by) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(name, handle, amazon_tag, notes, use_dummy_sources, telegram_enabled, whatsapp_enabled, insta_id, phone_number, price_filter, allowed_sources, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, min_deal_tier, added_by, custom_button_enabled, custom_button_text, custom_button_url, custom_button2_text, custom_button2_url) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name.strip(), handle.strip(), (amazon_tag or "").strip() or config.AMAZON_ASSOCIATE_TAG,
              notes.strip(), 1 if _as_bool(use_dummy_sources) else 0,
              1 if _as_bool(telegram_enabled, default=True) else 0,
@@ -552,7 +571,9 @@ def add_influencer(name: str, amazon_tag: str = config.AMAZON_ASSOCIATE_TAG,
              1 if _as_bool(allow_earnkaro, default=True, unrestricted=True) else 0,
              1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
              effective_hypd_store_id, _clean_deal_tier(min_deal_tier),
-             str(added_by or "").strip()[:60]),
+             str(added_by or "").strip()[:60],
+             1 if _as_bool(custom_button_enabled) else 0, custom_button_text.strip(),
+             custom_button_url.strip(), custom_button2_text.strip(), custom_button2_url.strip()),
         )
         con.commit()
         return int(cur.lastrowid)
@@ -571,6 +592,8 @@ def update_influencer(influencer_id: int, name: str | None = None,
                       custom_button_enabled: bool | None = None,
                       custom_button_text: str | None = None,
                       custom_button_url: str | None = None,
+                      custom_button2_text: str | None = None,
+                      custom_button2_url: str | None = None,
                       notes: str | None = None, active: bool | None = None,
                       min_deal_tier: str | None = None,
                       category_preferences: str | None = None) -> None:
@@ -637,6 +660,12 @@ def update_influencer(influencer_id: int, name: str | None = None,
         if custom_button_url is not None:
             updates.append("custom_button_url=?")
             params.append(custom_button_url.strip())
+        if custom_button2_text is not None:
+            updates.append("custom_button2_text=?")
+            params.append(custom_button2_text.strip())
+        if custom_button2_url is not None:
+            updates.append("custom_button2_url=?")
+            params.append(custom_button2_url.strip())
         if notes is not None:
             updates.append("notes=?")
             params.append(notes.strip())
@@ -794,6 +823,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
                 custom_button_enabled: bool = False,
                 custom_button_text: str = "",
                 custom_button_url: str = "",
+                custom_button2_text: str = "",
+                custom_button2_url: str = "",
                 min_deal_tier: str = "",
                 mirror_whatsapp: str = "",
                 title: str = "") -> int:
@@ -811,8 +842,8 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
             or config.HYPD_STORE_ID
         )
         cur = con.execute(
-            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url, min_deal_tier, mirror_whatsapp, title) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO channels (influencer_id, platform, identifier, invite_link, status, role, amazon_override_tag, strip_amazon, price_filter, allowed_sources, wa_session_key, bitly_api_key, categories, posting_schedule, only_amazon, allow_amazon, allow_earnkaro, allow_hypd, hypd_store_id, custom_button_enabled, custom_button_text, custom_button_url, custom_button2_text, custom_button2_url, min_deal_tier, mirror_whatsapp, title) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (influencer_id, platform, identifier.strip(), invite_link.strip(), status, role,
              amazon_override_tag.strip(), 1 if _as_bool(strip_amazon, unrestricted=False) else 0, price_filter.strip(), allowed_sources.strip(),
              wa_session_key.strip(), bitly_api_key.strip(), categories.strip(), posting_schedule.strip(),
@@ -822,6 +853,7 @@ def add_channel(influencer_id: int, platform: str, identifier: str,
              1 if _as_bool(allow_hypd, default=True, unrestricted=True) else 0,
              effective_hypd_store_id,
              1 if _as_bool(custom_button_enabled) else 0, custom_button_text.strip(), custom_button_url.strip(),
+             custom_button2_text.strip(), custom_button2_url.strip(),
              _clean_deal_tier(min_deal_tier), _clean_mirror_flag(mirror_whatsapp),
              str(title or "").strip()[:120]),
         )
@@ -850,6 +882,8 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
                            custom_button_enabled: bool | None = None,
                            custom_button_text: str | None = None,
                            custom_button_url: str | None = None,
+                           custom_button2_text: str | None = None,
+                           custom_button2_url: str | None = None,
                            min_deal_tier: str | None = None,
                            mirror_whatsapp: str | None = None,
                            title: str | None = None) -> None:
@@ -917,6 +951,12 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if custom_button_url is not None:
             updates.append("custom_button_url=?")
             params.append(custom_button_url.strip())
+        if custom_button2_text is not None:
+            updates.append("custom_button2_text=?")
+            params.append(custom_button2_text.strip())
+        if custom_button2_url is not None:
+            updates.append("custom_button2_url=?")
+            params.append(custom_button2_url.strip())
         if min_deal_tier is not None:
             updates.append("min_deal_tier=?")
             params.append(_clean_deal_tier(min_deal_tier))
@@ -2114,6 +2154,52 @@ def get_lehlah_short_link(code: str) -> dict | None:
 
 
 # -------------------------------- posts --------------------------------
+
+
+def record_verified_earnkaro_link(url: str, publisher_id: str, destination_url: str) -> bool:
+    """Persist a conversion only after redirect destination and publisher match."""
+    link = str(url or "").strip()
+    pubid = str(publisher_id or "").strip()
+    destination = str(destination_url or "").strip()
+    if not link or not pubid or not destination:
+        return False
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO verified_earnkaro_links(url, publisher_id, destination_url, verified_at) "
+            "VALUES(?,?,?,datetime('now')) ON CONFLICT(url) DO UPDATE SET "
+            "publisher_id=excluded.publisher_id, destination_url=excluded.destination_url, "
+            "verified_at=excluded.verified_at",
+            (link, pubid, destination),
+        )
+        # Keep enough history for the 90-day Money Radar while bounding storage.
+        con.execute(
+            "DELETE FROM verified_earnkaro_links "
+            "WHERE verified_at < datetime('now', '-180 days')"
+        )
+        con.commit()
+        return True
+    finally:
+        con.close()
+
+
+def verified_earnkaro_link(url: str, publisher_id: str) -> dict | None:
+    """Return durable attribution proof only for the configured publisher."""
+    link = str(url or "").strip()
+    pubid = str(publisher_id or "").strip()
+    if not link or not pubid:
+        return None
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT url, publisher_id, destination_url, verified_at "
+            "FROM verified_earnkaro_links WHERE url=? AND publisher_id=? "
+            "AND verified_at >= datetime('now', '-90 days')",
+            (link, pubid),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
 
 def record_post(influencer_id: int, channel_id: int, deal_sig: str,
                 status: str = "queued", error: str = "", deal_text: str = "",

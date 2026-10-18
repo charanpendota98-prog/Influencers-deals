@@ -16,7 +16,7 @@ import re
 from urllib.parse import parse_qsl, urlparse
 
 from . import (
-    advanced_shortener, amazon_shortlinks, hypd_shortlinks, lehlah_shortlinks,
+    advanced_shortener, amazon_shortlinks, hypd_shortlinks,
     link_router,
 )
 
@@ -41,14 +41,6 @@ def _host_of(url: str) -> str:
         return (urlparse(url).hostname or "").lower().rstrip(".")
     except Exception:
         return ""
-
-
-def _publisher_ids(url: str, expected_pubid: str = "") -> list[str]:
-    """Publisher ids visible in a link (``affExtParam2`` and plain ``id``)."""
-    try:
-        return link_router.publisher_ids_in_url(url, expected_pubid)
-    except Exception:
-        return []
 
 
 def _is_earnkaro_short(url: str) -> bool:
@@ -82,8 +74,6 @@ def _verified_branded_short_kind(url: str, tag: str, store: str) -> tuple[str, s
         return "amazon", f"Verified branded Amazon short link (tag {tag})"
     if store and hypd_shortlinks.is_our_hypd_short_url(url, store):
         return "hypd", f"Verified branded HYPD short link (store {store})"
-    if lehlah_shortlinks.is_our_lehlah_short_url(url):
-        return "lehlah", "Verified branded LehLah short link"
     return None
 
 
@@ -129,18 +119,30 @@ def classify_link(
             "reason": f"Unverified branded-looking {claimed_kind} short link — not counted as ours",
         }
 
-    # EarnKaro short links do not live on a merchant host, so they are checked
-    # before the host-based classifier files them under "other".
+    # EarnKaro short links do not live on a merchant host, so verify them
+    # before the host-based classifier. An opaque provider hostname alone is
+    # never evidence that the link belongs to our publisher.
     if _is_earnkaro_short(url):
-        entry = {"url": url, "kind": "merchant", "state": STATE_EARNING, "reason": ""}
-        ids = _publisher_ids(url, pubid)
-        if pubid and ids and any(value != pubid for value in ids):
+        entry = {"url": url, "kind": "merchant", "state": STATE_LEAK, "reason": ""}
+        explicit = [
+            value for key, value in parse_qsl(urlparse(url).query, keep_blank_values=True)
+            if key.casefold() == "affextparam2" and value
+        ]
+        if pubid and explicit and any(value != pubid for value in explicit):
             entry["state"] = STATE_LEAK
             entry["reason"] = f"EarnKaro link for another publisher (expected {pubid})"
-        elif ids:
-            entry["reason"] = "EarnKaro link with our publisher"
+        elif pubid:
+            from . import db
+            proof = db.verified_earnkaro_link(url, pubid)
+            if proof:
+                entry["state"] = STATE_EARNING
+                entry["reason"] = "EarnKaro redirect verified and stored for our publisher"
+            elif explicit and all(value == pubid for value in explicit):
+                entry["reason"] = "Publisher ID is visible, but the short-link destination is unverified"
+            else:
+                entry["reason"] = "EarnKaro publisher/destination is unverified; conservatively treated as a leak"
         else:
-            entry["reason"] = "EarnKaro short link (publisher not encoded in the URL)"
+            entry["reason"] = "EarnKaro publisher ID is not configured; conservatively treated as a leak"
         return entry
 
     kind = link_router.classify_url(url)
@@ -182,16 +184,24 @@ def classify_link(
             entry["reason"] = f"HYPD link on another store (expected {store or 'n/a'})"
         return entry
 
-    if kind == "merchant":
-        if _is_earnkaro_short(url):
-            ids = _publisher_ids(url, pubid)
-            if pubid and ids and any(value != pubid for value in ids):
-                entry["state"] = STATE_LEAK
-                entry["reason"] = f"EarnKaro link for another publisher (expected {pubid})"
-            else:
-                entry["state"] = STATE_EARNING
-                entry["reason"] = "EarnKaro link with our publisher"
+    if kind in {"merchant", "meesho"}:
+        explicit = [
+            value for key, value in parse_qsl(urlparse(url).query, keep_blank_values=True)
+            if key.casefold() == "affextparam2" and value
+        ]
+        if pubid and explicit and any(value != pubid for value in explicit):
+            entry["state"] = STATE_LEAK
+            entry["reason"] = f"Merchant link for another publisher (expected {pubid})"
             return entry
+        if pubid:
+            from . import db
+            proof = db.verified_earnkaro_link(url, pubid)
+            if proof:
+                entry["state"] = STATE_EARNING
+                entry["reason"] = "Direct EarnKaro destination verified for our publisher"
+                return entry
+
+    if kind == "merchant":
         entry["state"] = STATE_LEAK
         entry["reason"] = (
             "Merchant link posted raw — no EarnKaro conversion, so it earns nothing"
@@ -206,8 +216,10 @@ def classify_link(
         return entry
 
     if kind == "lehlah":
-        entry["state"] = STATE_EARNING
-        entry["reason"] = "LehLah attributed Meesho link"
+        entry["state"] = STATE_LEAK
+        entry["reason"] = (
+            "LehLah markers identify the source network, but this hub has no verified LehLah account proof"
+        )
         return entry
 
     entry["reason"] = "Informational link — never earns, never leaks"

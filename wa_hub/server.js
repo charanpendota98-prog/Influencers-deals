@@ -24,30 +24,44 @@
 import express from 'express'
 import QRCode from 'qrcode'
 import { hub } from './wa_manager.js'
+import { bearerTokenMatches, isValidSessionKey, validateServerConfig } from './server_security.js'
+
+let serverConfig
+try {
+  serverConfig = validateServerConfig(process.env)
+} catch (error) {
+  console.error(`[wa-hub] ${error.message}`)
+  process.exit(1)
+}
+
+const { TOKEN, PORT, HOST } = {
+  TOKEN: serverConfig.token,
+  PORT: serverConfig.port,
+  HOST: serverConfig.host,
+}
 
 const app = express()
-app.use(express.json())
-
-const TOKEN = process.env.WA_HUB_TOKEN || ''
-const PORT = parseInt(process.env.WA_HUB_PORT || '8088', 10)
-const HOST = process.env.WA_HUB_HOST || '127.0.0.1'
-
-if (process.env.NODE_ENV === 'production' && TOKEN.length < 32) {
-  console.error('[wa-hub] a private WA_HUB_TOKEN of at least 32 characters is required in production')
-  process.exit(1)
-}
-if (process.env.NODE_ENV === 'production' && !['127.0.0.1', '::1'].includes(HOST)) {
-  console.error('[wa-hub] production host must remain loopback-only (127.0.0.1 or ::1)')
-  process.exit(1)
-}
+app.disable('x-powered-by')
+app.use(express.json({ limit: '64kb', strict: true }))
+app.use((_req, res, next) => {
+  // QR codes and WhatsApp phone-link codes are short-lived login credentials.
+  res.set('Cache-Control', 'no-store, private')
+  res.set('X-Content-Type-Options', 'nosniff')
+  next()
+})
 
 function auth(req, res, next) {
-  if (!TOKEN) return next()
-  const h = req.headers['authorization'] || ''
-  if (h === `Bearer ${TOKEN}`) return next()
+  // An empty token is permitted only on a loopback binding, enforced before listen.
+  if (!TOKEN || bearerTokenMatches(req.headers.authorization || '', TOKEN)) return next()
   return res.status(401).json({ ok: false, error: 'unauthorized' })
 }
 app.use(auth)
+app.param('key', (req, res, next, key) => {
+  if (!isValidSessionKey(key)) {
+    return res.status(400).json({ ok: false, error: 'invalid session key' })
+  }
+  return next()
+})
 
 app.get('/health', (_req, res) => res.json({ ok: true, sessions: hub.list().length }))
 
@@ -55,7 +69,15 @@ app.get('/sessions', (_req, res) => res.json({ sessions: hub.list() }))
 
 app.post('/sessions', async (req, res) => {
   const { key, influencer_id, label } = req.body || {}
-  if (!key) return res.status(400).json({ ok: false, error: 'key required' })
+  if (!isValidSessionKey(key)) {
+    return res.status(400).json({ ok: false, error: 'key must be a non-empty string of at most 128 characters' })
+  }
+  if (influencer_id !== undefined && (!Number.isSafeInteger(Number(influencer_id)) || Number(influencer_id) < 1)) {
+    return res.status(400).json({ ok: false, error: 'influencer_id must be a positive integer' })
+  }
+  if (label !== undefined && (typeof label !== 'string' || label.length > 120)) {
+    return res.status(400).json({ ok: false, error: 'label must be a string of at most 120 characters' })
+  }
   try {
     const sess = await hub.start(key, { influencer_id, label })
     res.json({ ok: true, key, status: sess.status })
@@ -217,6 +239,17 @@ app.post('/sessions/:key/newsletter', async (req, res) => {
 app.post('/sessions/:key/stop', async (req, res) => {
   await hub.stop(req.params.key)
   res.json({ ok: true })
+})
+
+// Avoid Express's default HTML error response for malformed or oversized JSON.
+app.use((error, _req, res, next) => {
+  if (res.headersSent) return next(error)
+  const status = error?.type === 'entity.too.large' ? 413 : 400
+  if (status === 400) console.warn('[wa-hub] rejected malformed request body')
+  return res.status(status).json({
+    ok: false,
+    error: status === 413 ? 'request body too large' : 'invalid request body',
+  })
 })
 
 app.listen(PORT, HOST, () => {

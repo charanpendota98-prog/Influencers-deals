@@ -1,16 +1,12 @@
-"""Commission Guard — perfect verification that every shortened/posted link is OUR affiliate.
+"""Commission Guard — conservative verification of affiliate attribution syntax.
 
-This module is the answer to "CHALA VARAKU MANAKU COMMISSION RADU".
-Every final rendered deal is audited before dispatch:
-- Amazon links MUST be canonical https://www.amazon.in/dp/<ASIN>?tag=OURTAG with exactly one tag that matches our Associate tag
-- HYPD links MUST be https://hypd.store/<OUR_STORE>/afflink/<token> with no query/fragment and correct store ID
-- Merchant links (Flipkart, Myntra, Ajio, etc.) MUST be EarnKaro short links (ekaro.in/fktr.in/clnk.in/myntr.it) with provenance that matches OUR publisher ID,
-  OR they must have been correctly compacted and converted — never left as raw merchant URLs when allow_earnkaro is True
-- Bitly-shortened OUR links are verified via cache to ensure they redirect to OUR canonical URLs
-
-If any link fails verification, it is logged and optionally the deal is sanitized to avoid posting a non-earning link.
-
-This guard does NOT guarantee commission (network approval, cookies, etc.), but it guarantees that the link we POST contains OUR affiliate attribution and is shortened correctly.
+This module helps reduce known link-attribution leaks; it cannot guarantee
+network approval, clicks, cookies, product eligibility, or payout.
+The final rendered text is audited before dispatch. In strict mode, each
+recognized affiliate URL must match the creator's Amazon tag, the configured
+HYPD store, verified EarnKaro provenance, or another supported route. Unknown
+product hosts and unresolved shorteners are held. This verifies link syntax and
+known provenance, not actual attribution cookies or payout.
 """
 
 from __future__ import annotations
@@ -18,7 +14,7 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qsl, urlparse
 
-from . import amazon_shortlinks, hypd_shortlinks, lehlah_shortlinks, link_router
+from . import amazon_shortlinks, hypd_shortlinks, link_router
 from .advanced_shortener import (
     is_our_amazon_attribution,
     is_our_amazon_link,
@@ -56,6 +52,17 @@ def _publisher_id_values(url: str, expected_pubid: str = "") -> list[str]:
         return []
 
 
+def _explicit_affextparam2_values(url: str) -> list[str]:
+    """Read the strong EarnKaro publisher signal, excluding generic ``id=``."""
+    try:
+        return [
+            value for key, value in parse_qsl(urlparse(url).query, keep_blank_values=True)
+            if key.casefold() == "affextparam2" and value
+        ]
+    except (TypeError, ValueError):
+        return []
+
+
 def _verified_first_party_short_link(
     url: str,
     effective_amz_tag: str,
@@ -63,8 +70,9 @@ def _verified_first_party_short_link(
 ) -> tuple[str, str] | None:
     """Return a verified hub short-link kind/reason, never a hostname guess.
 
-    All three branded paths are deliberately checked against their configured
-    HTTPS origin *and* a stored DB target.  This is the proof boundary that
+    Both earning branded paths are checked against their configured HTTPS
+    origin *and* a stored DB target.  LehLah source links are not our account
+    proof.  This is the proof boundary that
     keeps ``https://evil.example/a/<code>?tag=ours`` from being counted as an
     earning link merely because it resembles one of our routes.
     """
@@ -74,8 +82,6 @@ def _verified_first_party_short_link(
         return "amazon", f"Verified branded Amazon short link (tag={tag})"
     if store and hypd_shortlinks.is_our_hypd_short_url(url, store):
         return "hypd", f"Verified branded HYPD short link (store={store})"
-    if lehlah_shortlinks.is_our_lehlah_short_url(url):
-        return "lehlah", "Verified branded LehLah short link (stored attribution preserved)"
     return None
 
 
@@ -239,7 +245,6 @@ def audit_rendered_text(
                     )
             else:
                 parsed = urlparse(url)
-                tags = [v for k, v in parse_qsl(parsed.query) if k.lower() == "tag"]
                 if link_router.is_amazon_short_host(url):
                     entry["ok"] = False
                     entry["reason"] = (
@@ -271,51 +276,47 @@ def audit_rendered_text(
                 issues.append(entry["reason"])
 
         elif kind == "meesho":
-            # Raw Meesho product URL — NOT an affiliate unless converted to hypd.store afflink
-            # Only flag as leak if HYPD/Meesho is enabled for this channel (user expects commission)
-            if check_allowed("meesho") or check_allowed("hypd"):
+            direct_ids = _explicit_affextparam2_values(url)
+            if _stored_earnkaro_proof(url, expected_pubid):
+                entry["reason"] = "Direct Meesho destination verified for our EarnKaro publisher"
+            elif check_allowed("meesho") or check_allowed("hypd"):
                 entry["ok"] = False
-                entry["reason"] = f"Raw Meesho URL (no HYPD afflink, no commission): {url} — needs hypd.store/93944/afflink/token"
+                entry["reason"] = f"Raw Meesho URL (no verified affiliate attribution): {url}"
                 issues.append(entry["reason"])
                 hypd_ok = False
             else:
                 entry["reason"] = f"Raw Meesho URL (HYPD disabled for this channel, posted as-is): {url}"
 
         elif kind == "merchant":
-            # Raw merchant URL that was NOT converted to EarnKaro short link
-            # Only flag if EarnKaro is enabled for this channel
-            if check_allowed("merchant"):
+            if _stored_earnkaro_proof(url, expected_pubid):
+                entry["reason"] = "Direct supported-store destination verified for our publisher"
+            elif check_allowed("merchant"):
                 entry["ok"] = False
-                entry["reason"] = f"Merchant URL not converted to EarnKaro (no commission): {url} — expected ekaro.in/fktr.in with pubid {expected_pubid or '5478322'}"
+                entry["reason"] = f"Merchant URL not verified for EarnKaro publisher {expected_pubid or '(unset)'}: {url}"
                 earnkaro_ok = False
                 issues.append(entry["reason"])
             else:
                 entry["reason"] = f"Merchant URL (EarnKaro disabled for this channel, posted as-is): {url}"
 
         elif kind == "lehlah":
-            # LehLah Meesho with attribution — keep as is, no EarnKaro
-            entry["reason"] = "LehLah Meesho — attribution preserved, not EarnKaro"
+            entry["ok"] = False
+            entry["reason"] = "LehLah attribution belongs to the source; this hub has no verified LehLah account proof"
+            issues.append(entry["reason"])
 
         elif _is_earnkaro_short(url):
-            # EarnKaro short link (ekaro.in, fktr.in, clnk.in, myntr.it, etc.)
-            # Verify provenance if expected_pubid known — check the publisher
-            # id parameters visible on the short link itself.
             pubids = _publisher_id_values(url, expected_pubid)
-            if expected_pubid:
-                if pubids:
-                    if all(pid == expected_pubid for pid in pubids):
-                        entry["reason"] = f"EarnKaro short verified pubid={expected_pubid}"
-                    else:
-                        entry["ok"] = False
-                        entry["reason"] = f"EarnKaro short has wrong publisher {pubids} (expected {expected_pubid}): {url}"
-                        earnkaro_ok = False
-                        issues.append(entry["reason"])
-                else:
-                    # Short link doesn't carry pubid visibly — will be verified after redirect via _resolve_affextparam2
-                    # For rendered text audit, we consider this OK if it was produced by our convert (host is shortener)
-                    entry["reason"] = f"EarnKaro short link (pubid verified via redirect, host {host})"
+            if expected_pubid and _stored_earnkaro_proof(url, expected_pubid):
+                entry["reason"] = f"EarnKaro short redirect verified for publisher {expected_pubid}"
+            elif expected_pubid and pubids and any(pid != expected_pubid for pid in pubids):
+                entry["ok"] = False
+                entry["reason"] = f"EarnKaro short has wrong publisher {pubids} (expected {expected_pubid}): {url}"
+                earnkaro_ok = False
+                issues.append(entry["reason"])
             else:
-                entry["reason"] = f"EarnKaro short link host {host}"
+                entry["ok"] = False
+                entry["reason"] = f"EarnKaro short destination/publisher is not verified: {url}"
+                earnkaro_ok = False
+                issues.append(entry["reason"])
 
         elif kind == "shortener":
             # A wrapper we did not resolve: attribution is unknown. It is not a
@@ -403,10 +404,30 @@ def is_verified_our_link(
     if _unverified_first_party_shape(url):
         return False
 
+    expected = str(expected_pubid or "").strip()
     if _is_earnkaro_short(url):
-        return True
+        explicit_ids = _explicit_affextparam2_values(url)
+        if expected and explicit_ids and all(value == expected for value in explicit_ids):
+            return True
+        if expected:
+            try:
+                from . import db
+                return bool(db.verified_earnkaro_link(url, expected))
+            except Exception:
+                return False
+        return False
+    if kind in {"merchant", "meesho"} and expected:
+        explicit_ids = _explicit_affextparam2_values(url)
+        if explicit_ids and all(value == expected for value in explicit_ids):
+            return kind != "merchant" or link_router.is_known_merchant_host(url)
+        try:
+            from . import db
+            return bool(db.verified_earnkaro_link(url, expected))
+        except Exception:
+            return False
     if kind == "lehlah":
-        return True
+        # LehLah markers identify the source network, not this hub's publisher.
+        return False
     if kind == "amazon" and tag:
         if is_our_amazon_link(url, tag) or is_our_amazon_attribution(url, tag):
             return True
@@ -431,6 +452,112 @@ def is_verified_our_link(
             return True
         return is_verified_our_link(long_url, tag, store, expected_pubid)
     return False
+
+
+def _stored_earnkaro_proof(url: str, expected_pubid: str) -> bool:
+    try:
+        from . import db
+        return bool(db.verified_earnkaro_link(url, expected_pubid))
+    except Exception:
+        return False
+
+
+_STRICT_NEUTRAL_HOSTS = {
+    "t.me", "telegram.me", "instagram.com", "youtube.com", "youtu.be",
+    "facebook.com", "fb.com", "x.com", "twitter.com", "whatsapp.com", "wa.me",
+}
+
+
+def strict_link_failures(
+    rendered: str,
+    effective_amz_tag: str,
+    effective_hypd_store: str,
+    expected_pubid: str | None = None,
+    *,
+    bitly_map: dict[str, str] | None = None,
+    source_text: str = "",
+    generated_earnkaro_links: set[str] | None = None,
+) -> list[str]:
+    """Return every final URL that cannot be safely attributed before dispatch.
+
+    Strict mode intentionally treats unknown product hosts and source-owned
+    shorteners as unverified. EarnKaro short links are accepted only when the
+    current conversion pass produced and verified them or a fresh durable
+    publisher/destination proof exists. This is a syntax/provenance check, not a payout
+    guarantee.
+    """
+    failures: list[str] = []
+    urls = link_router.find_urls(str(rendered or ""))
+    generated_ek = {str(url or "").strip() for url in (generated_earnkaro_links or set())}
+    own_count = 0
+
+    for url in urls:
+        host = _host_of(url)
+        kind = link_router.classify_url(url)
+        if kind == "amazon" and link_router.is_amazon_short_host(url):
+            failures.append(f"Amazon short link is unresolved; destination cannot be verified: {url}")
+            continue
+        if host in _STRICT_NEUTRAL_HOSTS or any(
+            host.endswith("." + neutral) for neutral in _STRICT_NEUTRAL_HOSTS
+        ):
+            continue
+
+        expected = str(expected_pubid or "").strip()
+        if _is_earnkaro_short(url):
+            verified = bool(expected and (
+                url in generated_ek
+                or _stored_earnkaro_proof(url, expected)
+            ))
+            if verified:
+                own_count += 1
+            else:
+                failures.append(f"EarnKaro publisher provenance is not verified: {url}")
+            continue
+
+        # EarnKaro can return either a short link or a direct supported-store
+        # URL. A direct result is ours only when the stronger affExtParam2
+        # signal matches, or when this conversion pass produced and verified it.
+        if kind in {"merchant", "meesho"}:
+            valid_store = (
+                link_router.is_known_merchant_host(url) if kind == "merchant"
+                else True
+            )
+            if expected and valid_store and (
+                url in generated_ek or _stored_earnkaro_proof(url, expected)
+            ):
+                own_count += 1
+            else:
+                failures.append(f"Direct EarnKaro destination is not conversion-verified: {url}")
+            continue
+
+        verified = is_verified_our_link(
+            url, effective_amz_tag, effective_hypd_store, expected_pubid,
+            bitly_map=bitly_map, source_text=source_text,
+        )
+        if verified:
+            # An unknown Bitly short must not pass on the legacy best-effort
+            # assumption; it needs a current mapping to an already verified URL.
+            if host in {"bit.ly", "www.bit.ly", "bitly.com", "www.bitly.com"} or host.endswith(".bit.ly"):
+                long_url = next((str(long_u) for long_u, short_u in (bitly_map or {}).items()
+                                 if str(short_u).strip() == url), "")
+                verified = bool(long_url and is_verified_our_link(
+                    long_url, effective_amz_tag, effective_hypd_store, expected_pubid,
+                    source_text=source_text,
+                ))
+            elif kind == "shortener":
+                # Branded short links have already passed the stored-target check
+                # above; unresolved third-party wrappers never count as ours.
+                verified = bool(_verified_first_party_short_link(
+                    url, str(effective_amz_tag or ""), str(effective_hypd_store or "")
+                ))
+        if verified:
+            own_count += 1
+        else:
+            failures.append(f"Unverified {kind} link (host={host or 'unknown'}): {url}")
+
+    if not own_count:
+        failures.append("The post contains no verified affiliate link for this account")
+    return failures
 
 
 def amazon_tag_proof(
@@ -494,7 +621,8 @@ def our_affiliate_urls(
     """Every URL in ``rendered`` that is verifiably OURS (earns for us).
 
     ``source_text`` (the untouched source post) keeps source wrappers from being
-    mistaken for wrappers this hub created.
+    mistaken for wrappers this hub created. EarnKaro shorts need an explicit
+    matching publisher ID or a durable conversion-provenance record.
     """
     return [
         url for url in link_router.find_urls(rendered)

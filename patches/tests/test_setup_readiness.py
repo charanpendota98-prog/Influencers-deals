@@ -148,11 +148,26 @@ def test_the_dashboard_shows_the_command_center_and_the_next_action(client):
     body = client.get("/").get_data(as_text=True)
 
     assert "Setup command center" in body
+    assert "QUICK START" in body
+    assert "Let’s get your hub ready" in body
+    assert "1/4" in body
+    assert "Recommended next" in body
     assert "Ravi Loots" in body
     assert "ravi-21" in body
     assert "pair-wa-phone" not in body  # actions live on the creator page
     assert "/influencer/%d#whatsapp-pair" % inf_id in body
     assert "Do this next" in body
+
+
+def test_empty_dashboard_starts_with_a_simple_guided_action(client):
+    response = client.get("/")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Create your first creator" in body
+    assert "Guided setup" in body
+    assert "Easy Setup" in body
+    assert "0/4" in body
 
 
 def test_api_readiness_is_read_only_and_can_be_narrowed_or_overlaid(client, monkeypatch):

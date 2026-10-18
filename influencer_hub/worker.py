@@ -138,10 +138,11 @@ async def drain_deferred_deals(limit: int = 3) -> int:
             db.delete_deferred_deal(deal_hash)
             continue
         exhausted = int(item.get("attempts") or 0) >= int(item.get("max_attempts") or 1)
+        strict_mode = pipeline.strict_commission_mode_enabled()
         try:
             result = await pipeline.run_once(
                 [{"text": text, "source": item.get("source") or ""}],
-                force_unconverted=exhausted,
+                force_unconverted=exhausted and not strict_mode,
             )
         except Exception as exc:
             logger.exception("Deferred-deal retry failed for %s", deal_hash[:8])
@@ -161,7 +162,11 @@ async def drain_deferred_deals(limit: int = 3) -> int:
         # owner pastes that creator's tag, instead of being silently dropped.
         tag_hold = f"skipped:{pipeline.tag_proof.HOLD_REASON}"
         still_held = any(
-            status in {tag_hold, "skipped:no_our_affiliate_after_guard"}
+            status in {
+                tag_hold, "skipped:no_our_affiliate_after_guard",
+                "skipped:strict_commission_unverified", "skipped:commission_guard_error",
+                "failed:commission_hold_persistence",
+            }
             for status in statuses
         )
         if not still_held:
@@ -174,23 +179,30 @@ async def drain_deferred_deals(limit: int = 3) -> int:
                 deal_hash[:8], int(item.get("attempts") or 0),
             )
             continue
-        if exhausted:
-            # force_unconverted was set, so a hold-back here means the deal was
-            # skipped for a different reason; stop retrying it.
+        if exhausted and not strict_mode:
+            # Legacy opt-out mode retains the historical bounded behavior.
             db.delete_deferred_deal(deal_hash)
             logger.warning(
                 "Deferred deal %s dropped after %s retries without a conversion",
                 deal_hash[:8], int(item.get("attempts") or 0),
             )
             continue
-        # Keep the *real* reason on the row: "no_own_amazon_tag" tells the owner
-        # to paste a tag, "still_unconverted" tells them to look at EarnKaro.
         held_for_tag = tag_hold in statuses
-        db.note_deferred_attempt(
-            deal_hash, delay_seconds=pipeline.DEFERRED_RETRY_DELAY_SECONDS,
-            reason=(pipeline.tag_proof.HOLD_REASON if held_for_tag
-                    else "still_unconverted"),
+        # Keep short retry cadence until the budget is used, then back off up
+        # to six hours while retaining the item. Strict mode never converts a
+        # retry limit into permission to post an unverified URL.
+        attempts = int(item.get("attempts") or 0)
+        if strict_mode and exhausted:
+            delay = min(6 * 60 * 60, pipeline.DEFERRED_RETRY_DELAY_SECONDS * (2 ** min(8, attempts - int(item.get("max_attempts") or 1) + 1)))
+        else:
+            delay = pipeline.DEFERRED_RETRY_DELAY_SECONDS
+        reason = (
+            pipeline.tag_proof.HOLD_REASON if held_for_tag else
+            "commission_guard_error" if "skipped:commission_guard_error" in statuses else
+            "strict_commission_unverified" if "skipped:strict_commission_unverified" in statuses else
+            "still_unconverted"
         )
+        db.note_deferred_attempt(deal_hash, delay_seconds=delay, reason=reason)
         logger.info(
             "Deferred deal %s %s (attempt %s/%s)",
             deal_hash[:8],

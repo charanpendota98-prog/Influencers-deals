@@ -157,12 +157,18 @@ def test_unresolvable_short_stays_visible_and_is_left_untouched(monkeypatch):
 # Our-link predicate used by the pre-dispatch guard
 # --------------------------------------------------------------------------
 def test_our_affiliate_urls_separates_paying_links_from_free_ones():
-    assert commission_guard.our_affiliate_urls(
-        f"🛍️ ₹199 https://fktr.in/abc123?affExtParam2={PUB}", TAG, STORE, PUB
+    short = f"https://fktr.in/abc123?affExtParam2={PUB}"
+    assert commission_guard.our_affiliate_urls(f"🛍️ ₹199 {short}", TAG, STORE, PUB)
+    # Strict dispatch additionally requires redirect proof; the low-level
+    # syntactic helper alone is not enough to publish an opaque provider URL.
+    assert commission_guard.strict_link_failures(short, TAG, STORE, PUB)
+    assert db.record_verified_earnkaro_link(
+        short, PUB, f"https://www.flipkart.com/p/itm1?affExtParam2={PUB}"
     )
-    assert commission_guard.our_affiliate_urls(
-        "👗 ₹299 https://www.meesho.com/kurta/p/abc?mcn=LEHLAH", TAG, STORE, PUB
-    )
+    assert commission_guard.strict_link_failures(short, TAG, STORE, PUB) == []
+    source_lehlah = "👗 ₹299 https://www.meesho.com/kurta/p/abc?mcn=LEHLAH"
+    assert commission_guard.our_affiliate_urls(source_lehlah, TAG, STORE, PUB) == []
+    assert commission_guard.strict_link_failures(source_lehlah, TAG, STORE, PUB)
     assert commission_guard.our_affiliate_urls(
         f"🔥 https://www.amazon.in/dp/B0ABCDEFGH?tag={TAG}", TAG, STORE, PUB
     )
@@ -174,6 +180,69 @@ def test_our_affiliate_urls_separates_paying_links_from_free_ones():
     ) == []
     assert commission_guard.our_affiliate_urls(
         "📢 https://example.com/news", TAG, STORE, PUB
+    ) == []
+
+
+def test_strict_link_audit_rejects_mixed_unknown_and_unproven_earnkaro_links():
+    amazon = f"https://www.amazon.in/dp/B0ABCDEFGH?tag={TAG}"
+    mixed = commission_guard.strict_link_failures(
+        f"Deal {amazon} and https://www.flipkart.com/p/itm123", TAG, STORE, PUB
+    )
+    assert any("Direct EarnKaro destination is not conversion-verified" in reason
+               for reason in mixed)
+
+    unknown = commission_guard.strict_link_failures(
+        "Deal https://tinystore.example/p/1", TAG, STORE, PUB
+    )
+    assert any("other link" in reason for reason in unknown)
+
+    # A familiar EarnKaro hostname alone is not publisher proof. A link generated
+    # by this render pass is accepted as known provenance.
+    borrowed = f"https://ekaro.in/abc123?affExtParam2=999999"
+    assert commission_guard.strict_link_failures(borrowed, TAG, STORE, PUB)
+    assert commission_guard.strict_link_failures(
+        "Deal https://ekaro.in/abc123", TAG, STORE, PUB,
+        generated_earnkaro_links={"https://ekaro.in/abc123"},
+    ) == []
+
+
+def test_strict_link_audit_rejects_an_unresolved_amazon_short_even_with_our_tag():
+    failures = commission_guard.strict_link_failures(
+        f"Deal https://amzn.to/abc123?tag={TAG}", TAG, STORE, PUB
+    )
+    assert any("Amazon short link is unresolved" in reason for reason in failures)
+
+
+def test_strict_link_audit_accepts_only_strong_direct_earnkaro_provenance():
+    direct = f"https://www.flipkart.com/p/itm1?affExtParam2={PUB}"
+    assert commission_guard.strict_link_failures(direct, TAG, STORE, PUB)
+    assert db.record_verified_earnkaro_link(
+        direct, PUB, direct
+    )
+    assert commission_guard.strict_link_failures(direct, TAG, STORE, PUB) == []
+
+    # Generic numeric id parameters are ambiguous unless this exact URL was
+    # returned by the verified conversion call. They must not imply ownership.
+    ambiguous = "https://www.flipkart.com/p/itm1?id=5478322"
+    assert commission_guard.strict_link_failures(ambiguous, TAG, STORE, PUB)
+
+    # A short URL returned by a converter is not enough when no publisher ID is
+    # configured: we cannot verify whose account receives the attribution.
+    assert commission_guard.strict_link_failures(
+        "Deal https://ekaro.in/abc123", TAG, STORE, "",
+        generated_earnkaro_links={"https://ekaro.in/abc123"},
+    )
+
+
+def test_strict_link_audit_requires_current_provenance_for_bitly():
+    assert commission_guard.strict_link_failures(
+        f"Deal https://bit.ly/abc123?tag={TAG}", TAG, STORE, PUB
+    )
+    mapped = {
+        f"https://www.amazon.in/dp/B0ABCDEFGH?tag={TAG}": "https://bit.ly/abc123"
+    }
+    assert commission_guard.strict_link_failures(
+        "Deal https://bit.ly/abc123", TAG, STORE, PUB, bitly_map=mapped
     ) == []
 
 
@@ -226,13 +295,22 @@ def _channel(monkeypatch, name: str, *, meesho: bool = False, settings: dict | N
     return influencer_id, channel_id, sent
 
 
+def _verified_converter(mapping: dict):
+    """Mock the real converter's side effect: persist proof before returning."""
+    async def convert(*_args, **_kwargs):
+        for source, short in mapping.items():
+            assert db.record_verified_earnkaro_link(short, PUB, source)
+        return mapping
+    return AsyncMock(side_effect=convert)
+
+
 def _run(monkeypatch, name: str, text: str, *, settings: dict | None = None,
          credentials: bool = True, converted: dict | None = None):
     influencer_id, channel_id, sent = _channel(monkeypatch, name, settings=settings)
     if credentials:
         db.set_global_setting("earnkaro_api_key", "fake-key")
         db.set_global_setting("earnkaro_publisher_id", PUB)
-    monkeypatch.setattr(earnkaro, "convert_links", AsyncMock(return_value=converted or {}))
+    monkeypatch.setattr(earnkaro, "convert_links", _verified_converter(converted or {}))
     result = asyncio.run(pipeline.render_and_dispatch(text, influencer_ids=[influencer_id]))
     return result[influencer_id][channel_id], sent
 
@@ -240,7 +318,7 @@ def _run(monkeypatch, name: str, text: str, *, settings: dict | None = None,
 def test_conversion_failure_on_a_core_merchant_holds_the_deal_for_a_retry(monkeypatch):
     deal = "🔥 Shoes ₹499 https://www.flipkart.com/nike-shoes/p/itmABC123?pid=SHO123"
     status, sent = _run(monkeypatch, "ek_down", deal)
-    assert status == "skipped:no_our_affiliate_after_guard"
+    assert status == "skipped:strict_commission_unverified"
     assert sent == []
     # Nothing is recorded as posted, so the worker re-reads the source post and
     # publishes the deal (converted) as soon as EarnKaro answers again.
@@ -262,42 +340,42 @@ def test_converted_merchant_posts_our_earnkaro_link(monkeypatch):
     assert target not in sent[0]
 
 
-def test_zero_commission_post_is_allowed_when_credentials_are_not_configured(monkeypatch):
-    """Without an EarnKaro key nothing can ever convert, so volume is untouched."""
+def test_missing_earnkaro_credentials_hold_known_merchant_links(monkeypatch):
+    """Strict mode holds the link until the operator configures a converter."""
     status, sent = _run(
         monkeypatch, "no_key", "🔥 Shoes ₹499 https://www.flipkart.com/p/itmABC123",
         credentials=False,
     )
-    assert status == "posted"
-    assert "flipkart.com" in sent[0]
+    assert status == "skipped:strict_commission_unverified"
+    assert sent == []
 
 
-def test_zero_commission_post_can_be_allowed_explicitly(monkeypatch):
+def test_allow_unconverted_switch_cannot_bypass_strict_mode(monkeypatch):
     status, sent = _run(
         monkeypatch, "allow_free", "🔥 Shoes ₹499 https://www.flipkart.com/p/itmABC123",
         settings={"allow_unconverted_posts": "on"},
     )
-    assert status == "posted"
-    assert "flipkart.com" in sent[0]
+    assert status == "skipped:strict_commission_unverified"
+    assert sent == []
 
 
-def test_unsupported_store_is_still_posted_instead_of_being_retried_forever(monkeypatch):
+def test_unsupported_store_is_held_instead_of_being_posted_for_free(monkeypatch):
     status, sent = _run(
         monkeypatch, "unknown_store", "🔥 ₹199 https://tinystore.example/p/itm123"
     )
-    assert status == "posted"
-    assert "tinystore.example" in sent[0]
+    assert status == "skipped:strict_commission_unverified"
+    assert sent == []
 
 
-def test_a_deal_with_an_amazon_link_is_posted_even_when_the_merchant_failed(monkeypatch):
+def test_a_verified_amazon_link_does_not_mask_a_raw_merchant_leak(monkeypatch):
     status, sent = _run(
         monkeypatch,
         "amazon_plus_flipkart",
         "🔥 Combo\nAmazon: https://www.amazon.in/dp/B0D9P2M1PB\n"
         "Flipkart: https://www.flipkart.com/x/p/itmAAA111?pid=P1",
     )
-    assert status == "posted"
-    assert f"tag={TAG}" in sent[0]
+    assert status == "skipped:strict_commission_unverified"
+    assert sent == []
 
 
 # --------------------------------------------------------------------------
@@ -342,6 +420,33 @@ def test_the_retry_queue_is_idempotent_per_deal_and_reports_attempts():
     assert db.count_deferred_deals() == 0
 
 
+def test_commission_guard_exception_fails_closed_and_persists_a_hold(monkeypatch):
+    influencer_id, channel_id, sent = _channel(monkeypatch, "guard_error")
+    deal = f"🔥 Deal https://www.amazon.in/dp/B0ABCDEFGH?tag={TAG}"
+
+    def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(commission_guard, "audit_rendered_text", fail_audit)
+    result = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer_id]))
+    assert result[influencer_id][channel_id] == "skipped:commission_guard_error"
+    assert sent == []
+    assert db.count_deferred_deals() == 1
+    assert db.list_deferred_deals()[0]["reason"] == "commission_guard_error"
+
+
+def test_hold_persistence_failure_marks_delivery_failed_so_source_can_retry(monkeypatch):
+    influencer_id, channel_id, sent = _channel(monkeypatch, "hold_persistence_failure")
+    monkeypatch.setattr(
+        db, "defer_deal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("db unavailable")),
+    )
+    deal = "🔥 Deal https://tinystore.example/p/1"
+    result = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer_id]))
+    assert result[influencer_id][channel_id] == "failed:commission_hold_persistence"
+    assert sent == []
+
+
 def test_parked_deal_is_retried_and_posted_converted_when_earnkaro_recovers(monkeypatch):
     from influencer_hub import worker
 
@@ -354,14 +459,14 @@ def test_parked_deal_is_retried_and_posted_converted_when_earnkaro_recovers(monk
     # Cycle 1: EarnKaro is down, so the deal is parked instead of posted free.
     monkeypatch.setattr(earnkaro, "convert_links", AsyncMock(return_value={}))
     result = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer_id]))
-    assert result[influencer_id][channel_id] == "skipped:no_our_affiliate_after_guard"
+    assert result[influencer_id][channel_id] == "skipped:strict_commission_unverified"
     assert sent == [] and db.count_deferred_deals() == 1
 
     # Cycle 2: EarnKaro recovered — the worker posts the converted deal.
     converted = f"https://ekaro.in/ek123456?affExtParam2={PUB}"
     monkeypatch.setattr(
         earnkaro, "convert_links",
-        AsyncMock(return_value={deal.split()[-1]: converted}),
+        _verified_converter({deal.split()[-1]: converted}),
     )
     drained = asyncio.run(worker.drain_deferred_deals())
     assert drained == 1
@@ -369,7 +474,7 @@ def test_parked_deal_is_retried_and_posted_converted_when_earnkaro_recovers(monk
     assert db.count_deferred_deals() == 0
 
 
-def test_parked_deal_is_posted_anyway_once_the_retry_budget_is_used_up(monkeypatch):
+def test_parked_deal_is_never_force_posted_after_retry_budget(monkeypatch):
     from influencer_hub import worker
 
     deal = "🔥 Shoes ₹499 https://www.flipkart.com/nike-shoes/p/itmABC123?pid=SHO123"
@@ -380,17 +485,17 @@ def test_parked_deal_is_posted_anyway_once_the_retry_budget_is_used_up(monkeypat
     monkeypatch.setattr(earnkaro, "convert_links", AsyncMock(return_value={}))
 
     result = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer_id]))
-    assert result[influencer_id][channel_id] == "skipped:no_our_affiliate_after_guard"
+    assert result[influencer_id][channel_id] == "skipped:strict_commission_unverified"
     assert db.count_deferred_deals() == 1
 
     # First drain retries without converting: the budget is spent.
     assert asyncio.run(worker.drain_deferred_deals()) == 0
     assert db.deferred_deal_attempts(deal, "") == 1
 
-    # Second drain uses the last resort: post it rather than lose the deal.
-    assert asyncio.run(worker.drain_deferred_deals()) == 1
-    assert sent and "flipkart.com" in sent[0]
-    assert db.count_deferred_deals() == 0
+    # Retry exhaustion is not permission to post a raw link in strict mode.
+    assert asyncio.run(worker.drain_deferred_deals()) == 0
+    assert sent == []
+    assert db.count_deferred_deals() == 1
 
 
 def test_flow_api_publishes_the_retry_queue(monkeypatch, tmp_path):
@@ -570,10 +675,10 @@ def test_pipeline_parks_a_deal_whose_only_link_is_an_unresolved_wrapper(monkeypa
     monkeypatch.setattr(earnkaro, "convert_links", AsyncMock(return_value={}))
     monkeypatch.setattr(pipeline, "DEFERRED_RETRY_DELAY_SECONDS", 0)
     result = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer_id]))
-    assert result[influencer_id][channel_id] == "skipped:no_our_affiliate_after_guard"
+    assert result[influencer_id][channel_id] == "skipped:strict_commission_unverified"
     assert sent == []
     assert db.count_deferred_deals() == 1
-    assert db.due_deferred_deals()[0]["reason"] == "unresolved_wrapper"
+    assert db.due_deferred_deals()[0]["reason"] == "strict_commission_unverified"
 
 
 def test_pipeline_posts_our_link_when_a_wrapper_resolves_to_a_merchant(monkeypatch):
@@ -587,7 +692,7 @@ def test_pipeline_posts_our_link_when_a_wrapper_resolves_to_a_merchant(monkeypat
     monkeypatch.setattr(link_router, "resolve_opaque_links_in_text_async", fake_resolve)
     monkeypatch.setattr(
         earnkaro, "convert_links",
-        AsyncMock(return_value={target: f"https://ekaro.in/ek555555?affExtParam2={PUB}"}),
+        _verified_converter({target: f"https://ekaro.in/ek555555?affExtParam2={PUB}"}),
     )
     result = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer_id]))
     assert result[influencer_id][channel_id] == "posted"
@@ -653,7 +758,7 @@ def test_pipeline_converts_a_scheme_less_merchant_link(monkeypatch):
     target = "https://flipkart.com/nike-shoes/p/itmABC123?pid=SHO123"
     monkeypatch.setattr(
         earnkaro, "convert_links",
-        AsyncMock(return_value={target: f"https://ekaro.in/ek424242?affExtParam2={PUB}"}),
+        _verified_converter({target: f"https://ekaro.in/ek424242?affExtParam2={PUB}"}),
     )
     result = asyncio.run(pipeline.render_and_dispatch(
         "🔥 Shoes ₹499 flipkart.com/nike-shoes/p/itmABC123?pid=SHO123",
@@ -675,7 +780,7 @@ def test_a_wrapper_parked_deal_is_retried_and_published_converted(monkeypatch):
     monkeypatch.setattr(earnkaro, "credentials_configured", lambda: True)
     monkeypatch.setattr(
         earnkaro, "convert_links",
-        AsyncMock(return_value={target: f"https://ekaro.in/ek777777?affExtParam2={PUB}"}),
+        _verified_converter({target: f"https://ekaro.in/ek777777?affExtParam2={PUB}"}),
     )
 
     async def unresolved_resolver(text, tag=None, **kwargs):
@@ -683,7 +788,7 @@ def test_a_wrapper_parked_deal_is_retried_and_published_converted(monkeypatch):
 
     monkeypatch.setattr(link_router, "resolve_opaque_links_in_text_async", unresolved_resolver)
     first = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[influencer_id]))
-    assert first[influencer_id][channel_id] == "skipped:no_our_affiliate_after_guard"
+    assert first[influencer_id][channel_id] == "skipped:strict_commission_unverified"
     assert db.count_deferred_deals() == 1
     assert sent == []
 
@@ -702,7 +807,7 @@ def test_a_hypd_store_page_without_an_afflink_is_never_posted_as_ours(monkeypatc
     status, sent = _run(
         monkeypatch, "hypd_page", "🔥 Loot ₹499 https://hypd.store/products/abc123"
     )
-    assert status == "skipped:no_our_affiliate_after_guard"
+    assert status == "skipped:strict_commission_unverified"
     assert sent == []
 
 
