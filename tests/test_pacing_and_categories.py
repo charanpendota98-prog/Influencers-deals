@@ -148,16 +148,16 @@ def test_a_saving_flag_never_vetoes_a_real_product_deal():
     """A coupon word must not hide the product: the coupon is not a category.
 
     "🔥 BOAT AIRDOPES at ₹1299 · Use code BOAT500" is electronics. The keyword
-    lists know neither the brand nor the product, so the only thing they can see
+    lists previously knew neither the brand nor the product; they only saw
     is the word "code" — which used to drop the deal for any creator who asked
     for electronics, silently and for good.
     """
     branded = ("🔥 BOAT AIRDOPES at ₹1299 (MRP ₹2999)\n"
                "https://www.amazon.in/dp/B09N3ZNHTY\n"
                "Use code BOAT500 · Sizes M, L, XL")
-    assert lr.classify_deal_category(branded) == ["recharge_freebies"]
+    assert lr.classify_deal_category(branded) == ["electronics", "recharge_freebies"]
     assert lr.matches_category_filter(branded, "electronics") is True
-    assert lr.matches_category_filter(branded, "clothing") is True      # unknown too
+    assert lr.matches_category_filter(branded, "clothing") is False     # now recognised
     # …while a deal that really belongs elsewhere is still dropped.
     saree = "🥻 Banarasi Silk Saree with Blouse Piece at ₹899"
     assert lr.matches_category_filter(saree, "electronics") is False

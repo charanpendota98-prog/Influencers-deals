@@ -118,7 +118,7 @@ async def inspect_channel(identifier: str, timeout: float = 8.0) -> dict:
     except asyncio.TimeoutError:
         return {"ok": False, "error": f"Telegram did not answer within {timeout:.0f}s"}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)[:200]}
+        return {"ok": False, "error": type(exc).__name__ + ": " + str(exc)[:200]}
 
 
 def _isolated_slot(loop: asyncio.AbstractEventLoop) -> str:

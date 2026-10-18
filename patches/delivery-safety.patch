@@ -1,0 +1,2198 @@
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+new file mode 100644
+index 0000000..75a5056
+--- /dev/null
++++ b/.github/workflows/tests.yml
+@@ -0,0 +1,21 @@
++name: Safety regression suite
++on:
++  pull_request:
++  push:
++    branches: [main]
++permissions:
++  contents: read
++jobs:
++  tests:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++      - uses: actions/setup-python@v5
++        with:
++          python-version: '3.11'
++      - run: python -m pip install -r requirements.txt pytest pytest-asyncio
++      - run: PYTHONPATH=. python -m pytest -q tests
++      - run: bash -n deploy/deploy.sh
++      - run: python patches/apply-delivery-safety.py --check
+diff --git a/README.md b/README.md
+index 7b08c63..5a43324 100644
+--- a/README.md
++++ b/README.md
+@@ -1347,3 +1347,151 @@ the bot process is alive, writes to `vm_stats`, and posts a compact card to
+ `dummy`) let you stage a new influencer against isolated test sources before
+ pointing them at the live shared pool. Dummy sources are kept completely
+ separate from production.
++
++### Destination safety and preview-first repairs
++
++Each destination has its own durable permanent-failure streak in
++`delivery_failures`. Only **3 consecutive known permanent delivery failures**
++(e.g. Telegram `ChatWriteForbiddenError`) pause an active channel. The pause is
++recorded in the team audit with its reason. Successful delivery resets the
++streak; transient/unknown send failures break it. Skipped/deferred deals never
++increment it. Dashboard re-enable resets it, so an operator gets a fresh start.
++A watchdog persistence error is logged but cannot stop ingestion. Classification
++is intentionally conservative: timeouts, FloodWait and unknown errors never
++cause automatic pauses. No live posting guarantee is implied by a green check.
++
++```bash
++python -m influencer_hub.cli check-channels         # read-only Telegram checks
++python -m influencer_hub.cli check-channels --fix   # explicit permanent fixes
++python -m influencer_hub.cli doctor --channels     # local preview only
++python -m influencer_hub.cli doctor --channels --resolve-channels # read-only lookup
++python -m influencer_hub.cli doctor --channels --resolve-channels --apply-channel-fixes
++```
++
++Doctor never sends or joins. Only `--apply-channel-fixes` permits its writes;
++transient Telegram lookup failures report `deferred` and leave channels active,
++even during apply. Review permissions and fix the account/channel before
++re-enabling paused destinations. Self-check warns about threshold breaches and
++distinguishes a starting worker from a stale heartbeat (>180 seconds).
++
++Amazon sponsored `/sspa/click?url=...` links re-sign the **inner** Amazon
++URL with the creator's tag while preserving other inner and outer query
++parameters. Ordinary product canonicalization remains unchanged.
++
++For an older checkout at this release's base, copy both
++`patches/apply-delivery-safety.py` and `patches/delivery-safety.patch` together:
++
++```bash
++python patches/apply-delivery-safety.py --check
++python patches/apply-delivery-safety.py --dry-run
++python patches/apply-delivery-safety.py
++PYTHONPATH=. python -m pytest -q tests
++```
++
++The installer checks the complete patch, uses atomic `git apply` (no partial
++rejects), syntax-checks and smoke-imports installed modules, and refuses a plain
++repeat apply (exit 1; `--check` / `--dry-run` return 0 when installed). Missing
++runtime dependencies permit syntax-only verification with an explicit warning;
++this is not a substitute for the full test suite. Mismatch exits 2 without
++applying. Tests and documentation are included in the bundle. Neither installer
++nor preview restarts services. Deployment executes a stable temporary script
++snapshot before fast-forwarding, avoiding mid-run shell input replacement.
++
++### Easier category setup and product checks
++
++Open **Guided setup → Deals & hours**:
++
++1. Pick **Everything**, **Tech & appliances**, **Fashion & beauty**, or
++   **Family essentials**. Quick picks only tick boxes; they do not save or post.
++2. Fine-tune individual categories. Appliances, gaming, pets and travel now have
++   explicit choices. Existing `books`, `toys`, `jewellery` settings also match the
++   classifier's canonical IDs (no database rewrite needed).
++3. Paste a product/deal and press **Preview these unsaved choices** to test
++   the creator's complete category/product policy. **Check saved rules** tests
++   persisted preferences, optionally narrowed by a specific owned channel.
++   **Easy Setup** also has a basic **Check product — no posts** category preview;
++   use its Guided Setup link for per-creator strict rules.
++4. Review the settings, save, and use the existing review/go-live flow.
++
++Offline CLI equivalent (does not initialise or modify the database):
++
++```bash
++python -m influencer_hub.cli category-preview \
++  --text "Pet shampoo 500ml ₹299" --categories pet_supplies
++python -m influencer_hub.cli category-preview \
++  --text "Samsung smartphone gold colour" --categories electronics
++```
++
++Detection uses bounded, local word/phrase rules: no AI service, API key or
++product-page request is needed. Product phrases distinguish pet shampoo from
++human toiletries, notebook computers from stationery, and smart watches from
++ordinary fashion watches. Multi-product posts can have multiple categories;
++any selected category can match in flexible mode (strict mixed-post rules are
++explained below). Common join/follow/subscribe footer lines and
++URLs are ignored so a link's tracking parameters cannot choose the category.
++A limited Telugu vocabulary (e.g. చీరలు, బియ్యం, మొబైల్) is supported, not full
++multilingual understanding. Ambiguous colour/marketing terms alone (e.g. gold,
++silver) are not treated as sufficient product evidence.
++
++**Limits:** these are explainable heuristics, not verified catalogue metadata.
++Rule scores are not accuracy probabilities. Unknown products pass by default;
++`CATEGORY_FILTER_STRICT_UNKNOWN=on` holds unknowns on category-restricted feeds.
++The preview identifies unknown/invalid filters and never silently changes saved
++settings. Category ALLOW does not bypass channel readiness, price, schedule,
++affiliate or network checks. The preview API is an authenticated, CSRF-protected,
++read-only POST, keeping pasted product text out of query URLs.
++
++### Per-creator “only these products” rules
++
++For each creator, open **Guided setup → Deals & hours**, or their creator page
++→ **🎯 Product preferences**. Choose categories, choose **Strict**, preview,
++and **Save**. Nothing is changed for any other creator. Strict is suggested by
++the new form, but existing installations keep their previous behaviour until
++an operator explicitly saves a strict policy.
++
++Strict creator rules form a hard cap:
++
++- **Known selected products only.** Unknown products and offer-only text do not
++  enter a category-restricted feed. An explicitly selected Recharge & Offers
++  feed can accept recognised offers without a recognised physical product.
++- **Optional product phrases:** `smartphone, earbuds` means at least one whole
++  word/phrase must appear in product text. This narrows a broad category, e.g.
++  two Electronics creators can request phones and headphones separately.
++- **Never post:** excluded categories and blocked phrases always win; e.g.
++  exclude Gaming, or block `refurbished, renewed`. URL parameters and common
++  join/follow/subscribe footer lines do not count as product phrases.
++- **Mixed posts:** default is to hold detected outside-category product
++  evidence. Shared evidence is not falsely treated as another product: shoes
++  can match Footwear despite also being tagged Clothing. A separate shirt in
++  the post is outside-category evidence. Operators can explicitly allow a mixed
++  post when at least one selected category matches; exclusions still win.
++- **Channel filters only narrow** strict creator choices. A channel configured
++  with All categories cannot widen an Electronics-only creator to fashion.
++  A channel configured for Clothing under an Electronics-only creator may
++  therefore receive nothing; use the saved-channel preview to diagnose it.
++- **Normal posts, deferred retries, hourly highlights and WhatsApp mirrors**
++  respect strict rules. Mirror display-filter bypass and forced unconverted
++  retries do not bypass this creator product cap.
++
++**Preview these unsaved choices** tests the form without saving. **Check saved
++rules** tests the persisted creator policy and an optional owned channel. The
++preview uses the same pure decision function as delivery; no network fetch,
++message send, audit mutation or settings write occurs for an authorised preview.
++Saving is authenticated, CSRF-protected, validated and creator-scoped, with an
++audit event. Malformed stored strict rules hold delivery instead of silently
++falling back. Invalid saves leave the existing category/rule configuration intact.
++
++In strict mode choose at least one category or explicitly choose **All
++categories**. All categories with no extra restrictions intentionally remains
++unrestricted. Use the creator's master pause switch if nothing should post.
++Flexible mode preserves previous category routing; extra strict exclusions and
++phrase controls are inactive in that mode. Existing per-channel legacy override
++behaviour is unchanged for flexible creators.
++
++These remain offline heuristics, **not catalogue or per-item verification**.
++Mixed-product detection only covers recognised evidence; an unrecognised item
++inside a recognised deal may not be identified. Review the evidence, test real
++source examples, and use narrow product phrases for curated feeds. There is no
++claim of perfect semantic classification. SQLite backups preserve these rules;
++the older CSV inventory format does not currently transfer the new preference
++JSON, so recheck preferences after CSV-based migrations.
+diff --git a/VERIFICATION.md b/VERIFICATION.md
+index ad56929..89d6eeb 100644
+--- a/VERIFICATION.md
++++ b/VERIFICATION.md
+@@ -519,3 +519,50 @@ The panel names the fix. The short versions:
+ * **Mirror** amber → the destination has to pass one visible Test post first
+   (by design: nothing half-configured goes live).
+ * **WhatsApp hub** red → hub service, `WA_HUB_TOKEN` match, then retry.
++
++## Destination safety regression checks (2026-10-18)
++
++Run `PYTHONPATH=. python -m pytest -q tests` in the installed environment.
++`tests/test_delivery_safety.py` pins the 3-permanent-failure threshold, independent
++streaks, success/re-enable resets, transient/skip/defer safety, fail-open watchdog,
++Doctor preview/apply separation, transient Telegram deferral, nested Amazon
++query preservation, heartbeat states, and installer repeat protection.
++No live Telegram/WhatsApp account was used: network delivery remains an
++operator verification step. Read-only scans cannot prove successful posting.
++
++Verified locally on the session branch: **757 passed**, plus `bash -n
++ deploy/deploy.sh` and installer fresh-base apply/mismatch/rerun tests. GitHub
++Actions runs the same suite on pull requests; merging requires its success.
++
++## Product categories and easy setup follow-up
++
++Added product evidence tests for alias/picker consistency, URL/footer isolation,
++phrase disambiguation, multi-product offers, selected Telugu terms, unknown
++policy, API input limits, admin authentication, CSRF, read-only database state,
++quick-pick rendering and offline CLI operation. The prior Airdopes unknown-case
++fixture now expects electronics because the product name is recognised.
++Category preview controls sit outside saving forms: checking a product cannot
++submit creator settings. No network product lookup or live post was performed.
++
++Final combined local verification: **791 tests passed**. Guided setup and Easy
++Setup rendered successfully; their rendered inline JavaScript passed
++`node --check`. Deploy shell syntax and complete-bundle installer checks passed.
++The earlier GitHub App workflow-permission blocker remains unresolved; this
++follow-up did not retry remote operations.
++
++## Strict creator product preferences follow-up
++
++New tests cover independent creator rules, category-only and product-phrase
++requests, exclusions, shared-vs-mixed evidence, manufacturer ambiguity, strict
++unknown handling, explicit All selection, channel narrowing, malformed-policy
++fail-closed behaviour, atomic validation, idempotent migration, cache result
++isolation, authenticated/CSRF-protected saving, draft/saved preview parity,
++channel ownership, normal pipeline delivery, dispatch boundary, hourly history
++and real mirror routing with fake senders. No live platform sends were used.
++
++Final strict-preference verification: **845 tests passed**. Guided Setup, creator
++detail and Easy Setup rendered with a temporary database and stubbed WhatsApp
++status; their inline scripts passed `node --check`. Installer `--check`, fresh
++base installation/mismatch/rerun tests and deploy shell syntax passed. Remote
++operations were not retried; the previously reported workflow-permission
++blocker remains unresolved.
+diff --git a/dashboard/app.py b/dashboard/app.py
+index 51b7604..b1164cf 100644
+--- a/dashboard/app.py
++++ b/dashboard/app.py
+@@ -769,6 +769,8 @@ _AUDIT_EXEMPT_ENDPOINTS = {
+     "static", "login", "logout", "team_login", "team_add", "reauthenticate_setup_change",
+     "lock_setup_changes", "amazon_short_link", "meesho_hypd_short_link",
+     "lehlah_meesho_short_link", "healthz",
++    "category_preview_api",  # read-only POST: product text stays out of URLs/logs
++    "save_product_preferences",  # writes its own creator-scoped audit event
+ }
+ 
+ 
+@@ -4167,6 +4169,48 @@ def guided_channels_step():
+     return redirect(url_for("guided_setup", creator=inf_id, step="categories"))
+ 
+ 
++@app.context_processor
++def product_policy_context():
++    from influencer_hub.category_preferences import view
++    return {"category_preference_view": view, "product_category_choices": onboarding.CATEGORY_CHOICES,
++            "product_category_picked": onboarding.selected_categories}
++
++
++def _product_preferences_from_form(profile):
++    from influencer_hub.category_preferences import parse
++    current = parse()
++    current.update(mode=request.form.get("category_mode", "strict"),
++                   mixed=request.form.get("mixed_products", "block"),
++                   excluded_categories=request.form.getlist("excluded_categories"),
++                   required_keywords=request.form.get("required_keywords", ""),
++                   blocked_keywords=request.form.get("blocked_keywords", ""))
++    return json.dumps(parse(current), sort_keys=True)
++
++
++@app.route("/influencer/<int:inf_id>/product-preferences", methods=["POST"])
++def save_product_preferences(inf_id):
++    from influencer_hub.category_preferences import validate_spec
++    profile = db.get_influencer(inf_id)
++    if not profile:
++        abort(404)
++    try:
++        picked = request.form.getlist("categories")
++        if len(picked) > 50:
++            raise ValueError("Too many categories.")
++        if not picked and request.form.get("category_mode", "strict") == "strict":
++            raise ValueError("Select a category, or explicitly choose All categories.")
++        spec = validate_spec(",".join(picked))
++        preferences = _product_preferences_from_form(profile)
++    except ValueError as exc:
++        flash(str(exc) + " Nothing was saved.", "error")
++        return redirect(url_for("influencer_detail", inf_id=inf_id) + "#product-preferences")
++    db.update_influencer(inf_id, categories=spec, category_preferences=preferences)
++    security.audit(_session_actor(), _session_role(), "product_preferences_saved", target=str(inf_id),
++                   detail="categories=" + (spec or "all") + " preferences=" + preferences, ip=_client_ip())
++    flash("Product preferences saved for this creator only. Channels can narrow strict rules, never widen them.", "success")
++    return redirect(url_for("influencer_detail", inf_id=inf_id) + "#product-preferences")
++
++
+ @app.route("/guided/categories", methods=["POST"])
+ def guided_categories_step():
+     """Step 3: which deals, which hours, which networks (pre-filled from presets)."""
+@@ -4179,6 +4223,18 @@ def guided_categories_step():
+     picked = request.form.getlist("categories")
+     free_text = request.form.get("categories_text", "").strip()
+     categories = onboarding.category_text(picked) if picked else free_text
++    preferences = None
++    if "category_mode" in request.form:
++        from influencer_hub.category_preferences import validate_spec
++        try:
++            if not picked and not free_text and request.form.get("category_mode") == "strict":
++                raise ValueError("Select a category, or explicitly choose All categories.")
++            # Validate original values before the picker can discard unknown IDs.
++            validate_spec(",".join(picked) if picked else free_text)
++            preferences = _product_preferences_from_form(profile)
++        except ValueError as exc:
++            flash(str(exc) + " Nothing was saved.", "error")
++            return redirect(url_for("guided_setup", creator=inf_id, step="categories"))
+     schedule = request.form.get("posting_schedule", "").strip()
+     price_filter = request.form.get("price_filter", "").strip() or "all"
+     flags = {}
+@@ -4189,7 +4245,7 @@ def guided_categories_step():
+               "warning")
+         flags["allow_amazon"] = True
+     db.update_influencer(inf_id, categories=categories, posting_schedule=schedule,
+-                         price_filter=price_filter, **flags)
++                         price_filter=price_filter, category_preferences=preferences, **flags)
+     mirror = request.form.get("mirror_whatsapp")
+     main = db.get_channel(inf_id, "broadcast")
+     if main and mirror in {"0", "1"}:
+@@ -4882,6 +4938,58 @@ def api_flow():
+     ))
+ 
+ 
++@app.route("/api/category-preview", methods=["POST"])
++def category_preview_api():
++    """Local-only product evidence; never sends, fetches URLs or changes settings."""
++    from influencer_hub.categories import preview
++    values = request.get_json(silent=True) if request.is_json else request.form.to_dict()
++    if not isinstance(values, dict):
++        return jsonify(ok=False, error="invalid_input"), 400
++    text = values.get("text", "")
++    selected = values.get("categories", "")
++    if not isinstance(text, str) or not isinstance(selected, str):
++        return jsonify(ok=False, error="invalid_input"), 400
++    if not text.strip():
++        return jsonify(ok=False, error="Paste a product or deal first."), 400
++    if len(text) > 20000 or len(selected) > 1000:
++        return jsonify(ok=False, error="Preview input is too long."), 400
++    if "preferences" in values or "creator_id" in values:
++        from influencer_hub.category_preferences import evaluate, parse, validate_spec
++        def preview_id(value):
++            text_id = str(value)
++            if (isinstance(value, bool) or len(text_id) > 19 or not text_id.isascii()
++                    or not text_id.isdecimal()):
++                raise ValueError("Invalid creator/channel id")
++            number = int(text_id)
++            if not 0 < number <= 9223372036854775807:
++                raise ValueError("Invalid creator/channel id")
++            return number
++
++        try:
++            channel = None
++            if "preferences" in values:
++                if not isinstance(values["preferences"], dict):
++                    raise ValueError("preferences must be an object")
++                profile = {"categories": validate_spec(selected),
++                           "category_preferences": json.dumps(parse(values["preferences"]))}
++            else:
++                creator_id = preview_id(values["creator_id"])
++                profile = db.get_influencer(creator_id)
++                if not profile:
++                    return jsonify(ok=False, error="Creator not found"), 404
++                if "channel_id" in values:
++                    channel_id = preview_id(values["channel_id"])
++                    channel = next((ch for ch in db.list_channels(profile["id"])
++                                    if ch["id"] == int(channel_id)), None)
++                    if not channel:
++                        return jsonify(ok=False, error="Channel not found for this creator"), 404
++            decision = evaluate(text, profile, channel)
++            return jsonify(ok=True, preview=decision)
++        except ValueError as exc:
++            return jsonify(ok=False, error=str(exc)), 400
++    return jsonify(ok=True, preview=preview(text, selected))
++
++
+ @app.route("/api/routing-preview")
+ def routing_preview_api():
+     """Live routing table for the current easy-setup form values."""
+diff --git a/dashboard/templates/_category_preview.html b/dashboard/templates/_category_preview.html
+new file mode 100644
+index 0000000..331ce97
+--- /dev/null
++++ b/dashboard/templates/_category_preview.html
+@@ -0,0 +1,56 @@
++<div class="category-helper" style="margin:16px 0;padding:16px;border:1px solid var(--border, #ddd);border-radius:12px;">
++  <h3>🔎 Check the product before saving</h3>
++  <p><a href="{{ url_for('guided_setup') }}">🎯 Set a creator’s strict product rules in Guided Setup</a></p>
++  <p class="hint">Paste a deal → see its categories and why. Read-only: no posting, joining, link opening or settings changes.</p>
++  <label>Product name or deal text
++    <textarea class="category-sample" rows="3" maxlength="20000" style="width:100%;box-sizing:border-box;" placeholder="Example: Samsung smartphone ₹14999 with coupon code"></textarea>
++  </label>
++  <label>Categories to test (comma separated; empty = all)
++    <input class="category-filter" maxlength="1000" placeholder="electronics,gaming" style="width:100%;box-sizing:border-box;" />
++  </label>
++  <p class="hint">On guided setup, your category checkboxes are used unless you enter a filter above. Unknown products pass by default; strict unknown mode can hold them.</p>
++  <button type="button" class="btn btn-secondary category-check">Check product — no posts</button>
++  <div class="category-result" role="status" aria-live="polite" style="margin-top:10px;white-space:pre-wrap;"></div>
++</div>
++<script>
++(function () {
++  'use strict';
++  var script = document.currentScript;
++  var panel = script.previousElementSibling;
++  var button = panel.querySelector('.category-check');
++  var result = panel.querySelector('.category-result');
++  button.addEventListener('click', async function () {
++    var scope = panel.closest('section');
++    var boxes = scope ? scope.querySelectorAll('input[name="categories"]:checked') : [];
++    var categories = panel.querySelector('.category-filter').value.trim();
++    if (!categories && boxes.length) {
++      categories = Array.from(boxes).map(function (box) { return box.value; }).join(',');
++    }
++    var token = document.querySelector('input[name="_csrf_token"]');
++    if (!token) { result.textContent = 'Reload the page to get a secure preview token.'; return; }
++    button.disabled = true;
++    result.textContent = 'Checking locally…';
++    try {
++      var response = await fetch('{{ url_for("category_preview_api") }}', {
++        method: 'POST', credentials: 'same-origin',
++        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': token.value},
++        body: JSON.stringify({text: panel.querySelector('.category-sample').value, categories: categories})
++      });
++      var data = await response.json();
++      if (!response.ok || !data.ok) { throw new Error(data.error || 'Preview unavailable'); }
++      var p = data.preview;
++      var lines = [(p.passes ? '✅ Category filter: ALLOW' : '⏸ Category filter: HOLD'),
++        p.reason, 'Categories: ' + p.categories.join(', '),
++        'Primary: ' + p.primary + (p.multi_category ? ' · Multiple categories detected' : '')];
++      Object.keys(p.evidence).forEach(function (key) {
++        lines.push('• ' + key + ': ' + p.evidence[key].join(', '));
++      });
++      if (p.invalid_categories.length) { lines.push('⚠ Unrecognised filters: ' + p.invalid_categories.join(', ')); }
++      lines.push(p.notice, 'Category check only — channel permissions, price, schedules and network routing still apply.');
++      result.textContent = lines.join('\n');
++    } catch (error) {
++      result.textContent = 'Could not preview: ' + error.message;
++    } finally { button.disabled = false; }
++  });
++})();
++</script>
+diff --git a/dashboard/templates/_product_policy_fields.html b/dashboard/templates/_product_policy_fields.html
+new file mode 100644
+index 0000000..a07ed78
+--- /dev/null
++++ b/dashboard/templates/_product_policy_fields.html
+@@ -0,0 +1,118 @@
++{% set policy = category_preference_view(policy_profile) %}
++<fieldset class="product-policy" data-creator="{{ policy_profile.id }}" style="margin:16px 0;padding:16px;border:1px solid var(--border, #ddd);border-radius:12px;">
++  <legend><strong>🎯 Only what {{ policy_profile.name }} wants</strong></legend>
++  {% if policy.error %}<p role="alert">⚠ {{ policy.error }} Delivery is held until valid preferences are saved.</p>{% endif %}
++  <p class="hint">Saved mode: <strong>{{ policy.mode }}</strong>. Strict changes apply only after Save. Other creators are not changed.</p>
++  <label>Delivery style
++    <select name="category_mode">
++      <option value="strict" {% if policy.mode == 'strict' or not policy_profile.category_preferences %}selected{% endif %}>Strict — selected products only; hold unknowns</option>
++      <option value="legacy" {% if policy.mode == 'legacy' and policy_profile.category_preferences %}selected{% endif %}>Flexible — previous category behaviour</option>
++    </select>
++  </label>
++  <label>Posts containing multiple product types
++    <select name="mixed_products">
++      <option value="block" {% if policy.mixed == 'block' %}selected{% endif %}>Hold if another product type is outside my selection</option>
++      <option value="allow" {% if policy.mixed == 'allow' %}selected{% endif %}>Allow if at least one selected product type matches</option>
++    </select>
++  </label>
++  <details style="margin-top:12px;">
++    <summary>Optional: never post these categories / specific product phrases</summary>
++    <p class="hint">Exclusions win over allowed categories. Phrase filters apply to product text, not URLs or common channel footers.</p>
++    <div style="display:flex;flex-wrap:wrap;gap:12px;">
++      {% for key, label, hint in product_category_choices if key != 'all' %}
++        <label><input type="checkbox" name="excluded_categories" value="{{ key }}"
++          {% if key in product_category_picked(policy.excluded_categories|join(',')) %}checked{% endif %} /> Never: {{ label }}</label>
++      {% endfor %}
++    </div>
++    <label>Must contain at least one product phrase (optional, comma separated)
++      <input name="required_keywords" maxlength="1600" value="{{ policy.required_keywords|join(', ') }}" placeholder="smartphone, earbuds" style="width:100%;box-sizing:border-box;" />
++    </label>
++    <label>Never contain any of these phrases (optional, comma separated)
++      <input name="blocked_keywords" maxlength="1600" value="{{ policy.blocked_keywords|join(', ') }}" placeholder="refurbished, renewed, used" style="width:100%;box-sizing:border-box;" />
++    </label>
++    <p class="hint">Up to 20 literal phrases per field; 80 characters per phrase. No regex. In flexible mode these extra restrictions are inactive.</p>
++  </details>
++  <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border, #ddd);">
++    <label>Try a deal before saving
++      <textarea class="policy-sample" rows="3" maxlength="20000" placeholder="Paste product text or a deal" style="width:100%;box-sizing:border-box;"></textarea>
++    </label>
++    <button type="button" class="btn btn-secondary policy-preview-draft">Preview these unsaved choices</button>
++    <label>Saved channel filter
++      <select class="policy-channel">
++        <option value="">Creator rules only</option>
++        {% for ch in policy_channels|default([]) %}
++          <option value="{{ ch.id }}">{{ ch.title or ch.identifier }} — {{ ch.categories or 'inherits creator categories' }}</option>
++        {% endfor %}
++      </select>
++    </label>
++    <button type="button" class="btn btn-secondary policy-preview-saved">Check saved rules</button>
++    <div class="policy-result" role="status" aria-live="polite" style="margin-top:10px;white-space:pre-wrap;"></div>
++    <p class="hint">Both checks are read-only: no posts, URL visits or settings changes. Unknown products are held in strict restricted feeds. All categories with no extra restrictions remains unrestricted. Channels can narrow strict creator rules, never widen them. Category approval does not bypass affiliate, readiness, price or schedule checks.</p>
++  </div>
++</fieldset>
++<script>
++(function () {
++  'use strict';
++  var panel = document.currentScript.previousElementSibling;
++  var form = panel.closest('form');
++  var draft = panel.querySelector('.policy-preview-draft');
++  var saved = panel.querySelector('.policy-preview-saved');
++  var result = panel.querySelector('.policy-result');
++  var categoryBoxes = Array.from(form.querySelectorAll('input[name="categories"]'));
++  categoryBoxes.forEach(function (box) {
++    box.addEventListener('change', function () {
++      if (!box.checked) { return; }
++      categoryBoxes.forEach(function (other) {
++        if ((box.value === 'all' && other !== box) || (box.value !== 'all' && other.value === 'all')) { other.checked = false; }
++      });
++    });
++  });
++  async function check(useSaved) {
++    var text = panel.querySelector('.policy-sample').value;
++    var payload = {text: text};
++    if (useSaved) {
++      payload.creator_id = panel.dataset.creator;
++      var channel = panel.querySelector('.policy-channel').value;
++      if (channel) { payload.channel_id = channel; }
++    } else {
++      var picked = categoryBoxes.filter(function (box) { return box.checked; }).map(function (box) { return box.value; });
++      var free = form.querySelector('input[name="categories_text"]');
++      payload.categories = picked.length ? picked.join(',') : (free ? free.value : '');
++      if (!payload.categories.trim() && panel.querySelector('[name="category_mode"]').value === 'strict') {
++        result.textContent = 'Select a category, or explicitly choose All categories.';
++        return;
++      }
++      payload.preferences = {
++        mode: panel.querySelector('[name="category_mode"]').value,
++        mixed: panel.querySelector('[name="mixed_products"]').value,
++        excluded_categories: Array.from(panel.querySelectorAll('[name="excluded_categories"]:checked')).map(function (box) { return box.value; }),
++        required_keywords: panel.querySelector('[name="required_keywords"]').value,
++        blocked_keywords: panel.querySelector('[name="blocked_keywords"]').value
++      };
++    }
++    var token = form.querySelector('[name="_csrf_token"]');
++    if (!token) { result.textContent = 'Reload this page to renew its security token.'; return; }
++    draft.disabled = saved.disabled = true;
++    result.textContent = 'Checking product preferences locally…';
++    try {
++      var response = await fetch('{{ url_for("category_preview_api") }}', {
++        method: 'POST', credentials: 'same-origin',
++        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': token.value},
++        body: JSON.stringify(payload)
++      });
++      var data = await response.json();
++      if (!response.ok || !data.ok) { throw new Error(data.error || 'Preview unavailable'); }
++      var p = data.preview;
++      var lines = [(useSaved ? 'SAVED rules' : 'UNSAVED choices') + ' · ' + p.mode,
++        p.passes ? '✅ Product preferences: ALLOW' : '⏸ Product preferences: HOLD', p.reason];
++      if (p.categories) { lines.push('Detected: ' + p.categories.join(', ')); }
++      Object.keys(p.evidence || {}).forEach(function (key) { lines.push('• ' + key + ': ' + p.evidence[key].join(', ')); });
++      lines.push('No message was sent. No preferences were saved. Offline rules are not catalogue verification.');
++      result.textContent = lines.join('\n');
++    } catch (error) { result.textContent = 'Could not preview: ' + error.message; }
++    finally { draft.disabled = saved.disabled = false; }
++  }
++  draft.addEventListener('click', function () { check(false); });
++  saved.addEventListener('click', function () { check(true); });
++})();
++</script>
+diff --git a/dashboard/templates/easy_setup.html b/dashboard/templates/easy_setup.html
+index f00315b..8409045 100644
+--- a/dashboard/templates/easy_setup.html
++++ b/dashboard/templates/easy_setup.html
+@@ -347,7 +347,9 @@
+     <span class="hint">Easy Setup saves immediately — no password. Only removals (delete a channel, a creator or a deal source) ask for the password, once per unlock window.</span>
+   </div>
+ </form>
+-
++<section class="easy-card">
++  {% include "_category_preview.html" %}
++</section>
+ 
+ <section class="easy-card" id="bulk-setup" style="border-color:#7c3aed;">
+   <h2>📦 Setting up 1000+ creators? One paste, done</h2>
+diff --git a/dashboard/templates/guided.html b/dashboard/templates/guided.html
+index d35188d..aeff005 100644
+--- a/dashboard/templates/guided.html
++++ b/dashboard/templates/guided.html
+@@ -217,9 +217,16 @@
+       Pick the categories this creator wants (leave “All categories” for everything), then the
+       hours and the networks. The defaults you set once on the setup page are already filled in.
+     </p>
+-    <form method="post" action="{{ url_for('guided_categories_step') }}" class="auth-form">
++    <form id="guided-category-form" method="post" action="{{ url_for('guided_categories_step') }}" class="auth-form">
+       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+       <input type="hidden" name="creator" value="{{ guided_profile.id }}" />
++      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;" aria-label="Category quick picks">
++        <button type="button" class="btn btn-secondary category-preset" data-categories="all">🌟 Everything</button>
++        <button type="button" class="btn btn-secondary category-preset" data-categories="electronics,gaming,appliances">📱 Tech & appliances</button>
++        <button type="button" class="btn btn-secondary category-preset" data-categories="clothing,footwear,jewellery,beauty">👗 Fashion & beauty</button>
++        <button type="button" class="btn btn-secondary category-preset" data-categories="home,daily,toys,pet_supplies">🏠 Family essentials</button>
++      </div>
++      <p class="hint">Quick picks only tick boxes. Review them, then save below — nothing goes live automatically.</p>
+       <div class="cat-grid">
+         {% for value, label, hint in guided_categories %}
+           <label title="{{ hint }}">
+@@ -232,6 +239,9 @@
+       <p class="hint" style="margin-top:6px;">
+         Ticking “All categories” clears the rest — it means <em>any loot</em>.
+       </p>
++      {% with policy_profile=guided_profile, policy_channels=guided_channels %}
++        {% include "_product_policy_fields.html" %}
++      {% endwith %}
+       <div class="guided-grid" style="margin-top:10px;">
+         <label>Posting hours
+           <input name="posting_schedule" maxlength="60"
+@@ -252,6 +262,7 @@
+           <input name="categories_text" maxlength="200"
+                  value="{{ guided_profile.categories or '' }}"
+                  placeholder="electronics,fashion" />
++          <span class="hint">Used only when no category boxes are checked. Use All categories explicitly for an unrestricted strict feed.</span>
+         </label>
+       </div>
+       <div class="cat-grid" style="margin-top:12px;">
+@@ -337,7 +348,14 @@
+ (function () {
+   "use strict";
+   // "All categories" clears the specific ones: it means any loot.
+-  var boxes = Array.prototype.slice.call(document.querySelectorAll('input[name="categories"]'));
++  var categoryForm = document.getElementById('guided-category-form');
++  var boxes = categoryForm ? Array.prototype.slice.call(categoryForm.querySelectorAll('input[name="categories"]')) : [];
++  document.querySelectorAll('.category-preset').forEach(function (button) {
++    button.addEventListener('click', function () {
++      var selected = button.dataset.categories.split(',');
++      boxes.forEach(function (box) { box.checked = selected.indexOf(box.value) !== -1; });
++    });
++  });
+   boxes.forEach(function (box) {
+     box.addEventListener("change", function () {
+       if (box.value === "all" && box.checked) {
+diff --git a/dashboard/templates/influencer.html b/dashboard/templates/influencer.html
+index 617a87e..649b60a 100644
+--- a/dashboard/templates/influencer.html
++++ b/dashboard/templates/influencer.html
+@@ -16,6 +16,7 @@
+       Amazon Associate Tag: <code style="font-size: 14px; font-weight: bold; background: #1e3a8a; color: #93c5fd; padding: 3px 8px; border-radius: 4px;">{{ inf.amazon_tag }}</code> · 
+       {% if inf.phone_number %}<span style="color:#38bdf8; font-family:monospace; margin-right:8px;">📞 {{ inf.phone_number }}</span> · {% endif %}
+       Status: <b>{{ '🟢 Active' if inf.active else '🔴 Paused' }}</b> ·
++      <a href="#product-preferences">🎯 Product preferences</a> ·
+       {% if inf.insta_id %}<a href="https://instagram.com/{{ inf.insta_id.lstrip('@') }}" target="_blank" style="color:#e879f9; text-decoration:none;">📸 {{ inf.insta_id }}</a>{% endif %}
+     </p>
+   </div>
+@@ -813,4 +814,22 @@ function setInfSchedule(val) {
+   document.getElementById('inf-schedule-input').value = val;
+ }
+ </script>
++
++<section id="product-preferences" style="margin:20px 0;padding:20px;border:1px solid var(--border, #ddd);border-radius:12px;">
++  <h2>🎯 Product preferences for {{ inf.name }}</h2>
++  <p>Choose the products this creator wants. Strict rules apply to normal deals, hourly highlights and WhatsApp mirrors. Existing channel filters may narrow these choices.</p>
++  <form method="post" action="{{ url_for('save_product_preferences', inf_id=inf.id) }}">
++    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
++    <div style="display:flex;flex-wrap:wrap;gap:14px;">
++      {% for key, label, hint in product_category_choices %}
++        <label title="{{ hint }}"><input type="checkbox" name="categories" value="{{ key }}"
++           {% if key in product_category_picked(inf.categories) %}checked{% endif %} /> {{ label }}</label>
++      {% endfor %}
++    </div>
++    {% with policy_profile=inf, policy_channels=channels %}
++      {% include "_product_policy_fields.html" %}
++    {% endwith %}
++    <button type="submit" class="button-primary">Save only this creator’s product preferences</button>
++  </form>
++</section>
+ {% endblock %}
+diff --git a/deploy/deploy.sh b/deploy/deploy.sh
+index a0f35a6..75d5e7b 100755
+--- a/deploy/deploy.sh
++++ b/deploy/deploy.sh
+@@ -24,7 +24,16 @@
+ # No secret is ever printed: the preflight reports which .env keys exist, never values.
+ set -euo pipefail
+ 
+-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
++# Execute a stable copy: a fast-forward must not replace a running shell's input.
++if [[ "${HUB_DEPLOY_SNAPSHOT:-}" != "$0" ]]; then
++  export HUB_DEPLOY_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
++  snapshot="$(mktemp "${TMPDIR:-/tmp}/hub-deploy.XXXXXXXX.sh")"
++  cp -- "$0" "$snapshot"
++  export HUB_DEPLOY_SNAPSHOT="$snapshot"
++  exec bash "$snapshot" "$@"
++fi
++trap 'rm -f -- "$HUB_DEPLOY_SNAPSHOT"' EXIT
++REPO_ROOT="$HUB_DEPLOY_ROOT"
+ cd "$REPO_ROOT"
+ 
+ BRANCH=""
+diff --git a/influencer_hub/categories.py b/influencer_hub/categories.py
+new file mode 100644
+index 0000000..13a810d
+--- /dev/null
++++ b/influencer_hub/categories.py
+@@ -0,0 +1,130 @@
++"""Offline, explainable product categorisation. No fetching, sends or DB writes.
++
++Evidence strength is a rule score, not a calibrated probability. URLs and common
++channel footers are excluded so affiliate parameters cannot decide a product.
++"""
++from __future__ import annotations
++
++import re
++from copy import deepcopy
++from functools import lru_cache
++import unicodedata
++
++ALIASES = {
++    'jewellery': 'jewellery_accessories', 'jewelry': 'jewellery_accessories',
++    'toys': 'baby', 'books': 'books_stationery', 'grocery': 'daily',
++    'fashion': 'clothing', 'tech': 'electronics', 'pets': 'pet_supplies',
++    'travel': 'travel_luggage',
++}
++UNRESTRICTED = {'all', 'any', 'unrestricted', 'all categories', 'all deals', '*', 'no_filter', 'default'}
++# Product phrases override misleading words *within that phrase*, not the rest
++# of a multi-product post. Thus a gaming mouse cannot become an animal product.
++PHRASES = {
++    'gaming mouse': ('gaming', 'electronics'),
++    'gaming keyboard': ('gaming', 'electronics'),
++    'smart watch': ('electronics',), 'smartwatch': ('electronics',),
++    'notebook computer': ('electronics',), 'laptop stand': ('electronics',),
++    'air fryer': ('appliances', 'home'), 'vacuum cleaner': ('appliances', 'home'),
++    'hair dryer': ('appliances', 'beauty'), 'electric iron': ('appliances',),
++    'steam iron': ('appliances',), 'iron supplement': ('daily',),
++    'iron tablets': ('daily',), 'iron supplement tablets': ('daily',),
++    'vitamin tablets': ('daily',), 'multivitamin tablets': ('daily',),
++    'protein powder': ('sports',),
++    'whey protein': ('sports',), 'pet shampoo': ('pet_supplies',),
++    'dog food': ('pet_supplies',), 'cat food': ('pet_supplies',),
++    'feeding bottle': ('baby',), 'baby shampoo': ('baby',),
++    'baby lotion': ('baby',), 'baby soap': ('baby',),
++    'school bag': ('books_stationery',), 'gold plated necklace': ('jewellery_accessories',),
++    'స్మార్ట్ వాచ్': ('electronics',), 'చీర': ('clothing',),
++    'చీరలు': ('clothing',), 'బూట్లు': ('footwear', 'clothing'),
++    'బియ్యం': ('daily',), 'సబ్బు': ('daily',),
++    'మొబైల్': ('electronics',), 'హెడ్‌ఫోన్స్': ('electronics',),
++    'airpods': ('electronics',), 'airdopes': ('electronics',),
++}
++# Standalone colour/marketing/ambiguous terms are not enough to reject a deal.
++AMBIGUOUS = {'gold', 'silver', 'diamond', 'ring', 'chain', 'compact', 'top',
++             'wear', 'living', 'home', 'daily', 'health', 'wireless', 'remote control',
++             'safari', 'vip', 'steam', 'iron', 'ram'}
++
++
++def normalise(value: str) -> str:
++    value = unicodedata.normalize('NFKC', str(value or '')).casefold()
++    return re.sub(r'\s+', ' ', value.replace('-', ' ')).strip()
++
++
++def selected(spec: str) -> set[str]:
++    return {ALIASES.get(part.strip().lower(), part.strip().lower())
++            for part in str(spec or '').split(',') if part.strip()}
++
++
++@lru_cache(maxsize=1024)
++def _pattern(term):
++    return re.compile(r'(?<!\w)' + re.escape(normalise(term)).replace(r'\ ', r'\s+') + r'(?!\w)')
++
++
++def product_text(text: str) -> str:
++    """Normalised product-only text, also used for preference phrase matching."""
++    raw = str(text or '')[:20000]
++    lines = [line for line in raw.splitlines()
++             if not re.match(r'^\s*(?:join|follow|subscribe)\b', line, re.I)]
++    clean = re.sub(r'(?:https?://|www\.)\S+|\b\w[\w.-]*\.(?:com|in|to|org)/\S*', ' ', '\n'.join(lines), flags=re.I)
++    return normalise(clean)
++
++
++@lru_cache(maxsize=128)
++def _analyse_cached(text: str) -> dict:
++    from .link_router import CATEGORY_KEYWORDS
++    clean = product_text(text)
++    evidence: dict[str, set[str]] = {}
++    remaining = clean
++    for phrase, categories in sorted(PHRASES.items(), key=lambda item: -len(item[0])):
++        pattern = _pattern(phrase)
++        if pattern.search(remaining):
++            for category in categories:
++                evidence.setdefault(category, set()).add(phrase)
++            remaining = pattern.sub(' ', remaining)
++    for category, terms in CATEGORY_KEYWORDS.items():
++        for term in terms:
++            if term not in AMBIGUOUS and _pattern(term).search(remaining):
++                evidence.setdefault(category, set()).add(term)
++    # A manufacturer's name alone does not identify its product: Samsung sells
++    # phones AND fridges. Brand-only evidence must not veto an appliance feed.
++    weak_brands = {'samsung', 'oneplus', 'redmi', 'realme'}
++    if evidence.get('electronics') and evidence['electronics'] <= weak_brands:
++        del evidence['electronics']
++    # Keep legacy taxonomy order stable for callers; scores are explanations only.
++    categories = [key for key in CATEGORY_KEYWORDS if key in evidence]
++    products = [key for key in categories if key != 'recharge_freebies']
++    primary = max(products, key=lambda key: (len(evidence[key]), -categories.index(key))) if products else 'other'
++    return {
++        'categories': categories or ['other'], 'primary': primary,
++        'product_known': bool(products), 'multi_category': len(products) > 1,
++        'evidence': {key: sorted(evidence[key]) for key in categories},
++        'scores': {key: round(min(0.95, 0.55 + 0.1 * len(evidence[key])), 2) for key in categories},
++        'method': 'offline_keyword_rules',
++        'notice': 'Rule scores are not probabilities. No product page was fetched.',
++    }
++
++
++def analyse(text: str) -> dict:
++    """Bounded per-process cache; callers receive independent mutable results."""
++    return deepcopy(_analyse_cached(str(text or '')[:20000]))
++
++
++def preview(text: str, spec: str = '') -> dict:
++    from . import config
++    from .link_router import CATEGORY_KEYWORDS
++    result = analyse(text)
++    allowed = selected(spec)
++    invalid = sorted(allowed - set(CATEGORY_KEYWORDS) - UNRESTRICTED - {'other'})
++    if not allowed or allowed & UNRESTRICTED:
++        passes, reason = True, 'All categories are enabled.'
++    elif allowed & set(result['categories']):
++        passes, reason = True, 'Product matches a selected category.'
++    elif not result['product_known']:
++        passes = not getattr(config, 'CATEGORY_FILTER_STRICT_UNKNOWN', False)
++        reason = 'Unknown product: ' + ('allowed by default.' if passes else 'held by strict unknown mode.')
++    else:
++        passes, reason = False, 'Known product is outside the selected categories.'
++    result.update(allowed=sorted(allowed), passes=passes, reason=reason, invalid_categories=invalid)
++    return result
+diff --git a/influencer_hub/category_preferences.py b/influencer_hub/category_preferences.py
+new file mode 100644
+index 0000000..48abe23
+--- /dev/null
++++ b/influencer_hub/category_preferences.py
+@@ -0,0 +1,160 @@
++"""Per-creator opt-in strict product rules, shared by preview and delivery.
++
++An explicit channel filter can narrow a strict creator's selection, never widen
++it. Existing creators remain on legacy routing until preferences are saved.
++"""
++from __future__ import annotations
++
++import json
++
++from . import categories
++
++DEFAULT = {'mode': 'legacy', 'mixed': 'block', 'excluded_categories': [],
++           'required_keywords': [], 'blocked_keywords': []}
++
++
++def validate_spec(spec: str) -> str:
++    from .link_router import CATEGORY_KEYWORDS
++    if not isinstance(spec, str) or len(spec) > 1000:
++        raise ValueError('Category selection must be text, at most 1000 characters.')
++    tokens = categories.selected(spec)
++    invalid = tokens - set(CATEGORY_KEYWORDS) - categories.UNRESTRICTED
++    if invalid:
++        raise ValueError('Unknown categories: ' + ', '.join(sorted(invalid)))
++    if tokens & categories.UNRESTRICTED:
++        return ''
++    return ','.join(sorted(tokens))
++
++
++def _phrases(value):
++    if isinstance(value, str):
++        value = value.split(',')
++    if not isinstance(value, list) or len(value) > 20:
++        raise ValueError('Use up to 20 comma-separated product phrases.')
++    result = []
++    for phrase in value:
++        if not isinstance(phrase, str) or len(phrase) > 80:
++            raise ValueError('Each product phrase must be text, at most 80 characters.')
++        phrase = categories.normalise(phrase)
++        if phrase and phrase not in result:
++            result.append(phrase)
++    return result
++
++
++def parse(raw=None) -> dict:
++    if not raw:
++        return {key: list(value) if isinstance(value, list) else value for key, value in DEFAULT.items()}
++    if isinstance(raw, str):
++        if len(raw) > 8000:
++            raise ValueError('Preferences are too long.')
++        try:
++            raw = json.loads(raw)
++        except (ValueError, TypeError) as exc:
++            raise ValueError('Invalid category preferences; review and save again.') from exc
++    if not isinstance(raw, dict) or set(raw) - set(DEFAULT):
++        raise ValueError('Invalid category preference fields.')
++    result = {**DEFAULT, **raw}
++    if result['mode'] not in ('legacy', 'strict') or result['mixed'] not in ('allow', 'block'):
++        raise ValueError('Invalid category preference mode.')
++    excluded = result['excluded_categories']
++    if isinstance(excluded, list) and all(isinstance(value, str) for value in excluded):
++        excluded = ','.join(excluded)
++    if not isinstance(excluded, str) or len(excluded) > 1000:
++        raise ValueError('Excluded categories must be a category list.')
++    if categories.selected(excluded) & categories.UNRESTRICTED:
++        raise ValueError('Exclude individual categories, not all categories.')
++    result['excluded_categories'] = sorted(categories.selected(validate_spec(excluded)))
++    result['required_keywords'] = _phrases(result['required_keywords'])
++    result['blocked_keywords'] = _phrases(result['blocked_keywords'])
++    return result
++
++
++def view(profile: dict) -> dict:
++    """Safe UI representation; malformed saved rules are visible, not ignored."""
++    try:
++        result = parse(profile.get('category_preferences'))
++        result['error'] = ''
++    except ValueError as exc:
++        result = parse()
++        result.update(mode='strict', error=str(exc))
++    return result
++
++
++def _strict_category_check(result, spec: str, mixed: str):
++    try:
++        spec = validate_spec(spec)
++    except ValueError as exc:
++        return False, str(exc), 'invalid_categories'
++    allowed = categories.selected(spec)
++    if not allowed:
++        return True, 'All categories enabled.', 'all_categories'
++    detected = set(result['categories'])
++    matched = allowed & detected
++    if not matched:
++        return False, 'No selected product category was detected.', 'category_mismatch'
++    if mixed == 'block':
++        # Shared labels are not separate products: "shoes" is both clothing and
++        # footwear. Only outside-category evidence not covered by an allowed
++        # category counts as a mixed/off-topic product.
++        covered = {term for key in matched for term in result['evidence'].get(key, [])}
++        outside = [key for key in detected - allowed - {'other', 'recharge_freebies'}
++                   if set(result['evidence'].get(key, [])) - covered]
++        if outside:
++            return False, 'Mixed/off-topic product evidence: ' + ', '.join(sorted(outside)), 'mixed_products'
++    return True, 'Selected product category matched.', 'category_match'
++
++
++def is_strict(profile: dict) -> bool:
++    try:
++        return parse(profile.get('category_preferences'))['mode'] == 'strict'
++    except ValueError:
++        return True  # malformed saved policy must fail closed
++
++
++def evaluate(text: str, profile: dict, channel: dict | None = None) -> dict:
++    """Pure decision used for live dispatch, highlights, mirrors and preview."""
++    channel = channel or {}
++    try:
++        prefs = parse(profile.get('category_preferences'))
++    except ValueError as exc:
++        return {'passes': False, 'reason': str(exc), 'code': 'invalid_preferences', 'mode': 'strict'}
++    if prefs['mode'] == 'legacy':
++        result = categories.preview(text, channel.get('categories') or profile.get('categories') or '')
++        result.update(mode='legacy', code='legacy_filter')
++        return result
++    result = categories.analyse(text)
++    result.update(mode='strict')
++
++    def decide(passes, reason, code):
++        result.update(passes=passes, reason=reason, code=code)
++        return result
++
++    # Unknown/oversized input must not be interpreted as a proven match.
++    restricted = bool(categories.selected(profile.get('categories') or '') - categories.UNRESTRICTED)
++    channel_restricted = bool(categories.selected(channel.get('categories') or '') - categories.UNRESTRICTED)
++    has_rules = restricted or channel_restricted or any(prefs[key] for key in
++                        ('excluded_categories', 'required_keywords', 'blocked_keywords'))
++    if has_rules and len(str(text or '')) > 20000:
++        return decide(False, 'Deal exceeds the category analysis limit.', 'analysis_limit')
++    excluded = set(prefs['excluded_categories']) & set(result['categories'])
++    if excluded:
++        return decide(False, 'Excluded category detected: ' + ', '.join(sorted(excluded)), 'excluded_category')
++    clean = categories.product_text(text)
++    blocked = [phrase for phrase in prefs['blocked_keywords'] if categories._pattern(phrase).search(clean)]
++    if blocked:
++        return decide(False, 'Blocked product phrase: ' + ', '.join(blocked), 'blocked_keyword')
++    required = prefs['required_keywords']
++    if required and not any(categories._pattern(phrase).search(clean) for phrase in required):
++        return decide(False, 'None of the required product phrases matched.', 'required_keyword')
++    offer_selected = any('recharge_freebies' in categories.selected(row.get('categories') or '')
++                         for row in (profile, channel))
++    if has_rules and not result['product_known'] and not (offer_selected and 'recharge_freebies' in result['categories']):
++        return decide(False, 'Unknown product held by strict creator preferences.', 'unknown_product')
++    passes, reason, code = _strict_category_check(result, profile.get('categories') or '', prefs['mixed'])
++    if not passes:
++        return decide(False, reason, code)
++    if channel.get('categories'):
++        passes, reason, code = _strict_category_check(result, channel['categories'], prefs['mixed'])
++        if not passes:
++            return decide(False, 'Channel narrowing: ' + reason, 'channel_' + code)
++    return decide(True, 'Matches this creator’s saved product preferences.', 'preferences_match')
+diff --git a/influencer_hub/channel_health.py b/influencer_hub/channel_health.py
+new file mode 100644
+index 0000000..c5ceab8
+--- /dev/null
++++ b/influencer_hub/channel_health.py
+@@ -0,0 +1,48 @@
++"""Conservative destination diagnostics: preview by default, no sends or joins."""
++from . import db, telegram_ops
++
++
++def permanent_failure(error: str) -> bool:
++    # Allowlist only: timeouts, FloodWait, network and unknown errors defer.
++    text = str(error).lower()
++    return any(code in text for code in (
++        'chatwriteforbidden', 'chat_write_forbidden', 'chatadminrequired',
++        'chat_admin_required', 'channelprivate', 'channel_private',
++        'usernameinvalid', 'username_invalid', 'usernamenotoccupied',
++        'username_not_occupied', 'userbannedinchannel', 'user_banned_in_channel',
++        'you can\'t write in this chat',
++    ))
++
++
++async def scan(*, resolve=False, apply=False) -> list[dict]:
++    rows = []
++    for channel in db.list_channels():
++        if channel['platform'] != 'telegram':
++            continue
++        result = {'id': channel['id'], 'status': channel['status'], 'action': 'unchanged'}
++        identifier = str(channel['identifier']).strip()
++        reason = ''
++        if not identifier:
++            reason = 'empty destination identifier'
++        elif resolve:
++            try:
++                lookup = await telegram_ops.inspect_channel(identifier)
++            except Exception as exc:
++                lookup = {'ok': False, 'error': type(exc).__name__ + ': ' + str(exc)}
++            if lookup.get('ok') and lookup.get('can_post') is False:
++                reason = 'Telegram confirms no posting permission'
++            elif not lookup.get('ok'):
++                if permanent_failure(lookup.get('error', '')):
++                    reason = lookup['error']
++                else:
++                    result['action'] = 'deferred'
++                    result['reason'] = lookup.get('error', 'lookup unavailable')
++        if reason:
++            result.update(action='would_pause', reason=reason)
++            if apply and channel['status'] == 'active':
++                db.update_channel_details(channel['id'], status='paused')
++                db.record_audit(actor='doctor', role='system', action='channel_fix',
++                                target=str(channel['id']), detail=reason)
++                result['action'] = 'paused'
++        rows.append(result)
++    return rows
+diff --git a/influencer_hub/cli.py b/influencer_hub/cli.py
+index bc294a3..3a1eea0 100644
+--- a/influencer_hub/cli.py
++++ b/influencer_hub/cli.py
+@@ -405,12 +405,24 @@ def _cmd_verify_earnkaro(args):  # pragma: no cover - network
+     print(res)
+ 
+ 
++def _cmd_check_channels(args):
++    from .channel_health import scan
++    import json
++    print(json.dumps(asyncio.run(scan(resolve=True, apply=args.fix)), indent=2))
++
++
+ def _cmd_doctor(args):  # pragma: no cover - side effect
+     """Check selected local configuration and service health signals.
+ 
+     Passing these checks is not an end-to-end delivery or affiliate-commission
+     verification.
+     """
++    if args.channels or args.resolve_channels or args.apply_channel_fixes:
++        from .channel_health import scan
++        import json
++        print(json.dumps(asyncio.run(scan(resolve=args.resolve_channels,
++                                          apply=args.apply_channel_fixes)), indent=2))
++        return
+     db.init()
+     import base64
+     import json
+@@ -1136,6 +1148,16 @@ def _cmd_amazon_items(args):  # pragma: no cover - requires configured Amazon cr
+     return 0
+ 
+ 
++def _cmd_category_preview(args):
++    """Offline product evidence only: no DB initialization or external requests."""
++    import json
++    from .categories import preview
++    if not args.text.strip() or len(args.text) > 20000:
++        print("Provide a product/deal text between 1 and 20000 characters.")
++        return 2
++    print(json.dumps(preview(args.text, args.categories), indent=2, ensure_ascii=False))
++
++
+ def build_parser() -> argparse.ArgumentParser:
+     p = argparse.ArgumentParser(prog="influencer_hub", description=__doc__)
+     sub = p.add_subparsers(dest="cmd", required=True)
+@@ -1231,7 +1253,13 @@ def build_parser() -> argparse.ArgumentParser:
+         action="store_true",
+         help="also validate the local branded HTTPS short-link origin (does not make an external request)",
+     )
++    d.add_argument("--channels", action="store_true", help="read-only destination preview")
++    d.add_argument("--resolve-channels", action="store_true", help="read-only Telegram lookups")
++    d.add_argument("--apply-channel-fixes", action="store_true", help="explicitly apply permanent fixes")
+     d.set_defaults(func=_cmd_doctor)
++    cc = sub.add_parser("check-channels", help="read-only destination scan; --fix to apply")
++    cc.add_argument("--fix", action="store_true")
++    cc.set_defaults(func=_cmd_check_channels)
+ 
+     sub.add_parser("status", help="overview of everything").set_defaults(func=_cmd_status)
+ 
+@@ -1383,6 +1411,10 @@ def build_parser() -> argparse.ArgumentParser:
+     cn.add_argument("--json", action="store_true", help="machine-readable output")
+     cn.set_defaults(func=_cmd_channel_names)
+ 
++    cp = sub.add_parser("category-preview", help="offline read-only product/category check")
++    cp.add_argument("--text", required=True, help="product name or deal text")
++    cp.add_argument("--categories", default="", help="comma-separated filters; empty = all")
++    cp.set_defaults(func=_cmd_category_preview)
+     rp = sub.add_parser("run-pipeline", help="pull shared deals and dispatch to influencers")
+     rp.add_argument("--id", type=int, default=None, help="limit to one influencer")
+     rp.add_argument("--limit", type=int, default=10, help="messages per source")
+diff --git a/influencer_hub/db.py b/influencer_hub/db.py
+index c3bff98..a00e448 100644
+--- a/influencer_hub/db.py
++++ b/influencer_hub/db.py
+@@ -22,6 +22,14 @@ from urllib.parse import parse_qs, parse_qsl, urlparse
+ from . import config
+ 
+ Schema = """
++CREATE TABLE IF NOT EXISTS delivery_failures (
++ channel_id INTEGER PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
++ consecutive INTEGER NOT NULL DEFAULT 0,
++ reason TEXT NOT NULL DEFAULT '',
++ updated_at TEXT NOT NULL DEFAULT (datetime('now'))
++);
++CREATE INDEX IF NOT EXISTS idx_delivery_failures_updated ON delivery_failures(updated_at);
++
+ CREATE TABLE IF NOT EXISTS influencers (
+     id                INTEGER PRIMARY KEY AUTOINCREMENT,
+     name              TEXT NOT NULL,
+@@ -269,6 +277,7 @@ CREATE TABLE IF NOT EXISTS ops_snapshots (
+     notes          TEXT NOT NULL DEFAULT ''
+ );
+ 
++CREATE INDEX IF NOT EXISTS idx_posts_retention ON posts(posted_at);
+ CREATE INDEX IF NOT EXISTS idx_channels_influencer ON channels(influencer_id);
+ CREATE INDEX IF NOT EXISTS idx_posts_sig ON posts(deal_sig, influencer_id);
+ CREATE INDEX IF NOT EXISTS idx_wa_influencer ON wa_sessions(influencer_id);
+@@ -363,6 +372,7 @@ def migrate() -> None:
+             ("allowed_sources", "TEXT NOT NULL DEFAULT ''"),
+             ("bitly_api_key", "TEXT NOT NULL DEFAULT ''"),
+             ("categories", "TEXT NOT NULL DEFAULT ''"),
++            ("category_preferences", "TEXT NOT NULL DEFAULT ''"),
+             ("posting_schedule", "TEXT NOT NULL DEFAULT ''"),
+             ("only_amazon", "INTEGER NOT NULL DEFAULT 0"),
+             ("allow_amazon", "INTEGER NOT NULL DEFAULT 1"),
+@@ -562,7 +572,8 @@ def update_influencer(influencer_id: int, name: str | None = None,
+                       custom_button_text: str | None = None,
+                       custom_button_url: str | None = None,
+                       notes: str | None = None, active: bool | None = None,
+-                      min_deal_tier: str | None = None) -> None:
++                      min_deal_tier: str | None = None,
++                      category_preferences: str | None = None) -> None:
+     con = _connect()
+     try:
+         updates = []
+@@ -594,6 +605,11 @@ def update_influencer(influencer_id: int, name: str | None = None,
+         if categories is not None:
+             updates.append("categories=?")
+             params.append(categories.strip())
++        if category_preferences is not None:
++            from .category_preferences import parse
++            validated = parse(category_preferences)
++            updates.append("category_preferences=?")
++            params.append(json.dumps(validated, sort_keys=True))
+         if posting_schedule is not None:
+             updates.append("posting_schedule=?")
+             params.append(posting_schedule.strip())
+@@ -913,6 +929,8 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
+         if updates:
+             params.append(channel_id)
+             con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)
++            if status == "active":
++                con.execute("DELETE FROM delivery_failures WHERE channel_id=?", (channel_id,))
+             con.commit()
+     finally:
+         con.close()
+@@ -2741,3 +2759,32 @@ def get_live_deal_insights() -> dict:
+         }
+     finally:
+         con.close()
++
++
++def record_delivery_result(channel_id: int, result: str) -> None:
++    """Atomic per-destination watchdog. Unknown/transient errors break the streak."""
++    from .channel_health import permanent_failure
++    if result != "posted" and not result.startswith("failed:"):
++        return
++    con = _connect()
++    try:
++        with con:
++            con.execute("BEGIN IMMEDIATE")
++            if result == "posted" or not permanent_failure(result):
++                con.execute("DELETE FROM delivery_failures WHERE channel_id=?", (channel_id,))
++                return
++            con.execute(
++                "INSERT INTO delivery_failures(channel_id, consecutive, reason) VALUES (?,1,?) "
++                "ON CONFLICT(channel_id) DO UPDATE SET consecutive=consecutive+1, "
++                "reason=excluded.reason, updated_at=datetime('now')", (channel_id, result[:300]))
++            count = con.execute("SELECT consecutive FROM delivery_failures WHERE channel_id=?",
++                                (channel_id,)).fetchone()[0]
++            if count >= 3:
++                changed = con.execute("UPDATE channels SET status='paused' WHERE id=? AND status='active'",
++                                      (channel_id,)).rowcount
++                if changed:
++                    con.execute("INSERT INTO team_audit(at,actor,role,action,target,detail,ip) "
++                                "VALUES (datetime('now'),'watchdog','system','channel_auto_paused',?,?, '')",
++                                (str(channel_id), f"3 consecutive permanent failures: {result[:300]}"))
++    finally:
++        con.close()
+diff --git a/influencer_hub/link_router.py b/influencer_hub/link_router.py
+index 971b543..d72f834 100644
+--- a/influencer_hub/link_router.py
++++ b/influencer_hub/link_router.py
+@@ -894,6 +894,20 @@ def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
+     # the pipeline / dashboard, never silently).
+     if not amazon_tag_is_usable(effective_tag):
+         effective_tag = config.AMAZON_ASSOCIATE_TAG
++    if parsed.path.rstrip("/") == "/sspa/click":
++        # Re-sign the encoded destination without canonicalizing away its params.
++        nested = []
++        for key, value in query_values:
++            inner = urlparse(value)
++            if key.lower() == "url" and inner.hostname and any(
++                _is_domain(inner.hostname.lower(), domain) for domain in AMAZON_DOMAINS
++            ):
++                pairs = [(k, v) for k, v in parse_qsl(inner.query, keep_blank_values=True)
++                         if k.lower() != "tag"]
++                pairs.append(("tag", effective_tag))
++                value = urlunparse(inner._replace(query=urlencode(pairs)))
++            nested.append((key, value))
++        return urlunparse(parsed._replace(query=urlencode(nested)))
+     asin = _amazon_asin(parsed)
+     # Determine marketplace — an Amazon URL always keeps its own storefront.
+     marketplace_host = amazon_marketplace_host(url)  # short links -> None, stay on their host
+@@ -1701,13 +1715,9 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
+ 
+ 
+ def classify_deal_category(text: str) -> list[str]:
+-    """Identify which categories a deal belongs to."""
+-    lower = text.lower()
+-    matched = []
+-    for cat, kws in CATEGORY_KEYWORDS.items():
+-        if any(re.search(rf"\b{re.escape(kw)}\b", lower) for kw in kws):
+-            matched.append(cat)
+-    return matched or ["other"]
++    """Product categories from offline rules, excluding URL/footer noise."""
++    from .categories import analyse
++    return analyse(text)["categories"]
+ 
+ 
+ # Categories that describe the *kind of offer* rather than the product: a promo
+@@ -1731,23 +1741,8 @@ def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> boo
+     is a saving-type flag — passes, so a missing keyword can never silently cost a
+     sale. Set ``CATEGORY_FILTER_STRICT_UNKNOWN=on`` to drop even those.
+     """
+-    s = (allowed_categories_spec or "").strip().lower()
+-    unrestricted = {"all", "any", "unrestricted", "all categories", "all deals", "*", "no_filter", "default"}
+-    tokens = {x.strip() for x in s.split(",") if x.strip()}
+-    if not tokens or tokens.intersection(unrestricted):
+-        return True
+-    allowed_set = tokens
+-    deal_cats = set(classify_deal_category(deal_text))
+-    # If the deal matches any allowed category, return True
+-    if deal_cats.intersection(allowed_set):
+-        return True
+-    # Nothing but saving-type flags / "other": the product is unknown to us.
+-    if not (deal_cats - SECONDARY_CATEGORIES):
+-        return not getattr(config, "CATEGORY_FILTER_STRICT_UNKNOWN", False)
+-    # If deal has uncategorized items ('other'), let it pass if explicitly permitted
+-    if "other" in deal_cats and "other" in allowed_set:
+-        return True
+-    return False
++    from .categories import preview
++    return preview(deal_text, allowed_categories_spec)["passes"]
+ 
+ 
+ def is_time_in_schedule(schedule_spec: str, current_time: str | None = None) -> bool:
+@@ -2118,19 +2113,9 @@ def is_high_quality_deal(text: str, min_tier: str = "B") -> bool:
+ 
+ 
+ def get_deal_category_advanced(text: str) -> dict:
+-    """Advanced category detection with confidence and multi-label.
+-    Returns {category: confidence} for fully advanced targeting.
+-    """
+-    cats = classify_deal_category(text)
+-    # Add confidence based on keyword matches
+-    result = {}
+-    low = text.lower()
+-    for cat in cats:
+-        kws = CATEGORY_KEYWORDS.get(cat, [])
+-        matched = sum(1 for kw in kws if kw.lower() in low)
+-        conf = min(0.99, 0.5 + matched * 0.15)
+-        result[cat] = round(conf, 2)
+-    return result
++    """Compatibility API: category -> rule strength (not probability)."""
++    from .categories import analyse
++    return analyse(text)["scores"]
+ 
+ 
+ def translate_telugu_keywords(text: str) -> str:
+diff --git a/influencer_hub/onboarding.py b/influencer_hub/onboarding.py
+index cba2f39..58f37fb 100644
+--- a/influencer_hub/onboarding.py
++++ b/influencer_hub/onboarding.py
+@@ -40,11 +40,16 @@ CATEGORY_CHOICES = (
+     ("home", "🏠 Home & Kitchen", "kitchen, decor, storage"),
+     ("daily", "🛒 Daily & Grocery", "everyday essentials"),
+     ("beauty", "💄 Beauty & Care", "skincare, makeup"),
+-    ("jewellery", "💍 Jewellery & Watches", "gold-plated, smart watches"),
++    ("jewellery", "💍 Jewellery & Watches", "necklaces, earrings, bracelets"),
+     ("toys", "🧸 Toys & Baby", "kids, baby care"),
+     ("sports", "🏏 Sports & Fitness", "gym, outdoor, cricket"),
+     ("books", "📚 Books & Stationery", "books, school items"),
+     ("automotive", "🚗 Automotive", "car, bike accessories"),
++    ("appliances", "❄️ Appliances", "fridge, washing machine, fans"),
++    ("travel_luggage", "🧳 Travel & Luggage", "suitcases, travel bags"),
++    ("gaming", "🎮 Gaming", "consoles, gaming accessories"),
++    ("pet_supplies", "🐾 Pet Supplies", "pet food, care and accessories"),
++    ("recharge_freebies", "🎁 Recharge & Offers", "coupons, cashback, recharge"),
+ )
+ 
+ CATEGORY_KEYS = {value for value, _label, _hint in CATEGORY_CHOICES}
+@@ -58,12 +63,19 @@ def selected_categories(raw: str) -> list[str]:
+     parts = [part.strip().lower() for part in text.split(",") if part.strip()]
+     if "all" in parts or "unrestricted" in parts or "any" in parts:
+         return ["all"]
+-    return [part for part in parts if part in CATEGORY_KEYS] or ["all"]
++    # Existing databases use both old picker IDs and canonical classifier IDs.
++    from .categories import ALIASES
++    canonical = {ALIASES.get(part, part) for part in parts}
++    return [key for key, _, _ in CATEGORY_CHOICES
++            if ALIASES.get(key, key) in canonical] or ["all"]
+ 
+ 
+ def category_text(picked) -> str:
+     """Store a picker selection as the ``categories`` string ('' = all)."""
+     keys = [str(key).strip().lower() for key in (picked or []) if str(key).strip()]
++    from .categories import ALIASES
++    picker_ids = {ALIASES.get(key, key): key for key, _, _ in CATEGORY_CHOICES}
++    keys = [picker_ids.get(ALIASES.get(key, key), key) for key in keys]
+     keys = [key for key in keys if key in CATEGORY_KEYS]
+     if not keys or "all" in keys:
+         return ""
+diff --git a/influencer_hub/pipeline.py b/influencer_hub/pipeline.py
+index 6d62a71..75145d6 100644
+--- a/influencer_hub/pipeline.py
++++ b/influencer_hub/pipeline.py
+@@ -187,6 +187,20 @@ async def dispatch_poll(channel: dict, question: str, options: list[str],
+ 
+ 
+ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str:
++    if influencer.get("category_preferences"):
++        from .category_preferences import evaluate, is_strict
++        decision = evaluate(text, influencer, channel)
++        if is_strict(influencer) and not decision["passes"]:
++            return "skipped:category_preferences:" + decision["code"]
++    result = await _dispatch_to_channel(influencer, channel, text)
++    try:
++        db.record_delivery_result(channel["id"], result)
++    except Exception:
++        __import__("logging").getLogger(__name__).exception("Delivery watchdog failed; ingestion continues")
++    return result
++
++
++async def _dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str:
+     """Post `text` to one channel. Returns a status string.
+ 
+     WhatsApp sends use conservative per-session pacing, but pacing cannot
+@@ -245,7 +259,7 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
+             return "skipped"
+         return "posted"
+     except Exception as exc:  # pragma: no cover - network dependent
+-        return f"failed:{exc}"
++        return f"failed:{type(exc).__name__}: {exc}"
+ 
+ 
+ def _parse_price_filter_spec(spec: str) -> tuple[float | None, float | None]:
+@@ -423,6 +437,14 @@ async def _render_and_deliver_destination(
+         seen_content_in_this_run if seen_content_in_this_run is not None else set()
+     )
+ 
++    # Explicit creator product rules are a hard cap, even for mirrors. Legacy
++    # mirrors retain the previous display-filter bypass contract.
++    if inf.get("category_preferences"):
++        from .category_preferences import evaluate, is_strict
++        decision = evaluate(deal_text, inf, ch)
++        if is_strict(inf) and not decision["passes"]:
++            return "skipped:category_preferences:" + decision["code"]
++
+     # A mirrored post was already accepted by the main Telegram channel, so
+     # these display filters must not silently drop it again on the WhatsApp
+     # side; every money guard further down still runs unchanged.
+@@ -675,7 +697,7 @@ async def _render_and_deliver_destination(
+                           reason=tag_proof.HOLD_REASON,
+                           delay_seconds=DEFERRED_RETRY_DELAY_SECONDS)
+         except Exception:  # pragma: no cover - parking must never break a run
+-            logging.getLogger(__name__).exception("could not park the held deal")
++            __import__("logging").getLogger(__name__).exception("could not park the held deal")
+         try:
+             from . import security
+             security.audit("pipeline", "system", "amazon_tag_hold",
+@@ -857,7 +879,7 @@ async def _render_and_deliver_destination(
+                         )][:3],
+                     )
+         except Exception as _guard_exc:
+-            logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
++            __import__("logging").getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
+ 
+     # 8b-2. MONEY FILTER: never spend a post on a deal that pays nothing.
+     # Off by default so volume is never reduced without the operator's
+@@ -877,7 +899,7 @@ async def _render_and_deliver_destination(
+             if audit["earning"] == 0 and audit["monetisable"] > 0:
+                 return "skipped:no_commission_link"
+         except Exception as _money_exc:  # pragma: no cover - defensive
+-            logging.getLogger(__name__).exception("money filter failed: %s", _money_exc)
++            __import__("logging").getLogger(__name__).exception("money filter failed: %s", _money_exc)
+     # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
+     # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
+     try:
+@@ -1275,6 +1297,10 @@ async def run_hourly_loot_highlight(influencer_ids: Iterable[int] | None = None)
+                 # Only-Amazon: must have Amazon link
+                 if only_amz and not link_router.has_amazon_link(txt):
+                     continue
++                if inf.get("category_preferences"):
++                    from .category_preferences import evaluate
++                    if not evaluate(txt, inf, ch)["passes"]:
++                        continue
+                 if cat_filter and not link_router.matches_category_filter(txt, cat_filter):
+                     continue
+                 if not link_router.matches_price_filter(txt, max_price=max_p, min_price=min_p):
+diff --git a/influencer_hub/selfcheck.py b/influencer_hub/selfcheck.py
+index 8d08296..259bff1 100644
+--- a/influencer_hub/selfcheck.py
++++ b/influencer_hub/selfcheck.py
+@@ -245,6 +245,14 @@ def _worker_check(heartbeat: dict | None) -> dict:
+                       "Start it: `sudo systemctl start influencer-deal-worker` "
+                       "(the provided deploy unit).")
+     state = str(heartbeat.get("state") or "").lower()
++    import time
++    stamp = heartbeat.get("heartbeat_at")
++    stale = stamp is not None and time.time() - float(stamp) > 180
++    if stale:
++        return _check("worker", "Background worker", WARN, "Worker heartbeat is stale",
++                      "Inspect the worker service before restarting.")
++    if state == "starting":
++        return _check("worker", "Background worker", WARN, "Worker is starting; wait for its first poll.")
+     alive = state in {"running", "idle", "polling", "healthy"}
+     detail = f"Worker state: {state or 'unknown'}"
+     if heartbeat.get("last_poll_at"):
+@@ -605,6 +613,7 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
+         _guard("schema", "Database & schema", _schema_check),
+         _guard("telegram", "Telegram account", _telegram_check),
+         _guard("dashboard", "Dashboard access", _dashboard_check),
++        _guard("delivery", "Delivery watchdog", _delivery_check),
+         _guard("worker", "Background worker", lambda: _worker_check(heartbeat)),
+         _guard("sources", "Deal sources", lambda: _sources_check(sources, influencers)),
+         _guard("amazon", "Amazon attribution", lambda: _amazon_check(plan, fleet)),
+@@ -631,3 +640,13 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
+         "summary": counts,
+         "next": [check for check in checks if check["state"] in {FAIL, WARN}],
+     }
++
++
++def _delivery_check():
++    con = db._connect()
++    try:
++        count = con.execute("SELECT COUNT(*) FROM delivery_failures WHERE consecutive>=3").fetchone()[0]
++    finally:
++        con.close()
++    return _check("delivery", "Delivery watchdog", WARN if count else OK,
++                  f"{count} destination(s) reached the permanent failure threshold.")
+diff --git a/influencer_hub/telegram_ops.py b/influencer_hub/telegram_ops.py
+index aac1cd2..bbd267f 100644
+--- a/influencer_hub/telegram_ops.py
++++ b/influencer_hub/telegram_ops.py
+@@ -118,7 +118,7 @@ async def inspect_channel(identifier: str, timeout: float = 8.0) -> dict:
+     except asyncio.TimeoutError:
+         return {"ok": False, "error": f"Telegram did not answer within {timeout:.0f}s"}
+     except Exception as exc:
+-        return {"ok": False, "error": str(exc)[:200]}
++        return {"ok": False, "error": type(exc).__name__ + ": " + str(exc)[:200]}
+ 
+ 
+ def _isolated_slot(loop: asyncio.AbstractEventLoop) -> str:
+diff --git a/patches/tests/test_pacing_and_categories.py b/patches/tests/test_pacing_and_categories.py
+index 4f09c7e..9f0f67f 100644
+--- a/patches/tests/test_pacing_and_categories.py
++++ b/patches/tests/test_pacing_and_categories.py
+@@ -148,16 +148,16 @@ def test_a_saving_flag_never_vetoes_a_real_product_deal():
+     """A coupon word must not hide the product: the coupon is not a category.
+ 
+     "🔥 BOAT AIRDOPES at ₹1299 · Use code BOAT500" is electronics. The keyword
+-    lists know neither the brand nor the product, so the only thing they can see
++    lists previously knew neither the brand nor the product; they only saw
+     is the word "code" — which used to drop the deal for any creator who asked
+     for electronics, silently and for good.
+     """
+     branded = ("🔥 BOAT AIRDOPES at ₹1299 (MRP ₹2999)\n"
+                "https://www.amazon.in/dp/B09N3ZNHTY\n"
+                "Use code BOAT500 · Sizes M, L, XL")
+-    assert lr.classify_deal_category(branded) == ["recharge_freebies"]
++    assert lr.classify_deal_category(branded) == ["electronics", "recharge_freebies"]
+     assert lr.matches_category_filter(branded, "electronics") is True
+-    assert lr.matches_category_filter(branded, "clothing") is True      # unknown too
++    assert lr.matches_category_filter(branded, "clothing") is False     # now recognised
+     # …while a deal that really belongs elsewhere is still dropped.
+     saree = "🥻 Banarasi Silk Saree with Blouse Piece at ₹899"
+     assert lr.matches_category_filter(saree, "electronics") is False
+diff --git a/tests/test_creator_product_preferences.py b/tests/test_creator_product_preferences.py
+new file mode 100644
+index 0000000..0b20b01
+--- /dev/null
++++ b/tests/test_creator_product_preferences.py
+@@ -0,0 +1,310 @@
++import asyncio
++import json
++
++import pytest
++
++from influencer_hub import category_preferences as prefs
++from influencer_hub import config, db, pipeline
++
++PHONE = 'Samsung smartphone ₹9999 https://www.amazon.in/dp/B012345678?tag=source-21'
++SHIRT = 'Cotton shirt ₹499 https://www.amazon.in/dp/B012345679?tag=source-21'
++
++
++def profile(spec='electronics', **rules):
++    return {'categories': spec, 'category_preferences': json.dumps({'mode': 'strict', **rules})}
++
++
++@pytest.mark.parametrize('text,spec,passes', [
++    ('Smartphone 5G', 'electronics', True), ('Cotton shirt', 'electronics', False),
++    ('Mystery ZXQ1999', 'electronics', False), ('Use coupon code SAVE', 'electronics', False),
++    ('Shoes', 'footwear', True), ('Gaming mouse', 'electronics', True),
++    ('Gaming mouse', 'gaming', True), ('Air fryer', 'home', True),
++    ('Samsung refrigerator', 'appliances', True), ('Samsung', 'electronics', False),
++    ('Shirt with shoes', 'footwear', False), ('Phone and cotton shirt', 'electronics', False),
++    ('Phone and cotton shirt', 'electronics,clothing', True),
++    ('Paperback book', 'books', True), ('Pampers diapers', 'toys', True),
++    ('Use recharge coupon code SAVE', 'recharge_freebies', True),
++])
++def test_selected_products_only(text, spec, passes):
++    assert prefs.evaluate(text, profile(spec))['passes'] is passes
++
++
++def test_exclusions_keywords_and_mixed_mode():
++    assert prefs.evaluate('Phone and shirt', profile(mixed='allow'))['passes']
++    assert not prefs.evaluate('Phone and shirt', profile(mixed='allow', excluded_categories=['clothing']))['passes']
++    assert not prefs.evaluate('Refurbished phone', profile(blocked_keywords=['refurbished']))['passes']
++    assert prefs.evaluate('Smartphone', profile(required_keywords=['phone', 'smartphone']))['passes']
++    assert not prefs.evaluate('Headphones', profile(required_keywords=['phone']))['passes']
++    assert not prefs.evaluate('Earbuds', profile(required_keywords=['smartphone']))['passes']
++    assert not prefs.evaluate('Phone https://example.com/refurbished', profile(required_keywords=['refurbished']))['passes']
++    assert prefs.evaluate('Phone\nFollow refurbished electronics channel', profile(blocked_keywords=['refurbished']))['passes']
++
++
++def test_channel_can_only_narrow_strict_creator():
++    assert not prefs.evaluate(SHIRT, profile(), {'categories': 'all'})['passes']
++    assert not prefs.evaluate(PHONE, profile(), {'categories': 'clothing'})['passes']
++    assert prefs.evaluate(PHONE, profile(), {'categories': 'all'})['passes']
++    assert prefs.evaluate(PHONE, profile(), {'categories': ''})['passes']
++    assert not prefs.evaluate(PHONE, profile(), {'categories': 'electrnics'})['passes']
++
++
++def test_unrestricted_unknown_and_flexible_compatibility():
++    assert prefs.evaluate('Unknown ZXQ', profile(''))['passes']
++    assert not prefs.evaluate('Unknown ZXQ', profile('', blocked_keywords=['used']))['passes']
++    assert prefs.evaluate('Unknown ZXQ', {'categories': 'electronics'})['passes']
++    assert not prefs.is_strict({'category_preferences': json.dumps({'mode': 'legacy'})})
++    assert prefs.evaluate(SHIRT, {'categories': 'electronics'}, {'categories': 'clothing'})['passes']
++
++
++@pytest.mark.parametrize('raw', ['broken JSON', '[]', '{"mode":"typo"}',
++    '{"required_keywords":{}}', '{"excluded_categories":[1]}'])
++def test_corrupt_persisted_policy_holds_delivery(raw):
++    result = prefs.evaluate(PHONE, {'categories': 'electronics', 'category_preferences': raw})
++    assert not result['passes'] and result['code'] == 'invalid_preferences'
++    assert prefs.is_strict({'category_preferences': raw})
++
++
++@pytest.mark.parametrize('raw', [{'mode': 'typo'}, {'mixed': 'typo'},
++    {'excluded_categories': ['all']}, {'excluded_categories': ['electrnics']},
++    {'required_keywords': ['a'] * 21}, {'required_keywords': ['a' * 81]},
++    {'blocked_keywords': [False]}, {'unexpected_field': True}])
++def test_validation_is_explicit(raw):
++    with pytest.raises(ValueError):
++        prefs.parse(raw)
++
++
++def test_long_restricted_post_is_held():
++    assert prefs.evaluate('Phone ' + 'x' * 21000, profile())['code'] == 'analysis_limit'
++
++
++def test_profile_migration_is_idempotent_and_invalid_save_atomic():
++    db.init()
++    creator = db.add_influencer('Independent rules', 'rules-21', categories='electronics')
++    db.update_influencer(creator, category_preferences=json.dumps({'mode': 'strict'}))
++    db.init()
++    assert prefs.is_strict(db.get_influencer(creator))
++    with pytest.raises(ValueError):
++        db.update_influencer(creator, categories='clothing', category_preferences='broken JSON')
++    assert db.get_influencer(creator)['categories'] == 'electronics'
++
++
++def test_dispatch_boundary_holds_unwanted_posts_without_incrementing_watchdog(monkeypatch):
++    db.init()
++    creator = db.add_influencer('Gadgets', 'gadgets-21', categories='electronics')
++    channel = db.add_channel(creator, 'telegram', '@gadgets', status='ready', categories='all')
++    db.update_influencer(creator, category_preferences=json.dumps({'mode': 'strict'}))
++    sent = []
++    async def send(*args):
++        sent.append(args)
++        return 'posted'
++    monkeypatch.setattr(pipeline, '_dispatch_to_channel', send)
++    inf = db.get_influencer(creator)
++    ch = db.list_channels(creator)[0]
++    status = asyncio.run(pipeline.dispatch_to_channel(inf, ch, SHIRT))
++    assert status.startswith('skipped:category_preferences:')
++    assert sent == []
++    assert asyncio.run(pipeline.dispatch_to_channel(inf, ch, PHONE)) == 'posted'
++    assert len(sent) == 1
++    con = db._connect()
++    assert con.execute('SELECT COUNT(*) FROM delivery_failures WHERE channel_id=?', (channel,)).fetchone()[0] == 0
++    con.close()
++
++
++def test_renderer_and_mirror_bypass_cannot_escape_creator_cap(monkeypatch):
++    async def forbidden(*args, **kwargs):
++        pytest.fail('Blocked product reached conversion/delivery')
++    monkeypatch.setattr(pipeline, 'dispatch_to_channel', forbidden)
++    for bypass in (False, True):
++        result = asyncio.run(pipeline._render_and_deliver_destination(
++            profile(), {'categories': 'all'}, SHIRT, sig='test', bypass_display_filters=bypass,
++            force_unconverted=True))
++        assert result.startswith('skipped:category_preferences:')
++
++
++def test_two_creators_same_deal_different_preferences(monkeypatch):
++    db.init()
++    gadgets = db.add_influencer('Tech', 'tech-21', categories='electronics')
++    fashion = db.add_influencer('Fashion', 'fashion-21', categories='clothing')
++    for creator in (gadgets, fashion):
++        db.update_influencer(creator, category_preferences=json.dumps({'mode': 'strict'}))
++        db.add_channel(creator, 'telegram', f'@creator{creator}', status='ready', categories='all')
++    sends = []
++    async def send(identifier, text, **kwargs):
++        sends.append(identifier)
++    monkeypatch.setattr(pipeline.telegram_ops, 'post_to_channel', send)
++    result = asyncio.run(pipeline.render_and_dispatch(PHONE, [gadgets, fashion]))
++    assert list(result[gadgets].values()) == ['posted']
++    assert list(result[fashion].values())[0].startswith('skipped:category_preferences:')
++    assert sends == [f'@creator{gadgets}']
++
++
++def test_hourly_highlights_do_not_repost_old_unwanted_products(monkeypatch):
++    db.init()
++    creator = db.add_influencer('Now tech only', 'nowtech-21', categories='electronics')
++    channel = db.add_channel(creator, 'telegram', '@nowtech', status='ready')
++    db.update_influencer(creator, category_preferences=json.dumps({'mode': 'strict'}))
++    db.record_post(creator, channel, 'oldshirt', status='posted', deal_text=SHIRT)
++    async def forbidden(*args, **kwargs):
++        pytest.fail('Hourly highlight reposted an unwanted product')
++    monkeypatch.setattr(pipeline, 'dispatch_to_channel', forbidden)
++    result = asyncio.run(pipeline.run_hourly_loot_highlight([creator]))
++    assert not result.get(creator)
++
++
++@pytest.fixture
++def client(monkeypatch):
++    from dashboard.app import app
++    db.init()
++    monkeypatch.setattr(config, 'DASHBOARD_ADMIN_PASSWORD', 'safe-admin-password')
++    monkeypatch.setattr(config, 'HUB_ENV', 'development')
++    monkeypatch.setattr(config, 'DASHBOARD_COOKIE_SECURE', False)
++    monkeypatch.setattr(app, 'testing', False)
++    with app.test_client() as client:
++        with client.session_transaction() as session:
++            session['dashboard_authenticated'] = True
++            session['dashboard_role'] = 'admin'
++            session['_csrf_token'] = 'policy-token'
++        yield client
++
++
++def test_saving_preferences_changes_only_selected_creator(client):
++    creator = db.add_influencer('Selected', 'selected-21')
++    other = db.add_influencer('Untouched', 'untouched-21')
++    before = db.get_influencer(other)
++    response = client.post(f'/influencer/{creator}/product-preferences', data={
++        '_csrf_token': 'policy-token', 'categories': ['electronics'], 'category_mode': 'strict',
++        'excluded_categories': ['gaming'], 'required_keywords': 'phone, earbuds',
++        'blocked_keywords': 'refurbished', 'mixed_products': 'block'})
++    assert response.status_code == 302
++    inf = db.get_influencer(creator)
++    assert prefs.is_strict(inf) and inf['categories'] == 'electronics'
++    assert prefs.parse(inf['category_preferences'])['excluded_categories'] == ['gaming']
++    assert db.get_influencer(other) == before
++    assert len(db.list_audit(action='product_preferences_saved')) == 1
++    page = client.get(f'/guided?creator={creator}').get_data(as_text=True)
++    assert 'phone, earbuds' in page and 'refurbished' in page
++
++
++def test_invalid_selection_saves_nothing_and_corrupt_policy_can_be_repaired(client):
++    creator = db.add_influencer('Policy repair', 'repair-21', categories='electronics')
++    before = db.get_influencer(creator)
++    client.post(f'/influencer/{creator}/product-preferences', data={
++        '_csrf_token': 'policy-token', 'categories': ['electrnics'], 'category_mode': 'strict'})
++    assert db.get_influencer(creator) == before
++    con = db._connect()
++    con.execute('UPDATE influencers SET category_preferences=? WHERE id=?', ('broken', creator))
++    con.commit()
++    con.close()
++    client.post(f'/influencer/{creator}/product-preferences', data={
++        '_csrf_token': 'policy-token', 'categories': ['books'], 'category_mode': 'strict'})
++    assert prefs.is_strict(db.get_influencer(creator))
++    assert prefs.evaluate('Paperback book', db.get_influencer(creator))['passes']
++
++
++def test_draft_and_saved_preview_use_same_rules_and_are_readonly(client):
++    creator = db.add_influencer('Preview', 'previewonly-21', categories='electronics')
++    other = db.add_influencer('Other', 'otherpreview-21')
++    own_ch = db.add_channel(creator, 'telegram', '@own_preview', categories='clothing')
++    foreign_ch = db.add_channel(other, 'telegram', '@foreign_preview')
++    db.update_influencer(creator, category_preferences=json.dumps({'mode': 'strict'}))
++    con = db._connect()
++    before = list(con.iterdump())
++    headers = {'X-CSRF-Token': 'policy-token'}
++    def post(payload):
++        return client.post('/api/category-preview', json=payload, headers=headers)
++    assert post({'text': PHONE, 'creator_id': creator}).json['preview']['passes']
++    assert not post({'text': PHONE, 'creator_id': creator, 'channel_id': own_ch}).json['preview']['passes']
++    assert post({'text': PHONE, 'creator_id': creator, 'channel_id': foreign_ch}).status_code == 404
++    draft = post({'text': SHIRT, 'categories': 'electronics', 'preferences': {'mode': 'strict'}})
++    assert not draft.json['preview']['passes']
++    assert post({'text': PHONE, 'categories': 'electronics', 'preferences': []}).status_code == 400
++    assert list(con.iterdump()) == before
++    con.close()
++
++
++def test_preference_save_requires_csrf_and_admin(client):
++    creator = db.add_influencer('Protected', 'protected-21')
++    path = f'/influencer/{creator}/product-preferences'
++    assert client.post(path, data={'categories': 'electronics'}).status_code == 400
++    with client.session_transaction() as session:
++        session['dashboard_role'] = 'team'
++    assert client.post(path, data={'_csrf_token': 'policy-token', 'categories': 'electronics'}).status_code == 302
++    assert not db.get_influencer(creator)['category_preferences']
++
++
++def test_guided_save_enables_strict_only_when_explicitly_selected(client):
++    creator = db.add_influencer('Guided strict', 'guidedstrict-21')
++    response = client.post('/guided/categories', data={'_csrf_token': 'policy-token', 'creator': creator,
++        'categories': ['electronics'], 'category_mode': 'strict', 'allow_amazon': '1'})
++    assert response.status_code == 302
++    assert prefs.is_strict(db.get_influencer(creator))
++
++
++def test_same_category_different_product_requests(monkeypatch):
++    db.init()
++    sends = []
++    creators = []
++    for name, keyword in [('Phones only', 'smartphone'), ('Audio only', 'earbuds')]:
++        creator = db.add_influencer(name, name.split()[0].lower() + '-21', categories='electronics')
++        db.update_influencer(creator, category_preferences=json.dumps({'mode': 'strict', 'required_keywords': [keyword]}))
++        db.add_channel(creator, 'telegram', f'@specific{creator}', status='ready')
++        creators.append(creator)
++    async def send(identifier, text, **kwargs):
++        sends.append(identifier)
++    monkeypatch.setattr(pipeline.telegram_ops, 'post_to_channel', send)
++    asyncio.run(pipeline.render_and_dispatch(PHONE, creators))
++    assert sends == [f'@specific{creators[0]}']
++
++
++def test_strict_mirror_respects_destination_narrowing(monkeypatch):
++    from influencer_hub import whatsapp_client
++    db.init()
++    creator = db.add_influencer('Strict mirror', 'strictmirror-21', categories='electronics')
++    db.update_influencer(creator, category_preferences=json.dumps({'mode': 'strict'}))
++    main = db.add_channel(creator, 'telegram', '@strict_main', status='ready', mirror_whatsapp='1')
++    target = db.add_channel(creator, 'whatsapp_channel', '120363012345678901@newsletter',
++                            role='whatsapp', status='ready', categories='clothing')
++    sent = []
++    async def telegram(identifier, text, **kwargs):
++        sent.append(identifier)
++    async def forbidden(*args, **kwargs):
++        pytest.fail('A strict mirror escaped its channel narrowing')
++    monkeypatch.setattr(pipeline.telegram_ops, 'post_to_channel', telegram)
++    monkeypatch.setattr(whatsapp_client, 'send_text', forbidden)
++    result = asyncio.run(pipeline.render_and_dispatch(PHONE, [creator]))
++    assert result[creator][main] == 'posted'
++    assert result[creator][target].startswith('skipped:category_preferences:')
++    assert sent == ['@strict_main']
++
++
++def test_offer_only_channel_and_analysis_cache_isolation():
++    from influencer_hub import categories
++    assert prefs.evaluate('Recharge coupon code', profile(''), {'categories': 'recharge_freebies'})['passes']
++    result = categories.analyse('Phone')
++    result['categories'].clear()
++    result['evidence']['electronics'].append('shirt')
++    independent = categories.analyse('Phone')
++    assert independent['categories'] == ['electronics']
++    assert independent['evidence']['electronics'] == ['phone']
++
++
++def test_empty_strict_selection_cannot_accidentally_enable_everything(client):
++    creator = db.add_influencer('Do not broaden', 'donotbroaden-21', categories='electronics')
++    before = db.get_influencer(creator)
++    client.post(f'/influencer/{creator}/product-preferences', data={
++        '_csrf_token': 'policy-token', 'category_mode': 'strict'})
++    assert db.get_influencer(creator) == before
++    client.post('/guided/categories', data={
++        '_csrf_token': 'policy-token', 'creator': creator, 'category_mode': 'strict'})
++    assert db.get_influencer(creator) == before
++    client.post(f'/influencer/{creator}/product-preferences', data={
++        '_csrf_token': 'policy-token', 'category_mode': 'strict', 'categories': ['all']})
++    assert db.get_influencer(creator)['categories'] == ''
++    assert prefs.is_strict(db.get_influencer(creator))
++
++
++@pytest.mark.parametrize('value', [True, 0, -1, 1.5, '9' * 25, '9223372036854775808'])
++def test_saved_preview_rejects_bad_identifiers(client, value):
++    response = client.post('/api/category-preview', json={'text': PHONE, 'creator_id': value},
++                           headers={'X-CSRF-Token': 'policy-token'})
++    assert response.status_code == 400
+diff --git a/tests/test_delivery_safety.py b/tests/test_delivery_safety.py
+new file mode 100644
+index 0000000..66f5003
+--- /dev/null
++++ b/tests/test_delivery_safety.py
+@@ -0,0 +1,168 @@
++import asyncio
++import subprocess
++import sys
++from pathlib import Path
++from urllib.parse import parse_qs, urlencode, urlparse
++
++import pytest
++
++from influencer_hub import channel_health, db, link_router, pipeline, selfcheck
++
++
++@pytest.fixture
++def destination():
++    db.init()
++    creator = db.add_influencer('Safety', 'creator-21')
++    channel = db.add_channel(creator, 'telegram', '@safety', status='active')
++    return creator, channel
++
++
++def row(channel):
++    return next(c for c in db.list_channels() if c['id'] == channel)
++
++
++def streak(channel):
++    con = db._connect()
++    try:
++        found = con.execute('SELECT consecutive FROM delivery_failures WHERE channel_id=?', (channel,)).fetchone()
++        return found[0] if found else 0
++    finally:
++        con.close()
++
++
++def test_three_permanent_only_and_audit(destination):
++    _, ch = destination
++    for n in (1, 2):
++        db.record_delivery_result(ch, 'failed:ChatWriteForbiddenError')
++        assert streak(ch) == n
++        assert row(ch)['status'] == 'active'
++    db.record_delivery_result(ch, 'failed:ChatWriteForbiddenError')
++    assert row(ch)['status'] == 'paused'
++    assert '3 consecutive permanent' in db.list_audit(action='channel_auto_paused')[0]['detail']
++    db.update_channel_details(ch, status='active')
++    assert streak(ch) == 0
++    db.record_delivery_result(ch, 'failed:ChannelPrivateError')
++    db.record_delivery_result(ch, 'posted')
++    assert streak(ch) == 0
++
++
++@pytest.mark.parametrize('result', ['failed:TimeoutError', 'failed:FloodWaitError',
++    'failed:network disconnected', 'failed:unknown error', 'skipped', 'deferred'])
++def test_nonpermanent_never_pauses(destination, result):
++    _, ch = destination
++    for _ in range(5):
++        db.record_delivery_result(ch, result)
++    assert row(ch)['status'] == 'active'
++    assert streak(ch) == 0
++
++
++def test_transient_breaks_streak_and_destinations_isolated(destination):
++    creator, ch = destination
++    other = db.add_channel(creator, 'telegram', '@other', status='active')
++    db.record_delivery_result(ch, 'failed:ChannelPrivateError')
++    db.record_delivery_result(ch, 'failed:TimeoutError')
++    db.record_delivery_result(ch, 'failed:ChannelPrivateError')
++    assert streak(ch) == 1
++    assert streak(other) == 0
++
++
++def test_watchdog_failure_does_not_break_delivery(destination, monkeypatch):
++    creator, ch = destination
++    async def send(*a, **kw):
++        return 'posted'
++    monkeypatch.setattr(pipeline, '_dispatch_to_channel', send)
++    def broken(*a):
++        raise RuntimeError('database temporarily unavailable')
++    monkeypatch.setattr(db, 'record_delivery_result', broken)
++    assert asyncio.run(pipeline.dispatch_to_channel({'id': creator}, row(ch), 'deal')) == 'posted'
++
++
++def test_doctor_preview_and_transient_apply(destination, monkeypatch):
++    _, ch = destination
++    async def transient(*a):
++        return {'ok': False, 'error': 'TimeoutError'}
++    monkeypatch.setattr(channel_health.telegram_ops, 'inspect_channel', transient)
++    assert asyncio.run(channel_health.scan(resolve=True, apply=True))[0]['action'] == 'deferred'
++    assert row(ch)['status'] == 'active'
++    async def denied(*a):
++        return {'ok': True, 'can_post': False}
++    monkeypatch.setattr(channel_health.telegram_ops, 'inspect_channel', denied)
++    con = db._connect()
++    before = list(con.iterdump())
++    assert asyncio.run(channel_health.scan(resolve=True))[0]['action'] == 'would_pause'
++    assert list(con.iterdump()) == before
++    con.close()
++    assert row(ch)['status'] == 'active'
++    assert not db.list_audit(action='channel_fix')
++    asyncio.run(channel_health.scan(resolve=True, apply=True))
++    assert row(ch)['status'] == 'paused'
++
++
++def test_nested_amazon_resigns_preserves_params():
++    inner = 'https://www.amazon.in/dp/B012345678?tag=other-21&psc=1&custom=hello%20world&blank='
++    outer = 'https://www.amazon.in/sspa/click?' + urlencode({'url': inner, 'spc': 'abc', 'x': '2'})
++    result = link_router.apply_amazon_tag(outer, 'creator-21')
++    params = parse_qs(urlparse(result).query)
++    nested = parse_qs(urlparse(params['url'][0]).query, keep_blank_values=True)
++    assert nested == {'tag': ['creator-21'], 'psc': ['1'], 'custom': ['hello world'], 'blank': ['']}
++    assert params['spc'] == ['abc'] and params['x'] == ['2']
++
++
++def test_heartbeat_starting_and_stale():
++    import time
++    assert 'starting' in str(selfcheck._worker_check({'state': 'starting', 'heartbeat_at': time.time()})).lower()
++    assert 'stale' in str(selfcheck._worker_check({'state': 'running', 'heartbeat_at': time.time()-500})).lower()
++
++
++def test_bundle_check_and_repeat():
++    root = Path(__file__).resolve().parents[1]
++    script = root / 'patches/apply-delivery-safety.py'
++    for flag in ('--check', '--dry-run'):
++        result = subprocess.run([sys.executable, str(script), flag], capture_output=True, text=True)
++        assert result.returncode == 0, result.stdout + result.stderr
++    assert subprocess.run([sys.executable, str(script)], capture_output=True).returncode == 1
++
++
++def test_dispatch_preserves_exception_class(destination, monkeypatch):
++    creator, ch = destination
++    class ChatWriteForbiddenError(Exception):
++        pass
++    async def denied(*args, **kwargs):
++        raise ChatWriteForbiddenError('Posting is forbidden')
++    monkeypatch.setattr(pipeline.telegram_ops, 'post_to_channel', denied)
++    for _ in range(3):
++        result = asyncio.run(pipeline.dispatch_to_channel({'id': creator}, row(ch), 'deal'))
++        assert result.startswith('failed:ChatWriteForbiddenError:')
++    assert row(ch)['status'] == 'paused'
++
++
++def test_installer_fresh_apply_and_mismatch(tmp_path):
++    import io
++    import shutil
++    import tarfile
++    root = Path(__file__).resolve().parents[1]
++    archive = subprocess.check_output(['git', 'archive', 'd288364a824cfea5d2ceae7881a16d92b7b5f07f'], cwd=root)
++    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
++        tar.extractall(tmp_path)
++    for name in ('apply-delivery-safety.py', 'delivery-safety.patch'):
++        shutil.copyfile(root / 'patches' / name, tmp_path / 'patches' / name)
++    script = tmp_path / 'patches/apply-delivery-safety.py'
++    def run(*args):
++        return subprocess.run([sys.executable, str(script), *args], cwd=tmp_path,
++                              capture_output=True, text=True)
++    source = tmp_path / 'influencer_hub/pipeline.py'
++    original = source.read_bytes()
++    assert run('--dry-run').returncode == 0
++    assert source.read_bytes() == original
++    assert run('--check').returncode == 1
++    # One mismatched file must prevent changes to every other file.
++    db_source = tmp_path / 'influencer_hub/db.py'
++    db_original = db_source.read_bytes()
++    source.write_text('broken target\n')
++    assert run().returncode == 2
++    assert db_source.read_bytes() == db_original
++    source.write_bytes(original)
++    applied = run()
++    assert applied.returncode == 0, applied.stdout + applied.stderr
++    assert run('--check').returncode == 0
++    assert run().returncode == 1
+diff --git a/tests/test_pacing_and_categories.py b/tests/test_pacing_and_categories.py
+index 4f09c7e..9f0f67f 100644
+--- a/tests/test_pacing_and_categories.py
++++ b/tests/test_pacing_and_categories.py
+@@ -148,16 +148,16 @@ def test_a_saving_flag_never_vetoes_a_real_product_deal():
+     """A coupon word must not hide the product: the coupon is not a category.
+ 
+     "🔥 BOAT AIRDOPES at ₹1299 · Use code BOAT500" is electronics. The keyword
+-    lists know neither the brand nor the product, so the only thing they can see
++    lists previously knew neither the brand nor the product; they only saw
+     is the word "code" — which used to drop the deal for any creator who asked
+     for electronics, silently and for good.
+     """
+     branded = ("🔥 BOAT AIRDOPES at ₹1299 (MRP ₹2999)\n"
+                "https://www.amazon.in/dp/B09N3ZNHTY\n"
+                "Use code BOAT500 · Sizes M, L, XL")
+-    assert lr.classify_deal_category(branded) == ["recharge_freebies"]
++    assert lr.classify_deal_category(branded) == ["electronics", "recharge_freebies"]
+     assert lr.matches_category_filter(branded, "electronics") is True
+-    assert lr.matches_category_filter(branded, "clothing") is True      # unknown too
++    assert lr.matches_category_filter(branded, "clothing") is False     # now recognised
+     # …while a deal that really belongs elsewhere is still dropped.
+     saree = "🥻 Banarasi Silk Saree with Blouse Piece at ₹899"
+     assert lr.matches_category_filter(saree, "electronics") is False
+diff --git a/tests/test_product_categories.py b/tests/test_product_categories.py
+new file mode 100644
+index 0000000..c279398
+--- /dev/null
++++ b/tests/test_product_categories.py
+@@ -0,0 +1,152 @@
++"""Product evidence and simple setup must agree with real category routing."""
++import pytest
++
++from influencer_hub import categories, config, db, link_router, onboarding
++
++
++@pytest.mark.parametrize('text,expected,excluded', [
++    ('Samsung smartphone gold colour', 'electronics', 'jewellery_accessories'),
++    ('Pet shampoo 500ml', 'pet_supplies', 'daily'),
++    ('Dog food 5kg', 'pet_supplies', 'daily'),
++    ('Whey protein powder 1kg', 'sports', 'daily'),
++    ('Notebook computer ₹25999', 'electronics', 'books_stationery'),
++    ('Electric iron ₹999', 'appliances', 'electronics'),
++    ('Iron supplement tablets', 'daily', 'electronics'),
++    ('Smart-watch ₹1299', 'electronics', 'clothing'),
++    ('Baby shampoo 200ml', 'baby', 'daily'),
++    ('School bag ₹499', 'books_stationery', 'travel_luggage'),
++    ('చీరలు ఆఫర్ ₹599', 'clothing', 'electronics'),
++    ('బియ్యం 5kg', 'daily', 'clothing'),
++])
++def test_specific_product_evidence(text, expected, excluded):
++    result = categories.analyse(text)
++    assert expected in result['categories']
++    assert excluded not in result['categories']
++    assert result['evidence'][expected]
++    assert link_router.matches_category_filter(text, expected)
++    assert not link_router.matches_category_filter(text, excluded)
++
++
++def test_url_and_footer_noise_cannot_select_category():
++    text = ('Cotton saree ₹599 https://example.com/electronics/phone?tag=gaming\n'
++            'Join our gaming phone jewellery channel')
++    assert categories.analyse(text)['categories'] == ['clothing']
++    assert not link_router.matches_category_filter(text, 'electronics')
++
++
++def test_phrases_do_not_hide_other_products():
++    result = categories.analyse('Pet shampoo + Samsung phone + baby lotion bundle')
++    assert {'pet_supplies', 'electronics', 'baby'} <= set(result['categories'])
++    assert result['multi_category']
++    assert categories.preview('Lipstick with coupon code SAVE50', 'beauty')['passes']
++    assert not categories.preview('Lipstick with coupon code SAVE50', 'electronics')['passes']
++
++
++@pytest.mark.parametrize('alias,product', [
++    ('books', 'Paperback book'), ('toys', 'Baby diapers'),
++    ('jewellery', 'Gold plated necklace'), ('fashion', 'Cotton saree'),
++    ('pets', 'Dog food'), ('travel', 'Cabin bag'),
++])
++def test_legacy_filters_and_picker_ids(alias, product):
++    assert categories.preview(product, alias)['passes']
++    selected = onboarding.selected_categories(categories.ALIASES[alias])
++    assert selected != ['all']
++    assert onboarding.category_text(selected)
++    assert onboarding.category_text([categories.ALIASES[alias]])
++
++
++def test_all_picker_choices_have_classifier_route():
++    for key, _, _ in onboarding.CATEGORY_CHOICES:
++        assert key == 'all' or categories.ALIASES.get(key, key) in link_router.CATEGORY_KEYWORDS
++
++
++def test_unknown_policy_and_invalid_filters(monkeypatch):
++    unknown = 'Mystery model ZXQ2049 ₹999'
++    assert categories.preview(unknown, 'electronics')['passes']
++    assert categories.analyse(unknown)['primary'] == 'other'
++    assert categories.analyse(unknown)['scores'] == {}
++    monkeypatch.setattr(config, 'CATEGORY_FILTER_STRICT_UNKNOWN', True)
++    assert not categories.preview(unknown, 'electronics')['passes']
++    assert categories.preview(unknown, '')['passes']
++    assert categories.preview('Saree', 'electrnics')['invalid_categories'] == ['electrnics']
++
++
++def test_evidence_score_counts_words_not_substrings():
++    result = categories.analyse('Phone phone phone')
++    assert result['evidence']['electronics'] == ['phone']
++    assert link_router.get_deal_category_advanced('Phone phone phone') == {'electronics': 0.65}
++    assert categories.analyse('Wholesale cartography carpet') ['categories'] == ['other']
++
++
++@pytest.fixture
++def client(monkeypatch):
++    from dashboard.app import app
++    db.init()
++    monkeypatch.setattr(config, 'DASHBOARD_ADMIN_PASSWORD', 'safe-admin-password')
++    monkeypatch.setattr(config, 'HUB_ENV', 'development')
++    monkeypatch.setattr(config, 'DASHBOARD_COOKIE_SECURE', False)
++    monkeypatch.setattr(app, 'testing', False)
++    with app.test_client() as client:
++        yield client
++
++
++def authenticate(client, role='admin'):
++    with client.session_transaction() as session:
++        session['dashboard_authenticated'] = True
++        session['dashboard_role'] = role
++        session['_csrf_token'] = 'category-preview-test-token'
++
++
++def test_preview_authenticated_csrf_readonly(client):
++    authenticate(client)
++    con = db._connect()
++    try:
++        before = list(con.iterdump())
++        assert client.post('/api/category-preview', json={'text': 'Phone'}).status_code == 400
++        response = client.post('/api/category-preview', json={'text': 'Phone', 'categories': 'electronics'},
++                               headers={'X-CSRF-Token': 'category-preview-test-token'})
++        assert response.status_code == 200
++        assert response.json['preview']['passes']
++        assert list(con.iterdump()) == before
++    finally:
++        con.close()
++
++
++def test_preview_requires_auth_and_admin(client):
++    with client.session_transaction() as session:
++        session['_csrf_token'] = 'category-preview-test-token'
++    headers = {'X-CSRF-Token': 'category-preview-test-token'}
++    assert client.post('/api/category-preview', json={'text': 'Phone'}, headers=headers).status_code == 401
++    authenticate(client, 'team')
++    assert client.post('/api/category-preview', json={'text': 'Phone'}, headers=headers).status_code == 403
++
++
++@pytest.mark.parametrize('payload', [{}, [], {'text': ''}, {'text': ['Phone']},
++    {'text': 'Phone', 'categories': []}, {'text': 'x' * 20001}])
++def test_preview_rejects_invalid_input(client, payload):
++    authenticate(client)
++    response = client.post('/api/category-preview', json=payload,
++                           headers={'X-CSRF-Token': 'category-preview-test-token'})
++    assert response.status_code == 400
++
++
++def test_guided_page_quick_picks_and_preview(client):
++    authenticate(client)
++    creator = db.add_influencer('Category creator', 'category-21')
++    page = client.get(f'/guided?creator={creator}').get_data(as_text=True)
++    assert 'Tech & appliances' in page
++    assert 'Preview these unsaved choices' in page
++    for key in ('appliances', 'travel_luggage', 'gaming', 'pet_supplies'):
++        assert f'value="{key}"' in page
++
++
++def test_cli_preview_does_not_initialise_database(monkeypatch, capsys):
++    from influencer_hub.cli import main
++    def forbidden():
++        pytest.fail('Read-only category check must not initialize DB')
++    monkeypatch.setattr(db, 'init', forbidden)
++    assert main(['category-preview', '--text', 'Pet shampoo', '--categories', 'pets']) == 0
++    import json
++    result = json.loads(capsys.readouterr().out)
++    assert result['passes'] and result['primary'] == 'pet_supplies'
++    assert main(['category-preview', '--text', ' ']) == 2

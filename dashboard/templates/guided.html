@@ -217,9 +217,16 @@
       Pick the categories this creator wants (leave “All categories” for everything), then the
       hours and the networks. The defaults you set once on the setup page are already filled in.
     </p>
-    <form method="post" action="{{ url_for('guided_categories_step') }}" class="auth-form">
+    <form id="guided-category-form" method="post" action="{{ url_for('guided_categories_step') }}" class="auth-form">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
       <input type="hidden" name="creator" value="{{ guided_profile.id }}" />
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;" aria-label="Category quick picks">
+        <button type="button" class="btn btn-secondary category-preset" data-categories="all">🌟 Everything</button>
+        <button type="button" class="btn btn-secondary category-preset" data-categories="electronics,gaming,appliances">📱 Tech & appliances</button>
+        <button type="button" class="btn btn-secondary category-preset" data-categories="clothing,footwear,jewellery,beauty">👗 Fashion & beauty</button>
+        <button type="button" class="btn btn-secondary category-preset" data-categories="home,daily,toys,pet_supplies">🏠 Family essentials</button>
+      </div>
+      <p class="hint">Quick picks only tick boxes. Review them, then save below — nothing goes live automatically.</p>
       <div class="cat-grid">
         {% for value, label, hint in guided_categories %}
           <label title="{{ hint }}">
@@ -232,6 +239,9 @@
       <p class="hint" style="margin-top:6px;">
         Ticking “All categories” clears the rest — it means <em>any loot</em>.
       </p>
+      {% with policy_profile=guided_profile, policy_channels=guided_channels %}
+        {% include "_product_policy_fields.html" %}
+      {% endwith %}
       <div class="guided-grid" style="margin-top:10px;">
         <label>Posting hours
           <input name="posting_schedule" maxlength="60"
@@ -252,6 +262,7 @@
           <input name="categories_text" maxlength="200"
                  value="{{ guided_profile.categories or '' }}"
                  placeholder="electronics,fashion" />
+          <span class="hint">Used only when no category boxes are checked. Use All categories explicitly for an unrestricted strict feed.</span>
         </label>
       </div>
       <div class="cat-grid" style="margin-top:12px;">
@@ -337,7 +348,14 @@
 (function () {
   "use strict";
   // "All categories" clears the specific ones: it means any loot.
-  var boxes = Array.prototype.slice.call(document.querySelectorAll('input[name="categories"]'));
+  var categoryForm = document.getElementById('guided-category-form');
+  var boxes = categoryForm ? Array.prototype.slice.call(categoryForm.querySelectorAll('input[name="categories"]')) : [];
+  document.querySelectorAll('.category-preset').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var selected = button.dataset.categories.split(',');
+      boxes.forEach(function (box) { box.checked = selected.indexOf(box.value) !== -1; });
+    });
+  });
   boxes.forEach(function (box) {
     box.addEventListener("change", function () {
       if (box.value === "all" && box.checked) {

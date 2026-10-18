@@ -1347,3 +1347,151 @@ the bot process is alive, writes to `vm_stats`, and posts a compact card to
 `dummy`) let you stage a new influencer against isolated test sources before
 pointing them at the live shared pool. Dummy sources are kept completely
 separate from production.
+
+### Destination safety and preview-first repairs
+
+Each destination has its own durable permanent-failure streak in
+`delivery_failures`. Only **3 consecutive known permanent delivery failures**
+(e.g. Telegram `ChatWriteForbiddenError`) pause an active channel. The pause is
+recorded in the team audit with its reason. Successful delivery resets the
+streak; transient/unknown send failures break it. Skipped/deferred deals never
+increment it. Dashboard re-enable resets it, so an operator gets a fresh start.
+A watchdog persistence error is logged but cannot stop ingestion. Classification
+is intentionally conservative: timeouts, FloodWait and unknown errors never
+cause automatic pauses. No live posting guarantee is implied by a green check.
+
+```bash
+python -m influencer_hub.cli check-channels         # read-only Telegram checks
+python -m influencer_hub.cli check-channels --fix   # explicit permanent fixes
+python -m influencer_hub.cli doctor --channels     # local preview only
+python -m influencer_hub.cli doctor --channels --resolve-channels # read-only lookup
+python -m influencer_hub.cli doctor --channels --resolve-channels --apply-channel-fixes
+```
+
+Doctor never sends or joins. Only `--apply-channel-fixes` permits its writes;
+transient Telegram lookup failures report `deferred` and leave channels active,
+even during apply. Review permissions and fix the account/channel before
+re-enabling paused destinations. Self-check warns about threshold breaches and
+distinguishes a starting worker from a stale heartbeat (>180 seconds).
+
+Amazon sponsored `/sspa/click?url=...` links re-sign the **inner** Amazon
+URL with the creator's tag while preserving other inner and outer query
+parameters. Ordinary product canonicalization remains unchanged.
+
+For an older checkout at this release's base, copy both
+`patches/apply-delivery-safety.py` and `patches/delivery-safety.patch` together:
+
+```bash
+python patches/apply-delivery-safety.py --check
+python patches/apply-delivery-safety.py --dry-run
+python patches/apply-delivery-safety.py
+PYTHONPATH=. python -m pytest -q tests
+```
+
+The installer checks the complete patch, uses atomic `git apply` (no partial
+rejects), syntax-checks and smoke-imports installed modules, and refuses a plain
+repeat apply (exit 1; `--check` / `--dry-run` return 0 when installed). Missing
+runtime dependencies permit syntax-only verification with an explicit warning;
+this is not a substitute for the full test suite. Mismatch exits 2 without
+applying. Tests and documentation are included in the bundle. Neither installer
+nor preview restarts services. Deployment executes a stable temporary script
+snapshot before fast-forwarding, avoiding mid-run shell input replacement.
+
+### Easier category setup and product checks
+
+Open **Guided setup → Deals & hours**:
+
+1. Pick **Everything**, **Tech & appliances**, **Fashion & beauty**, or
+   **Family essentials**. Quick picks only tick boxes; they do not save or post.
+2. Fine-tune individual categories. Appliances, gaming, pets and travel now have
+   explicit choices. Existing `books`, `toys`, `jewellery` settings also match the
+   classifier's canonical IDs (no database rewrite needed).
+3. Paste a product/deal and press **Preview these unsaved choices** to test
+   the creator's complete category/product policy. **Check saved rules** tests
+   persisted preferences, optionally narrowed by a specific owned channel.
+   **Easy Setup** also has a basic **Check product — no posts** category preview;
+   use its Guided Setup link for per-creator strict rules.
+4. Review the settings, save, and use the existing review/go-live flow.
+
+Offline CLI equivalent (does not initialise or modify the database):
+
+```bash
+python -m influencer_hub.cli category-preview \
+  --text "Pet shampoo 500ml ₹299" --categories pet_supplies
+python -m influencer_hub.cli category-preview \
+  --text "Samsung smartphone gold colour" --categories electronics
+```
+
+Detection uses bounded, local word/phrase rules: no AI service, API key or
+product-page request is needed. Product phrases distinguish pet shampoo from
+human toiletries, notebook computers from stationery, and smart watches from
+ordinary fashion watches. Multi-product posts can have multiple categories;
+any selected category can match in flexible mode (strict mixed-post rules are
+explained below). Common join/follow/subscribe footer lines and
+URLs are ignored so a link's tracking parameters cannot choose the category.
+A limited Telugu vocabulary (e.g. చీరలు, బియ్యం, మొబైల్) is supported, not full
+multilingual understanding. Ambiguous colour/marketing terms alone (e.g. gold,
+silver) are not treated as sufficient product evidence.
+
+**Limits:** these are explainable heuristics, not verified catalogue metadata.
+Rule scores are not accuracy probabilities. Unknown products pass by default;
+`CATEGORY_FILTER_STRICT_UNKNOWN=on` holds unknowns on category-restricted feeds.
+The preview identifies unknown/invalid filters and never silently changes saved
+settings. Category ALLOW does not bypass channel readiness, price, schedule,
+affiliate or network checks. The preview API is an authenticated, CSRF-protected,
+read-only POST, keeping pasted product text out of query URLs.
+
+### Per-creator “only these products” rules
+
+For each creator, open **Guided setup → Deals & hours**, or their creator page
+→ **🎯 Product preferences**. Choose categories, choose **Strict**, preview,
+and **Save**. Nothing is changed for any other creator. Strict is suggested by
+the new form, but existing installations keep their previous behaviour until
+an operator explicitly saves a strict policy.
+
+Strict creator rules form a hard cap:
+
+- **Known selected products only.** Unknown products and offer-only text do not
+  enter a category-restricted feed. An explicitly selected Recharge & Offers
+  feed can accept recognised offers without a recognised physical product.
+- **Optional product phrases:** `smartphone, earbuds` means at least one whole
+  word/phrase must appear in product text. This narrows a broad category, e.g.
+  two Electronics creators can request phones and headphones separately.
+- **Never post:** excluded categories and blocked phrases always win; e.g.
+  exclude Gaming, or block `refurbished, renewed`. URL parameters and common
+  join/follow/subscribe footer lines do not count as product phrases.
+- **Mixed posts:** default is to hold detected outside-category product
+  evidence. Shared evidence is not falsely treated as another product: shoes
+  can match Footwear despite also being tagged Clothing. A separate shirt in
+  the post is outside-category evidence. Operators can explicitly allow a mixed
+  post when at least one selected category matches; exclusions still win.
+- **Channel filters only narrow** strict creator choices. A channel configured
+  with All categories cannot widen an Electronics-only creator to fashion.
+  A channel configured for Clothing under an Electronics-only creator may
+  therefore receive nothing; use the saved-channel preview to diagnose it.
+- **Normal posts, deferred retries, hourly highlights and WhatsApp mirrors**
+  respect strict rules. Mirror display-filter bypass and forced unconverted
+  retries do not bypass this creator product cap.
+
+**Preview these unsaved choices** tests the form without saving. **Check saved
+rules** tests the persisted creator policy and an optional owned channel. The
+preview uses the same pure decision function as delivery; no network fetch,
+message send, audit mutation or settings write occurs for an authorised preview.
+Saving is authenticated, CSRF-protected, validated and creator-scoped, with an
+audit event. Malformed stored strict rules hold delivery instead of silently
+falling back. Invalid saves leave the existing category/rule configuration intact.
+
+In strict mode choose at least one category or explicitly choose **All
+categories**. All categories with no extra restrictions intentionally remains
+unrestricted. Use the creator's master pause switch if nothing should post.
+Flexible mode preserves previous category routing; extra strict exclusions and
+phrase controls are inactive in that mode. Existing per-channel legacy override
+behaviour is unchanged for flexible creators.
+
+These remain offline heuristics, **not catalogue or per-item verification**.
+Mixed-product detection only covers recognised evidence; an unrecognised item
+inside a recognised deal may not be identified. Review the evidence, test real
+source examples, and use narrow product phrases for curated feeds. There is no
+claim of perfect semantic classification. SQLite backups preserve these rules;
+the older CSV inventory format does not currently transfer the new preference
+JSON, so recheck preferences after CSV-based migrations.

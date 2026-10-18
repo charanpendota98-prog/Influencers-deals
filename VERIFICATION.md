@@ -519,3 +519,50 @@ The panel names the fix. The short versions:
 * **Mirror** amber → the destination has to pass one visible Test post first
   (by design: nothing half-configured goes live).
 * **WhatsApp hub** red → hub service, `WA_HUB_TOKEN` match, then retry.
+
+## Destination safety regression checks (2026-10-18)
+
+Run `PYTHONPATH=. python -m pytest -q tests` in the installed environment.
+`tests/test_delivery_safety.py` pins the 3-permanent-failure threshold, independent
+streaks, success/re-enable resets, transient/skip/defer safety, fail-open watchdog,
+Doctor preview/apply separation, transient Telegram deferral, nested Amazon
+query preservation, heartbeat states, and installer repeat protection.
+No live Telegram/WhatsApp account was used: network delivery remains an
+operator verification step. Read-only scans cannot prove successful posting.
+
+Verified locally on the session branch: **757 passed**, plus `bash -n
+ deploy/deploy.sh` and installer fresh-base apply/mismatch/rerun tests. GitHub
+Actions runs the same suite on pull requests; merging requires its success.
+
+## Product categories and easy setup follow-up
+
+Added product evidence tests for alias/picker consistency, URL/footer isolation,
+phrase disambiguation, multi-product offers, selected Telugu terms, unknown
+policy, API input limits, admin authentication, CSRF, read-only database state,
+quick-pick rendering and offline CLI operation. The prior Airdopes unknown-case
+fixture now expects electronics because the product name is recognised.
+Category preview controls sit outside saving forms: checking a product cannot
+submit creator settings. No network product lookup or live post was performed.
+
+Final combined local verification: **791 tests passed**. Guided setup and Easy
+Setup rendered successfully; their rendered inline JavaScript passed
+`node --check`. Deploy shell syntax and complete-bundle installer checks passed.
+The earlier GitHub App workflow-permission blocker remains unresolved; this
+follow-up did not retry remote operations.
+
+## Strict creator product preferences follow-up
+
+New tests cover independent creator rules, category-only and product-phrase
+requests, exclusions, shared-vs-mixed evidence, manufacturer ambiguity, strict
+unknown handling, explicit All selection, channel narrowing, malformed-policy
+fail-closed behaviour, atomic validation, idempotent migration, cache result
+isolation, authenticated/CSRF-protected saving, draft/saved preview parity,
+channel ownership, normal pipeline delivery, dispatch boundary, hourly history
+and real mirror routing with fake senders. No live platform sends were used.
+
+Final strict-preference verification: **845 tests passed**. Guided Setup, creator
+detail and Easy Setup rendered with a temporary database and stubbed WhatsApp
+status; their inline scripts passed `node --check`. Installer `--check`, fresh
+base installation/mismatch/rerun tests and deploy shell syntax passed. Remote
+operations were not retried; the previously reported workflow-permission
+blocker remains unresolved.

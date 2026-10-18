@@ -22,6 +22,14 @@ from urllib.parse import parse_qs, parse_qsl, urlparse
 from . import config
 
 Schema = """
+CREATE TABLE IF NOT EXISTS delivery_failures (
+ channel_id INTEGER PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
+ consecutive INTEGER NOT NULL DEFAULT 0,
+ reason TEXT NOT NULL DEFAULT '',
+ updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_failures_updated ON delivery_failures(updated_at);
+
 CREATE TABLE IF NOT EXISTS influencers (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     name              TEXT NOT NULL,
@@ -269,6 +277,7 @@ CREATE TABLE IF NOT EXISTS ops_snapshots (
     notes          TEXT NOT NULL DEFAULT ''
 );
 
+CREATE INDEX IF NOT EXISTS idx_posts_retention ON posts(posted_at);
 CREATE INDEX IF NOT EXISTS idx_channels_influencer ON channels(influencer_id);
 CREATE INDEX IF NOT EXISTS idx_posts_sig ON posts(deal_sig, influencer_id);
 CREATE INDEX IF NOT EXISTS idx_wa_influencer ON wa_sessions(influencer_id);
@@ -363,6 +372,7 @@ def migrate() -> None:
             ("allowed_sources", "TEXT NOT NULL DEFAULT ''"),
             ("bitly_api_key", "TEXT NOT NULL DEFAULT ''"),
             ("categories", "TEXT NOT NULL DEFAULT ''"),
+            ("category_preferences", "TEXT NOT NULL DEFAULT ''"),
             ("posting_schedule", "TEXT NOT NULL DEFAULT ''"),
             ("only_amazon", "INTEGER NOT NULL DEFAULT 0"),
             ("allow_amazon", "INTEGER NOT NULL DEFAULT 1"),
@@ -562,7 +572,8 @@ def update_influencer(influencer_id: int, name: str | None = None,
                       custom_button_text: str | None = None,
                       custom_button_url: str | None = None,
                       notes: str | None = None, active: bool | None = None,
-                      min_deal_tier: str | None = None) -> None:
+                      min_deal_tier: str | None = None,
+                      category_preferences: str | None = None) -> None:
     con = _connect()
     try:
         updates = []
@@ -594,6 +605,11 @@ def update_influencer(influencer_id: int, name: str | None = None,
         if categories is not None:
             updates.append("categories=?")
             params.append(categories.strip())
+        if category_preferences is not None:
+            from .category_preferences import parse
+            validated = parse(category_preferences)
+            updates.append("category_preferences=?")
+            params.append(json.dumps(validated, sort_keys=True))
         if posting_schedule is not None:
             updates.append("posting_schedule=?")
             params.append(posting_schedule.strip())
@@ -913,6 +929,8 @@ def update_channel_details(channel_id: int, identifier: str | None = None,
         if updates:
             params.append(channel_id)
             con.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id=?", params)
+            if status == "active":
+                con.execute("DELETE FROM delivery_failures WHERE channel_id=?", (channel_id,))
             con.commit()
     finally:
         con.close()
@@ -2739,5 +2757,34 @@ def get_live_deal_insights() -> dict:
             "active_channels": active_channels,
             "delivery_rate_pct": round((posted_24h / total_24h * 100), 1) if total_24h > 0 else None
         }
+    finally:
+        con.close()
+
+
+def record_delivery_result(channel_id: int, result: str) -> None:
+    """Atomic per-destination watchdog. Unknown/transient errors break the streak."""
+    from .channel_health import permanent_failure
+    if result != "posted" and not result.startswith("failed:"):
+        return
+    con = _connect()
+    try:
+        with con:
+            con.execute("BEGIN IMMEDIATE")
+            if result == "posted" or not permanent_failure(result):
+                con.execute("DELETE FROM delivery_failures WHERE channel_id=?", (channel_id,))
+                return
+            con.execute(
+                "INSERT INTO delivery_failures(channel_id, consecutive, reason) VALUES (?,1,?) "
+                "ON CONFLICT(channel_id) DO UPDATE SET consecutive=consecutive+1, "
+                "reason=excluded.reason, updated_at=datetime('now')", (channel_id, result[:300]))
+            count = con.execute("SELECT consecutive FROM delivery_failures WHERE channel_id=?",
+                                (channel_id,)).fetchone()[0]
+            if count >= 3:
+                changed = con.execute("UPDATE channels SET status='paused' WHERE id=? AND status='active'",
+                                      (channel_id,)).rowcount
+                if changed:
+                    con.execute("INSERT INTO team_audit(at,actor,role,action,target,detail,ip) "
+                                "VALUES (datetime('now'),'watchdog','system','channel_auto_paused',?,?, '')",
+                                (str(channel_id), f"3 consecutive permanent failures: {result[:300]}"))
     finally:
         con.close()

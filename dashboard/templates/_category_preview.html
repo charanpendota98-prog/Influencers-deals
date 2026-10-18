@@ -1,0 +1,56 @@
+<div class="category-helper" style="margin:16px 0;padding:16px;border:1px solid var(--border, #ddd);border-radius:12px;">
+  <h3>🔎 Check the product before saving</h3>
+  <p><a href="{{ url_for('guided_setup') }}">🎯 Set a creator’s strict product rules in Guided Setup</a></p>
+  <p class="hint">Paste a deal → see its categories and why. Read-only: no posting, joining, link opening or settings changes.</p>
+  <label>Product name or deal text
+    <textarea class="category-sample" rows="3" maxlength="20000" style="width:100%;box-sizing:border-box;" placeholder="Example: Samsung smartphone ₹14999 with coupon code"></textarea>
+  </label>
+  <label>Categories to test (comma separated; empty = all)
+    <input class="category-filter" maxlength="1000" placeholder="electronics,gaming" style="width:100%;box-sizing:border-box;" />
+  </label>
+  <p class="hint">On guided setup, your category checkboxes are used unless you enter a filter above. Unknown products pass by default; strict unknown mode can hold them.</p>
+  <button type="button" class="btn btn-secondary category-check">Check product — no posts</button>
+  <div class="category-result" role="status" aria-live="polite" style="margin-top:10px;white-space:pre-wrap;"></div>
+</div>
+<script>
+(function () {
+  'use strict';
+  var script = document.currentScript;
+  var panel = script.previousElementSibling;
+  var button = panel.querySelector('.category-check');
+  var result = panel.querySelector('.category-result');
+  button.addEventListener('click', async function () {
+    var scope = panel.closest('section');
+    var boxes = scope ? scope.querySelectorAll('input[name="categories"]:checked') : [];
+    var categories = panel.querySelector('.category-filter').value.trim();
+    if (!categories && boxes.length) {
+      categories = Array.from(boxes).map(function (box) { return box.value; }).join(',');
+    }
+    var token = document.querySelector('input[name="_csrf_token"]');
+    if (!token) { result.textContent = 'Reload the page to get a secure preview token.'; return; }
+    button.disabled = true;
+    result.textContent = 'Checking locally…';
+    try {
+      var response = await fetch('{{ url_for("category_preview_api") }}', {
+        method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': token.value},
+        body: JSON.stringify({text: panel.querySelector('.category-sample').value, categories: categories})
+      });
+      var data = await response.json();
+      if (!response.ok || !data.ok) { throw new Error(data.error || 'Preview unavailable'); }
+      var p = data.preview;
+      var lines = [(p.passes ? '✅ Category filter: ALLOW' : '⏸ Category filter: HOLD'),
+        p.reason, 'Categories: ' + p.categories.join(', '),
+        'Primary: ' + p.primary + (p.multi_category ? ' · Multiple categories detected' : '')];
+      Object.keys(p.evidence).forEach(function (key) {
+        lines.push('• ' + key + ': ' + p.evidence[key].join(', '));
+      });
+      if (p.invalid_categories.length) { lines.push('⚠ Unrecognised filters: ' + p.invalid_categories.join(', ')); }
+      lines.push(p.notice, 'Category check only — channel permissions, price, schedules and network routing still apply.');
+      result.textContent = lines.join('\n');
+    } catch (error) {
+      result.textContent = 'Could not preview: ' + error.message;
+    } finally { button.disabled = false; }
+  });
+})();
+</script>

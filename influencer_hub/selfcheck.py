@@ -245,6 +245,14 @@ def _worker_check(heartbeat: dict | None) -> dict:
                       "Start it: `sudo systemctl start influencer-deal-worker` "
                       "(the provided deploy unit).")
     state = str(heartbeat.get("state") or "").lower()
+    import time
+    stamp = heartbeat.get("heartbeat_at")
+    stale = stamp is not None and time.time() - float(stamp) > 180
+    if stale:
+        return _check("worker", "Background worker", WARN, "Worker heartbeat is stale",
+                      "Inspect the worker service before restarting.")
+    if state == "starting":
+        return _check("worker", "Background worker", WARN, "Worker is starting; wait for its first poll.")
     alive = state in {"running", "idle", "polling", "healthy"}
     detail = f"Worker state: {state or 'unknown'}"
     if heartbeat.get("last_poll_at"):
@@ -605,6 +613,7 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
         _guard("schema", "Database & schema", _schema_check),
         _guard("telegram", "Telegram account", _telegram_check),
         _guard("dashboard", "Dashboard access", _dashboard_check),
+        _guard("delivery", "Delivery watchdog", _delivery_check),
         _guard("worker", "Background worker", lambda: _worker_check(heartbeat)),
         _guard("sources", "Deal sources", lambda: _sources_check(sources, influencers)),
         _guard("amazon", "Amazon attribution", lambda: _amazon_check(plan, fleet)),
@@ -631,3 +640,13 @@ def run_checks(*, live: bool = False, influencers: list[dict] | None = None,
         "summary": counts,
         "next": [check for check in checks if check["state"] in {FAIL, WARN}],
     }
+
+
+def _delivery_check():
+    con = db._connect()
+    try:
+        count = con.execute("SELECT COUNT(*) FROM delivery_failures WHERE consecutive>=3").fetchone()[0]
+    finally:
+        con.close()
+    return _check("delivery", "Delivery watchdog", WARN if count else OK,
+                  f"{count} destination(s) reached the permanent failure threshold.")

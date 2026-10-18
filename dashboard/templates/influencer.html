@@ -16,6 +16,7 @@
       Amazon Associate Tag: <code style="font-size: 14px; font-weight: bold; background: #1e3a8a; color: #93c5fd; padding: 3px 8px; border-radius: 4px;">{{ inf.amazon_tag }}</code> · 
       {% if inf.phone_number %}<span style="color:#38bdf8; font-family:monospace; margin-right:8px;">📞 {{ inf.phone_number }}</span> · {% endif %}
       Status: <b>{{ '🟢 Active' if inf.active else '🔴 Paused' }}</b> ·
+      <a href="#product-preferences">🎯 Product preferences</a> ·
       {% if inf.insta_id %}<a href="https://instagram.com/{{ inf.insta_id.lstrip('@') }}" target="_blank" style="color:#e879f9; text-decoration:none;">📸 {{ inf.insta_id }}</a>{% endif %}
     </p>
   </div>
@@ -813,4 +814,22 @@ function setInfSchedule(val) {
   document.getElementById('inf-schedule-input').value = val;
 }
 </script>
+
+<section id="product-preferences" style="margin:20px 0;padding:20px;border:1px solid var(--border, #ddd);border-radius:12px;">
+  <h2>🎯 Product preferences for {{ inf.name }}</h2>
+  <p>Choose the products this creator wants. Strict rules apply to normal deals, hourly highlights and WhatsApp mirrors. Existing channel filters may narrow these choices.</p>
+  <form method="post" action="{{ url_for('save_product_preferences', inf_id=inf.id) }}">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+    <div style="display:flex;flex-wrap:wrap;gap:14px;">
+      {% for key, label, hint in product_category_choices %}
+        <label title="{{ hint }}"><input type="checkbox" name="categories" value="{{ key }}"
+           {% if key in product_category_picked(inf.categories) %}checked{% endif %} /> {{ label }}</label>
+      {% endfor %}
+    </div>
+    {% with policy_profile=inf, policy_channels=channels %}
+      {% include "_product_policy_fields.html" %}
+    {% endwith %}
+    <button type="submit" class="button-primary">Save only this creator’s product preferences</button>
+  </form>
+</section>
 {% endblock %}
