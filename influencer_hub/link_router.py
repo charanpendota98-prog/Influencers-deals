@@ -894,6 +894,20 @@ def compact_amazon_product_link(url: str, tag: str | None = None) -> str:
     # the pipeline / dashboard, never silently).
     if not amazon_tag_is_usable(effective_tag):
         effective_tag = config.AMAZON_ASSOCIATE_TAG
+    if parsed.path.rstrip("/") == "/sspa/click":
+        # Re-sign the encoded destination without canonicalizing away its params.
+        nested = []
+        for key, value in query_values:
+            inner = urlparse(value)
+            if key.lower() == "url" and inner.hostname and any(
+                _is_domain(inner.hostname.lower(), domain) for domain in AMAZON_DOMAINS
+            ):
+                pairs = [(k, v) for k, v in parse_qsl(inner.query, keep_blank_values=True)
+                         if k.lower() != "tag"]
+                pairs.append(("tag", effective_tag))
+                value = urlunparse(inner._replace(query=urlencode(pairs)))
+            nested.append((key, value))
+        return urlunparse(parsed._replace(query=urlencode(nested)))
     asin = _amazon_asin(parsed)
     # Determine marketplace — an Amazon URL always keeps its own storefront.
     marketplace_host = amazon_marketplace_host(url)  # short links -> None, stay on their host
@@ -1701,13 +1715,9 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
 
 
 def classify_deal_category(text: str) -> list[str]:
-    """Identify which categories a deal belongs to."""
-    lower = text.lower()
-    matched = []
-    for cat, kws in CATEGORY_KEYWORDS.items():
-        if any(re.search(rf"\b{re.escape(kw)}\b", lower) for kw in kws):
-            matched.append(cat)
-    return matched or ["other"]
+    """Product categories from offline rules, excluding URL/footer noise."""
+    from .categories import analyse
+    return analyse(text)["categories"]
 
 
 # Categories that describe the *kind of offer* rather than the product: a promo
@@ -1731,23 +1741,8 @@ def matches_category_filter(deal_text: str, allowed_categories_spec: str) -> boo
     is a saving-type flag — passes, so a missing keyword can never silently cost a
     sale. Set ``CATEGORY_FILTER_STRICT_UNKNOWN=on`` to drop even those.
     """
-    s = (allowed_categories_spec or "").strip().lower()
-    unrestricted = {"all", "any", "unrestricted", "all categories", "all deals", "*", "no_filter", "default"}
-    tokens = {x.strip() for x in s.split(",") if x.strip()}
-    if not tokens or tokens.intersection(unrestricted):
-        return True
-    allowed_set = tokens
-    deal_cats = set(classify_deal_category(deal_text))
-    # If the deal matches any allowed category, return True
-    if deal_cats.intersection(allowed_set):
-        return True
-    # Nothing but saving-type flags / "other": the product is unknown to us.
-    if not (deal_cats - SECONDARY_CATEGORIES):
-        return not getattr(config, "CATEGORY_FILTER_STRICT_UNKNOWN", False)
-    # If deal has uncategorized items ('other'), let it pass if explicitly permitted
-    if "other" in deal_cats and "other" in allowed_set:
-        return True
-    return False
+    from .categories import preview
+    return preview(deal_text, allowed_categories_spec)["passes"]
 
 
 def is_time_in_schedule(schedule_spec: str, current_time: str | None = None) -> bool:
@@ -2118,19 +2113,9 @@ def is_high_quality_deal(text: str, min_tier: str = "B") -> bool:
 
 
 def get_deal_category_advanced(text: str) -> dict:
-    """Advanced category detection with confidence and multi-label.
-    Returns {category: confidence} for fully advanced targeting.
-    """
-    cats = classify_deal_category(text)
-    # Add confidence based on keyword matches
-    result = {}
-    low = text.lower()
-    for cat in cats:
-        kws = CATEGORY_KEYWORDS.get(cat, [])
-        matched = sum(1 for kw in kws if kw.lower() in low)
-        conf = min(0.99, 0.5 + matched * 0.15)
-        result[cat] = round(conf, 2)
-    return result
+    """Compatibility API: category -> rule strength (not probability)."""
+    from .categories import analyse
+    return analyse(text)["scores"]
 
 
 def translate_telugu_keywords(text: str) -> str:

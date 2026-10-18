@@ -187,6 +187,20 @@ async def dispatch_poll(channel: dict, question: str, options: list[str],
 
 
 async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str:
+    if influencer.get("category_preferences"):
+        from .category_preferences import evaluate, is_strict
+        decision = evaluate(text, influencer, channel)
+        if is_strict(influencer) and not decision["passes"]:
+            return "skipped:category_preferences:" + decision["code"]
+    result = await _dispatch_to_channel(influencer, channel, text)
+    try:
+        db.record_delivery_result(channel["id"], result)
+    except Exception:
+        __import__("logging").getLogger(__name__).exception("Delivery watchdog failed; ingestion continues")
+    return result
+
+
+async def _dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str:
     """Post `text` to one channel. Returns a status string.
 
     WhatsApp sends use conservative per-session pacing, but pacing cannot
@@ -245,7 +259,7 @@ async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str
             return "skipped"
         return "posted"
     except Exception as exc:  # pragma: no cover - network dependent
-        return f"failed:{exc}"
+        return f"failed:{type(exc).__name__}: {exc}"
 
 
 def _parse_price_filter_spec(spec: str) -> tuple[float | None, float | None]:
@@ -422,6 +436,14 @@ async def _render_and_deliver_destination(
     seen_content_in_this_run = (
         seen_content_in_this_run if seen_content_in_this_run is not None else set()
     )
+
+    # Explicit creator product rules are a hard cap, even for mirrors. Legacy
+    # mirrors retain the previous display-filter bypass contract.
+    if inf.get("category_preferences"):
+        from .category_preferences import evaluate, is_strict
+        decision = evaluate(deal_text, inf, ch)
+        if is_strict(inf) and not decision["passes"]:
+            return "skipped:category_preferences:" + decision["code"]
 
     # A mirrored post was already accepted by the main Telegram channel, so
     # these display filters must not silently drop it again on the WhatsApp
@@ -675,7 +697,7 @@ async def _render_and_deliver_destination(
                           reason=tag_proof.HOLD_REASON,
                           delay_seconds=DEFERRED_RETRY_DELAY_SECONDS)
         except Exception:  # pragma: no cover - parking must never break a run
-            logging.getLogger(__name__).exception("could not park the held deal")
+            __import__("logging").getLogger(__name__).exception("could not park the held deal")
         try:
             from . import security
             security.audit("pipeline", "system", "amazon_tag_hold",
@@ -857,7 +879,7 @@ async def _render_and_deliver_destination(
                         )][:3],
                     )
         except Exception as _guard_exc:
-            logging.getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
+            __import__("logging").getLogger(__name__).exception("commission_guard failed: %s", _guard_exc)
 
     # 8b-2. MONEY FILTER: never spend a post on a deal that pays nothing.
     # Off by default so volume is never reduced without the operator's
@@ -877,7 +899,7 @@ async def _render_and_deliver_destination(
             if audit["earning"] == 0 and audit["monetisable"] > 0:
                 return "skipped:no_commission_link"
         except Exception as _money_exc:  # pragma: no cover - defensive
-            logging.getLogger(__name__).exception("money filter failed: %s", _money_exc)
+            __import__("logging").getLogger(__name__).exception("money filter failed: %s", _money_exc)
     # 8c. Rendered content hash dedup (second layer): catches identical product title+price even if sig differed slightly
     # This is the final guard for NIRLON/Levis screenshot duplicates where same rendered text was posted twice at 11:27
     try:
@@ -1275,6 +1297,10 @@ async def run_hourly_loot_highlight(influencer_ids: Iterable[int] | None = None)
                 # Only-Amazon: must have Amazon link
                 if only_amz and not link_router.has_amazon_link(txt):
                     continue
+                if inf.get("category_preferences"):
+                    from .category_preferences import evaluate
+                    if not evaluate(txt, inf, ch)["passes"]:
+                        continue
                 if cat_filter and not link_router.matches_category_filter(txt, cat_filter):
                     continue
                 if not link_router.matches_price_filter(txt, max_price=max_p, min_price=min_p):

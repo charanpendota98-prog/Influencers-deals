@@ -405,12 +405,24 @@ def _cmd_verify_earnkaro(args):  # pragma: no cover - network
     print(res)
 
 
+def _cmd_check_channels(args):
+    from .channel_health import scan
+    import json
+    print(json.dumps(asyncio.run(scan(resolve=True, apply=args.fix)), indent=2))
+
+
 def _cmd_doctor(args):  # pragma: no cover - side effect
     """Check selected local configuration and service health signals.
 
     Passing these checks is not an end-to-end delivery or affiliate-commission
     verification.
     """
+    if args.channels or args.resolve_channels or args.apply_channel_fixes:
+        from .channel_health import scan
+        import json
+        print(json.dumps(asyncio.run(scan(resolve=args.resolve_channels,
+                                          apply=args.apply_channel_fixes)), indent=2))
+        return
     db.init()
     import base64
     import json
@@ -1136,6 +1148,16 @@ def _cmd_amazon_items(args):  # pragma: no cover - requires configured Amazon cr
     return 0
 
 
+def _cmd_category_preview(args):
+    """Offline product evidence only: no DB initialization or external requests."""
+    import json
+    from .categories import preview
+    if not args.text.strip() or len(args.text) > 20000:
+        print("Provide a product/deal text between 1 and 20000 characters.")
+        return 2
+    print(json.dumps(preview(args.text, args.categories), indent=2, ensure_ascii=False))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="influencer_hub", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1231,7 +1253,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also validate the local branded HTTPS short-link origin (does not make an external request)",
     )
+    d.add_argument("--channels", action="store_true", help="read-only destination preview")
+    d.add_argument("--resolve-channels", action="store_true", help="read-only Telegram lookups")
+    d.add_argument("--apply-channel-fixes", action="store_true", help="explicitly apply permanent fixes")
     d.set_defaults(func=_cmd_doctor)
+    cc = sub.add_parser("check-channels", help="read-only destination scan; --fix to apply")
+    cc.add_argument("--fix", action="store_true")
+    cc.set_defaults(func=_cmd_check_channels)
 
     sub.add_parser("status", help="overview of everything").set_defaults(func=_cmd_status)
 
@@ -1383,6 +1411,10 @@ def build_parser() -> argparse.ArgumentParser:
     cn.add_argument("--json", action="store_true", help="machine-readable output")
     cn.set_defaults(func=_cmd_channel_names)
 
+    cp = sub.add_parser("category-preview", help="offline read-only product/category check")
+    cp.add_argument("--text", required=True, help="product name or deal text")
+    cp.add_argument("--categories", default="", help="comma-separated filters; empty = all")
+    cp.set_defaults(func=_cmd_category_preview)
     rp = sub.add_parser("run-pipeline", help="pull shared deals and dispatch to influencers")
     rp.add_argument("--id", type=int, default=None, help="limit to one influencer")
     rp.add_argument("--limit", type=int, default=10, help="messages per source")

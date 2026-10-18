@@ -769,6 +769,8 @@ _AUDIT_EXEMPT_ENDPOINTS = {
     "static", "login", "logout", "team_login", "team_add", "reauthenticate_setup_change",
     "lock_setup_changes", "amazon_short_link", "meesho_hypd_short_link",
     "lehlah_meesho_short_link", "healthz",
+    "category_preview_api",  # read-only POST: product text stays out of URLs/logs
+    "save_product_preferences",  # writes its own creator-scoped audit event
 }
 
 
@@ -4167,6 +4169,48 @@ def guided_channels_step():
     return redirect(url_for("guided_setup", creator=inf_id, step="categories"))
 
 
+@app.context_processor
+def product_policy_context():
+    from influencer_hub.category_preferences import view
+    return {"category_preference_view": view, "product_category_choices": onboarding.CATEGORY_CHOICES,
+            "product_category_picked": onboarding.selected_categories}
+
+
+def _product_preferences_from_form(profile):
+    from influencer_hub.category_preferences import parse
+    current = parse()
+    current.update(mode=request.form.get("category_mode", "strict"),
+                   mixed=request.form.get("mixed_products", "block"),
+                   excluded_categories=request.form.getlist("excluded_categories"),
+                   required_keywords=request.form.get("required_keywords", ""),
+                   blocked_keywords=request.form.get("blocked_keywords", ""))
+    return json.dumps(parse(current), sort_keys=True)
+
+
+@app.route("/influencer/<int:inf_id>/product-preferences", methods=["POST"])
+def save_product_preferences(inf_id):
+    from influencer_hub.category_preferences import validate_spec
+    profile = db.get_influencer(inf_id)
+    if not profile:
+        abort(404)
+    try:
+        picked = request.form.getlist("categories")
+        if len(picked) > 50:
+            raise ValueError("Too many categories.")
+        if not picked and request.form.get("category_mode", "strict") == "strict":
+            raise ValueError("Select a category, or explicitly choose All categories.")
+        spec = validate_spec(",".join(picked))
+        preferences = _product_preferences_from_form(profile)
+    except ValueError as exc:
+        flash(str(exc) + " Nothing was saved.", "error")
+        return redirect(url_for("influencer_detail", inf_id=inf_id) + "#product-preferences")
+    db.update_influencer(inf_id, categories=spec, category_preferences=preferences)
+    security.audit(_session_actor(), _session_role(), "product_preferences_saved", target=str(inf_id),
+                   detail="categories=" + (spec or "all") + " preferences=" + preferences, ip=_client_ip())
+    flash("Product preferences saved for this creator only. Channels can narrow strict rules, never widen them.", "success")
+    return redirect(url_for("influencer_detail", inf_id=inf_id) + "#product-preferences")
+
+
 @app.route("/guided/categories", methods=["POST"])
 def guided_categories_step():
     """Step 3: which deals, which hours, which networks (pre-filled from presets)."""
@@ -4179,6 +4223,18 @@ def guided_categories_step():
     picked = request.form.getlist("categories")
     free_text = request.form.get("categories_text", "").strip()
     categories = onboarding.category_text(picked) if picked else free_text
+    preferences = None
+    if "category_mode" in request.form:
+        from influencer_hub.category_preferences import validate_spec
+        try:
+            if not picked and not free_text and request.form.get("category_mode") == "strict":
+                raise ValueError("Select a category, or explicitly choose All categories.")
+            # Validate original values before the picker can discard unknown IDs.
+            validate_spec(",".join(picked) if picked else free_text)
+            preferences = _product_preferences_from_form(profile)
+        except ValueError as exc:
+            flash(str(exc) + " Nothing was saved.", "error")
+            return redirect(url_for("guided_setup", creator=inf_id, step="categories"))
     schedule = request.form.get("posting_schedule", "").strip()
     price_filter = request.form.get("price_filter", "").strip() or "all"
     flags = {}
@@ -4189,7 +4245,7 @@ def guided_categories_step():
               "warning")
         flags["allow_amazon"] = True
     db.update_influencer(inf_id, categories=categories, posting_schedule=schedule,
-                         price_filter=price_filter, **flags)
+                         price_filter=price_filter, category_preferences=preferences, **flags)
     mirror = request.form.get("mirror_whatsapp")
     main = db.get_channel(inf_id, "broadcast")
     if main and mirror in {"0", "1"}:
@@ -4880,6 +4936,58 @@ def api_flow():
     return jsonify(_flow_snapshot(
         stall_seconds=stall_seconds, window_hours=window_hours, live_probe=_wants_live_probe(),
     ))
+
+
+@app.route("/api/category-preview", methods=["POST"])
+def category_preview_api():
+    """Local-only product evidence; never sends, fetches URLs or changes settings."""
+    from influencer_hub.categories import preview
+    values = request.get_json(silent=True) if request.is_json else request.form.to_dict()
+    if not isinstance(values, dict):
+        return jsonify(ok=False, error="invalid_input"), 400
+    text = values.get("text", "")
+    selected = values.get("categories", "")
+    if not isinstance(text, str) or not isinstance(selected, str):
+        return jsonify(ok=False, error="invalid_input"), 400
+    if not text.strip():
+        return jsonify(ok=False, error="Paste a product or deal first."), 400
+    if len(text) > 20000 or len(selected) > 1000:
+        return jsonify(ok=False, error="Preview input is too long."), 400
+    if "preferences" in values or "creator_id" in values:
+        from influencer_hub.category_preferences import evaluate, parse, validate_spec
+        def preview_id(value):
+            text_id = str(value)
+            if (isinstance(value, bool) or len(text_id) > 19 or not text_id.isascii()
+                    or not text_id.isdecimal()):
+                raise ValueError("Invalid creator/channel id")
+            number = int(text_id)
+            if not 0 < number <= 9223372036854775807:
+                raise ValueError("Invalid creator/channel id")
+            return number
+
+        try:
+            channel = None
+            if "preferences" in values:
+                if not isinstance(values["preferences"], dict):
+                    raise ValueError("preferences must be an object")
+                profile = {"categories": validate_spec(selected),
+                           "category_preferences": json.dumps(parse(values["preferences"]))}
+            else:
+                creator_id = preview_id(values["creator_id"])
+                profile = db.get_influencer(creator_id)
+                if not profile:
+                    return jsonify(ok=False, error="Creator not found"), 404
+                if "channel_id" in values:
+                    channel_id = preview_id(values["channel_id"])
+                    channel = next((ch for ch in db.list_channels(profile["id"])
+                                    if ch["id"] == int(channel_id)), None)
+                    if not channel:
+                        return jsonify(ok=False, error="Channel not found for this creator"), 404
+            decision = evaluate(text, profile, channel)
+            return jsonify(ok=True, preview=decision)
+        except ValueError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+    return jsonify(ok=True, preview=preview(text, selected))
 
 
 @app.route("/api/routing-preview")

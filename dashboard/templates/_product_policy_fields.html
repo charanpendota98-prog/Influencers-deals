@@ -1,0 +1,118 @@
+{% set policy = category_preference_view(policy_profile) %}
+<fieldset class="product-policy" data-creator="{{ policy_profile.id }}" style="margin:16px 0;padding:16px;border:1px solid var(--border, #ddd);border-radius:12px;">
+  <legend><strong>🎯 Only what {{ policy_profile.name }} wants</strong></legend>
+  {% if policy.error %}<p role="alert">⚠ {{ policy.error }} Delivery is held until valid preferences are saved.</p>{% endif %}
+  <p class="hint">Saved mode: <strong>{{ policy.mode }}</strong>. Strict changes apply only after Save. Other creators are not changed.</p>
+  <label>Delivery style
+    <select name="category_mode">
+      <option value="strict" {% if policy.mode == 'strict' or not policy_profile.category_preferences %}selected{% endif %}>Strict — selected products only; hold unknowns</option>
+      <option value="legacy" {% if policy.mode == 'legacy' and policy_profile.category_preferences %}selected{% endif %}>Flexible — previous category behaviour</option>
+    </select>
+  </label>
+  <label>Posts containing multiple product types
+    <select name="mixed_products">
+      <option value="block" {% if policy.mixed == 'block' %}selected{% endif %}>Hold if another product type is outside my selection</option>
+      <option value="allow" {% if policy.mixed == 'allow' %}selected{% endif %}>Allow if at least one selected product type matches</option>
+    </select>
+  </label>
+  <details style="margin-top:12px;">
+    <summary>Optional: never post these categories / specific product phrases</summary>
+    <p class="hint">Exclusions win over allowed categories. Phrase filters apply to product text, not URLs or common channel footers.</p>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;">
+      {% for key, label, hint in product_category_choices if key != 'all' %}
+        <label><input type="checkbox" name="excluded_categories" value="{{ key }}"
+          {% if key in product_category_picked(policy.excluded_categories|join(',')) %}checked{% endif %} /> Never: {{ label }}</label>
+      {% endfor %}
+    </div>
+    <label>Must contain at least one product phrase (optional, comma separated)
+      <input name="required_keywords" maxlength="1600" value="{{ policy.required_keywords|join(', ') }}" placeholder="smartphone, earbuds" style="width:100%;box-sizing:border-box;" />
+    </label>
+    <label>Never contain any of these phrases (optional, comma separated)
+      <input name="blocked_keywords" maxlength="1600" value="{{ policy.blocked_keywords|join(', ') }}" placeholder="refurbished, renewed, used" style="width:100%;box-sizing:border-box;" />
+    </label>
+    <p class="hint">Up to 20 literal phrases per field; 80 characters per phrase. No regex. In flexible mode these extra restrictions are inactive.</p>
+  </details>
+  <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border, #ddd);">
+    <label>Try a deal before saving
+      <textarea class="policy-sample" rows="3" maxlength="20000" placeholder="Paste product text or a deal" style="width:100%;box-sizing:border-box;"></textarea>
+    </label>
+    <button type="button" class="btn btn-secondary policy-preview-draft">Preview these unsaved choices</button>
+    <label>Saved channel filter
+      <select class="policy-channel">
+        <option value="">Creator rules only</option>
+        {% for ch in policy_channels|default([]) %}
+          <option value="{{ ch.id }}">{{ ch.title or ch.identifier }} — {{ ch.categories or 'inherits creator categories' }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="button" class="btn btn-secondary policy-preview-saved">Check saved rules</button>
+    <div class="policy-result" role="status" aria-live="polite" style="margin-top:10px;white-space:pre-wrap;"></div>
+    <p class="hint">Both checks are read-only: no posts, URL visits or settings changes. Unknown products are held in strict restricted feeds. All categories with no extra restrictions remains unrestricted. Channels can narrow strict creator rules, never widen them. Category approval does not bypass affiliate, readiness, price or schedule checks.</p>
+  </div>
+</fieldset>
+<script>
+(function () {
+  'use strict';
+  var panel = document.currentScript.previousElementSibling;
+  var form = panel.closest('form');
+  var draft = panel.querySelector('.policy-preview-draft');
+  var saved = panel.querySelector('.policy-preview-saved');
+  var result = panel.querySelector('.policy-result');
+  var categoryBoxes = Array.from(form.querySelectorAll('input[name="categories"]'));
+  categoryBoxes.forEach(function (box) {
+    box.addEventListener('change', function () {
+      if (!box.checked) { return; }
+      categoryBoxes.forEach(function (other) {
+        if ((box.value === 'all' && other !== box) || (box.value !== 'all' && other.value === 'all')) { other.checked = false; }
+      });
+    });
+  });
+  async function check(useSaved) {
+    var text = panel.querySelector('.policy-sample').value;
+    var payload = {text: text};
+    if (useSaved) {
+      payload.creator_id = panel.dataset.creator;
+      var channel = panel.querySelector('.policy-channel').value;
+      if (channel) { payload.channel_id = channel; }
+    } else {
+      var picked = categoryBoxes.filter(function (box) { return box.checked; }).map(function (box) { return box.value; });
+      var free = form.querySelector('input[name="categories_text"]');
+      payload.categories = picked.length ? picked.join(',') : (free ? free.value : '');
+      if (!payload.categories.trim() && panel.querySelector('[name="category_mode"]').value === 'strict') {
+        result.textContent = 'Select a category, or explicitly choose All categories.';
+        return;
+      }
+      payload.preferences = {
+        mode: panel.querySelector('[name="category_mode"]').value,
+        mixed: panel.querySelector('[name="mixed_products"]').value,
+        excluded_categories: Array.from(panel.querySelectorAll('[name="excluded_categories"]:checked')).map(function (box) { return box.value; }),
+        required_keywords: panel.querySelector('[name="required_keywords"]').value,
+        blocked_keywords: panel.querySelector('[name="blocked_keywords"]').value
+      };
+    }
+    var token = form.querySelector('[name="_csrf_token"]');
+    if (!token) { result.textContent = 'Reload this page to renew its security token.'; return; }
+    draft.disabled = saved.disabled = true;
+    result.textContent = 'Checking product preferences locally…';
+    try {
+      var response = await fetch('{{ url_for("category_preview_api") }}', {
+        method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': token.value},
+        body: JSON.stringify(payload)
+      });
+      var data = await response.json();
+      if (!response.ok || !data.ok) { throw new Error(data.error || 'Preview unavailable'); }
+      var p = data.preview;
+      var lines = [(useSaved ? 'SAVED rules' : 'UNSAVED choices') + ' · ' + p.mode,
+        p.passes ? '✅ Product preferences: ALLOW' : '⏸ Product preferences: HOLD', p.reason];
+      if (p.categories) { lines.push('Detected: ' + p.categories.join(', ')); }
+      Object.keys(p.evidence || {}).forEach(function (key) { lines.push('• ' + key + ': ' + p.evidence[key].join(', ')); });
+      lines.push('No message was sent. No preferences were saved. Offline rules are not catalogue verification.');
+      result.textContent = lines.join('\n');
+    } catch (error) { result.textContent = 'Could not preview: ' + error.message; }
+    finally { draft.disabled = saved.disabled = false; }
+  }
+  draft.addEventListener('click', function () { check(false); });
+  saved.addEventListener('click', function () { check(true); });
+})();
+</script>

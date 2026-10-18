@@ -40,11 +40,16 @@ CATEGORY_CHOICES = (
     ("home", "🏠 Home & Kitchen", "kitchen, decor, storage"),
     ("daily", "🛒 Daily & Grocery", "everyday essentials"),
     ("beauty", "💄 Beauty & Care", "skincare, makeup"),
-    ("jewellery", "💍 Jewellery & Watches", "gold-plated, smart watches"),
+    ("jewellery", "💍 Jewellery & Watches", "necklaces, earrings, bracelets"),
     ("toys", "🧸 Toys & Baby", "kids, baby care"),
     ("sports", "🏏 Sports & Fitness", "gym, outdoor, cricket"),
     ("books", "📚 Books & Stationery", "books, school items"),
     ("automotive", "🚗 Automotive", "car, bike accessories"),
+    ("appliances", "❄️ Appliances", "fridge, washing machine, fans"),
+    ("travel_luggage", "🧳 Travel & Luggage", "suitcases, travel bags"),
+    ("gaming", "🎮 Gaming", "consoles, gaming accessories"),
+    ("pet_supplies", "🐾 Pet Supplies", "pet food, care and accessories"),
+    ("recharge_freebies", "🎁 Recharge & Offers", "coupons, cashback, recharge"),
 )
 
 CATEGORY_KEYS = {value for value, _label, _hint in CATEGORY_CHOICES}
@@ -58,12 +63,19 @@ def selected_categories(raw: str) -> list[str]:
     parts = [part.strip().lower() for part in text.split(",") if part.strip()]
     if "all" in parts or "unrestricted" in parts or "any" in parts:
         return ["all"]
-    return [part for part in parts if part in CATEGORY_KEYS] or ["all"]
+    # Existing databases use both old picker IDs and canonical classifier IDs.
+    from .categories import ALIASES
+    canonical = {ALIASES.get(part, part) for part in parts}
+    return [key for key, _, _ in CATEGORY_CHOICES
+            if ALIASES.get(key, key) in canonical] or ["all"]
 
 
 def category_text(picked) -> str:
     """Store a picker selection as the ``categories`` string ('' = all)."""
     keys = [str(key).strip().lower() for key in (picked or []) if str(key).strip()]
+    from .categories import ALIASES
+    picker_ids = {ALIASES.get(key, key): key for key, _, _ in CATEGORY_CHOICES}
+    keys = [picker_ids.get(ALIASES.get(key, key), key) for key in keys]
     keys = [key for key in keys if key in CATEGORY_KEYS]
     if not keys or "all" in keys:
         return ""

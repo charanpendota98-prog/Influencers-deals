@@ -24,7 +24,16 @@
 # No secret is ever printed: the preflight reports which .env keys exist, never values.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Execute a stable copy: a fast-forward must not replace a running shell's input.
+if [[ "${HUB_DEPLOY_SNAPSHOT:-}" != "$0" ]]; then
+  export HUB_DEPLOY_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  snapshot="$(mktemp "${TMPDIR:-/tmp}/hub-deploy.XXXXXXXX.sh")"
+  cp -- "$0" "$snapshot"
+  export HUB_DEPLOY_SNAPSHOT="$snapshot"
+  exec bash "$snapshot" "$@"
+fi
+trap 'rm -f -- "$HUB_DEPLOY_SNAPSHOT"' EXIT
+REPO_ROOT="$HUB_DEPLOY_ROOT"
 cd "$REPO_ROOT"
 
 BRANCH=""
