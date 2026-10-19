@@ -1435,23 +1435,37 @@ def render_for_influencer(
 
 
 def extract_price(text: str) -> float | None:
-    """Extract the lowest price mentioned in the deal text.
-    Handles ₹, Rs, Rs., INR, at Rs.499, @199, Price: 299 etc.
+    """Extract the lowest deal price, expanding Indian shorthand correctly.
+
+    Supports ``₹30k``/``Rs 30 thousand``, ``₹1.5L``/``1.5 lakh``, and crore
+    suffixes as well as plain rupee amounts. A suffix-aware token is important:
+    without it, ``₹30k`` was parsed as ₹30, which could pass a low-price filter
+    and receive a misleading deal-quality score. Source text is never rewritten
+    by this function; it supplies numeric metadata to filters and ranking only.
     """
-    clean_text = text.replace(",", "")
+    clean_text = str(text or "").replace(",", "")
+    amount = r"(\d+(?:\.\d{1,2})?)\s*(crores?|cr|lakhs?|lacs?|lac|l|thousands?|k)?(?![A-Za-z])"
     patterns = [
-        r"(?:₹|rs\.?|inr)\s*(\d+(?:\.\d{1,2})?)",
-        r"@\s*(\d+(?:\.\d{1,2})?)",
-        r"(?:deal price|price|at|for|just)\s*(?:₹|rs\.?|inr|:)?\s*(\d+(?:\.\d{1,2})?)",
+        rf"(?:₹|rs\.?|inr)\s*{amount}",
+        rf"@\s*{amount}",
+        rf"\b(?:deal price|price|at|for|just)\s*(?:₹|rs\.?|inr|:)?\s*{amount}",
         r"(?<!\d)(\d{1,7}(?:\.\d{1,2})?)\s*/-",
     ]
+    multipliers = {
+        "k": 1_000, "thousand": 1_000, "thousands": 1_000,
+        "l": 100_000, "lac": 100_000, "lacs": 100_000,
+        "lakh": 100_000, "lakhs": 100_000,
+        "cr": 10_000_000, "crore": 10_000_000, "crores": 10_000_000,
+    }
     prices: list[float] = []
-    for pat in patterns:
-        for m in re.finditer(pat, clean_text, re.I):
+    for index, pat in enumerate(patterns):
+        for match in re.finditer(pat, clean_text, re.I):
             try:
-                val = float(m.group(1))
-                if 1 <= val <= 2000000:  # sane bounds (1 rupee to 20 lakh)
-                    prices.append(val)
+                value = float(match.group(1))
+                unit = (match.group(2) or "").casefold() if index < 3 else ""
+                value *= multipliers.get(unit, 1)
+                if 1 <= value <= 1_000_000_000:  # ₹1 through ₹100 crore
+                    prices.append(value)
             except (ValueError, TypeError):
                 continue
     return min(prices) if prices else None

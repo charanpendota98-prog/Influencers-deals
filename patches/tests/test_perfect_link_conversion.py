@@ -420,6 +420,18 @@ def test_the_retry_queue_is_idempotent_per_deal_and_reports_attempts():
     assert db.count_deferred_deals() == 0
 
 
+def test_deferred_deal_keeps_the_public_source_token_for_safe_retries():
+    text = "🔥 Shoes ₹499 https://www.flipkart.com/p/itm123"
+    deal_hash = db.defer_deal(
+        text, source="Loot Zone Deals", source_token="lootzoneindia11",
+        reason="no_own_amazon_tag", delay_seconds=0,
+    )
+    row = db.due_deferred_deals()[0]
+    assert row["deal_hash"] == deal_hash
+    assert row["source"] == "Loot Zone Deals"
+    assert row["source_token"] == "lootzoneindia11"
+
+
 def test_commission_guard_exception_fails_closed_and_persists_a_hold(monkeypatch):
     influencer_id, channel_id, sent = _channel(monkeypatch, "guard_error")
     deal = f"🔥 Deal https://www.amazon.in/dp/B0ABCDEFGH?tag={TAG}"

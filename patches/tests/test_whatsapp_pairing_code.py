@@ -61,6 +61,28 @@ def test_the_dashboard_asks_the_hub_for_a_code_and_keeps_it_for_the_operator(cli
     assert row["pairing_error"] == ""
 
 
+def test_a_ten_digit_indian_mobile_gets_the_country_code_automatically(client, monkeypatch):
+    inf_id = db.add_influencer("Local Mobile Creator", "localmobile-21")
+    key = f"inf-{inf_id}-wa"
+    seen = []
+
+    async def fake_request(session_key, phone, label=""):
+        seen.append((session_key, phone))
+        return {"ok": True, "code": "ABCD-EFGH", "phone": phone, "status": "pairing"}
+
+    monkeypatch.setattr(whatsapp_client, "request_pairing_code", fake_request)
+    monkeypatch.setattr(dashboard_module, "_run", lambda coro: asyncio.run(coro))
+
+    response = client.post(
+        f"/influencer/{inf_id}/pair-wa-phone", data={"pairing_phone": "98765 43210"},
+    )
+
+    assert response.status_code == 302
+    assert "wa_pair_status=code" in response.headers["Location"]
+    assert seen == [(key, "919876543210")]
+    assert _session_row(key)["pairing_phone"] == "919876543210"
+
+
 def test_a_short_number_is_refused_before_any_session_is_created(client, monkeypatch):
     inf_id = db.add_influencer("Typo Creator", "typo-21")
     called: list[tuple] = []

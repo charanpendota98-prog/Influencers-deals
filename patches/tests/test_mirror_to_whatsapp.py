@@ -125,7 +125,7 @@ def test_mirror_is_switchable_per_main_channel_and_globally(wired):
     off = asyncio.run(pipeline.render_and_dispatch(
         AMAZON_DEAL, influencer_ids=[inf_id], source_channel="loot_source",
     ))
-    assert off[inf_id][wa_id] == "skipped"
+    assert off[inf_id][wa_id] == "skipped:source_filter"
     assert wired["sent"] == []
 
     # The creator's own opt-out is visible on the plan instead of being silent.
@@ -155,7 +155,7 @@ def test_mirror_is_switchable_per_main_channel_and_globally(wired):
     result = asyncio.run(pipeline.render_and_dispatch(
         AMAZON_DEAL, influencer_ids=[third], source_channel="loot_source",
     ))
-    assert result[third][w] == "skipped"
+    assert result[third][w] == "skipped:source_filter"
     assert len(wired["sent"]) == 1
     db.set_global_setting("mirror_main_to_whatsapp", "1")
 

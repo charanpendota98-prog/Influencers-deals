@@ -91,6 +91,8 @@ def _source_parts(spec: str) -> tuple[str | None, str | None, bool]:
         return None, None, False
     if raw.startswith("@"):
         return raw.lstrip("@").casefold(), None, False
+    if raw.startswith("+"):
+        return None, None, True
     if raw.lstrip("-").isdigit():
         return None, raw, False
 
@@ -105,6 +107,10 @@ def _source_parts(spec: str) -> tuple[str | None, str | None, bool]:
             first = segments[0]
             if first.startswith("+") or first.casefold() == "joinchat":
                 return None, None, True
+            if first.casefold() == "s" and len(segments) > 1:
+                # Telegram's public web preview form t.me/s/<username> points
+                # at the same public dialog as t.me/<username>.
+                first = segments[1]
             if first.lstrip("-").isdigit():
                 return None, first, False
             return first.lstrip("@").casefold(), None, False
@@ -498,7 +504,13 @@ async def pull_recent_deals(
             text = _message_text(message)
             if not text:
                 continue
-            out.append({"text": text, "source": source} if include_source else text)
+            out.append({
+                "text": text,
+                "source": source,
+                # The displayed title is user-friendly but may not contain the
+                # public @username selected in a creator's source picker.
+                "source_token": _dialog_username(dialog) or _dialog_id(dialog) or source,
+            } if include_source else text)
     return out
 
 
@@ -541,6 +553,10 @@ async def pull_new_deals(limit: int | None = None, use_dummy: bool = False) -> l
             records.append({
                 "text": _message_text(message),
                 "source": source,
+                # Keep the stable selector identity alongside the dialog title:
+                # creators select @username tokens, while Telegram often reports
+                # a different display title for the same joined channel.
+                "source_token": _dialog_username(dialog) or _dialog_id(dialog) or source,
                 "source_id": key,
                 "message_id": message_id,
             })

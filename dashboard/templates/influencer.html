@@ -49,7 +49,13 @@
     {% endif %}
     {% if request.args.get('test_status') == 'posted' %}
       <div style="background:#065f46; color: #a7f3d0; padding:4px 10px; border-radius:6px; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">
-        ✅ Test post accepted for {{ request.args.get('ch_name') }}. Check WhatsApp; a pending WhatsApp destination is now active.
+        ✅ Transport test accepted for {{ request.args.get('ch_name') }}.
+        {% if request.args.get('ch_platform') == 'telegram' %}
+          This only proves Telegram can send a message — it does <b>not</b> test deal source filters, channel status, commission guard, or Amazon tag. For real-deal blockers check Setup → Source activity and 🏷️ Tag proof.
+          {% if request.args.get('ch_status') not in ['ready', 'active'] %}<br><b>Channel status is {{ request.args.get('ch_status') or 'unknown' }}, not Active</b> — the test does not enable it. Set its Status to Active in the channel table.{% endif %}
+        {% else %}
+          Check the WhatsApp destination; a pending WhatsApp destination is now active. Real deals still obey the source and affiliate checks.
+        {% endif %}
       </div>
     {% elif request.args.get('test_status') == 'failed' %}
       <div style="background:#7f1d1d; color: #fca5a5; padding:4px 10px; border-radius:6px; font-size: 12px; font-weight: bold; margin-top: 4px; text-align:right;">
@@ -62,11 +68,11 @@
       </div>
     {% elif request.args.get('wa_pair_status') == 'missing_phone' %}
       <div style="background:#713f12; color:#fde68a; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
-        Country code tho full WhatsApp number ivvandi (e.g. 919876543210).
+10-digit Indian mobile number ivvandi; system +91 add chesthundi. Already +91 tho enter chesina kuda okay.
       </div>
     {% elif request.args.get('wa_pair_status') == 'bad_phone' %}
       <div style="background:#713f12; color:#fde68a; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
-        ⚠ Number 10-15 digits undali (country code tho). Example: 919876543210 — '+' leda spaces avasaram ledu.
+        ⚠ Indian mobile ki 10 digits enter cheyandi (e.g. 9876543210); +91 auto-add avutundi. Leda full international number enter cheyandi.
       </div>
     {% elif request.args.get('wa_pair_status') == 'failed' %}
       <div style="background:#7f1d1d; color:#fecaca; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
@@ -104,6 +110,56 @@
     </div>
   {% endif %}
 {% endwith %}
+
+<section class="card" style="border:1px solid #334155; background:#0f172a; padding:10px 14px; border-radius:8px;">
+  <div style="display:flex; gap:8px; align-items:flex-start;">
+    <span style="font-size:18px;">💡</span>
+    <div>
+      <strong style="color:#7dd3fc; font-size:13px;">Test message velthundi kaani posts ravatledu? — quick check</strong>
+      <p class="hint" style="margin:4px 0 0; font-size:11px; line-height:1.5;">
+        Test posts <em>deal source / schedule / category / price / commission checks ni bypass chesthayi</em>, andhuke success ante real deal kuda pass ani kaadu. Setup → Advanced Source Manager lo source active/joined ga unda check cheyandi; creator source picker lo source tick cheyandi leda intentional-ga <em>Post from every source</em> select cheyandi. Amazon deals ki creator own usable tag mandatory — shared default tag tho deals intentionally hold avutayi. <a href="{{ url_for('setup') }}#source-pool" style="color:#38bdf8;">Setup diagnostics</a> lo skip reasons check cheyandi.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="card" style="border:1px solid {{ '#166534' if delivery_readiness.profile_active and delivery_readiness.active_destinations else '#b45309' }}; background:#0b1220; padding:12px 14px; border-radius:8px;">
+  <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap;">
+    <h2 style="margin:0; color:#e2e8f0; font-size:14px;">📡 Delivery readiness · configuration check</h2>
+    <b style="color:{{ '#86efac' if delivery_readiness.profile_active and delivery_readiness.active_destinations else '#fbbf24' }}; font-size:11px;">
+      {{ 'DESTINATION CONFIGURED' if delivery_readiness.profile_active and delivery_readiness.active_destinations else 'ACTION NEEDED' }}
+    </b>
+  </div>
+  <p class="hint" style="margin:6px 0; font-size:11px;">This checks saved settings only; it cannot prove live Telegram/WhatsApp permissions or that a real deal passed the pipeline.</p>
+  <ul style="margin:4px 0; font-size:11px; color:#cbd5e1;">
+    <li>Profile: {{ 'Active' if delivery_readiness.profile_active else 'Inactive — no deals will be dispatched' }}</li>
+    <li>{{ delivery_readiness.active_destinations }} active destination(s){% if delivery_readiness.active_names %}: {{ delivery_readiness.active_names | join(', ') }}{% endif %}</li>
+    {% if delivery_readiness.pending_destinations %}<li style="color:#fbbf24;">{{ delivery_readiness.pending_destinations }} pending destination(s){% if delivery_readiness.pending_whatsapp %} ({{ delivery_readiness.pending_whatsapp }} WhatsApp destination(s) need a successful test post and permission){% endif %}</li>{% endif %}
+    {% if delivery_readiness.paused_destinations %}<li style="color:#fca5a5;">{{ delivery_readiness.paused_destinations }} paused destination(s) will not receive posts.</li>{% endif %}
+    {% if delivery_readiness.amazon_tag_holds %}<li style="color:#fecaca;">{{ delivery_readiness.amazon_tag_holds }} active Telegram destination(s) have an Amazon tag proof blocker.</li>{% endif %}
+  </ul>
+  <p class="hint" style="margin:4px 0 0; font-size:10px;">For actual delivery evidence, check <a href="{{ url_for('setup') }}" style="color:#38bdf8;">Setup → Source activity</a> after a real source deal arrives.</p>
+</section>
+
+{% set tag_blockers = namespace(rows=[]) %}
+{% for item in tag_diag %}
+  {% if item.status in ['ready', 'active'] and (not item.own or not item.usable) %}
+    {% set tag_blockers.rows = tag_blockers.rows + [item] %}
+  {% endif %}
+{% endfor %}
+{% if tag_blockers.rows %}
+<section class="card" style="border:2px solid #ef4444; background:#2a1010; padding:12px 14px; border-radius:8px;">
+  <h2 style="margin:0; color:#fecaca; font-size:14px;">⛔ Amazon deals held — own tag proof failed</h2>
+  <p class="hint" style="margin:6px 0; color:#fee2e2; font-size:12px;">
+    The green Test button only verifies Telegram can send a plain alert; it bypasses deal filters and has no Amazon URL. These ready Telegram destinations will not receive Amazon deals unless the tag is usable and belongs to this creator. Add each creator’s own Associates tag in the profile (or a valid channel override); a shared default tag is deliberately held to prevent commission going to the wrong account.
+  </p>
+  <ul style="margin:4px 0; font-size:11px; color:#fecaca;">
+    {% for item in tag_blockers.rows %}
+      <li>{{ item.channel }} · {{ item.role }} · currently using <code>{{ item.tag or 'no tag' }}</code> ({{ item.source }})</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
 
 <section class="card" style="border:1px solid #334155; padding:14px;">
   <h2 style="margin:0 0 10px; font-size:15px; color:#e2e8f0;">Affiliate routing for this profile</h2>
@@ -713,10 +769,10 @@
       </form>
 
       <div style="margin-top:10px; padding-top:10px; border-top:1px dashed #14532d;">
-        <p class="hint" style="font-size:12px; margin:0 0 6px;">Leda QR scan kudarakapothe — <b>influencer phone number</b> isthe, WhatsApp aa phone lo <b>8-character code</b> chupistundi (Linked devices → Link with phone number). Camera avasaram ledu.</p>
+        <p class="hint" style="font-size:12px; margin:0 0 6px;">QR scan kudarakapothe, <b>10-digit Indian mobile number</b> enter cheyandi — system +91 auto-add chesthundi (full +91 number kuda accept chesthundi). WhatsApp app lo Linked devices → Link with phone number open chesi generated <b>8-character code</b> enter cheyandi.</p>
         <form method="post" action="{{ url_for('pair_wa_phone', inf_id=inf.id) }}" style="display:flex; gap:6px;">
           <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
-          <input name="pairing_phone" value="{{ wa_pairing.phone }}" placeholder="919876543210 (country code tho)" style="flex:1; font-size:13px; font-family:monospace;" required />
+          <input name="pairing_phone" value="{{ wa_pairing.phone }}" type="tel" inputmode="tel" autocomplete="tel" placeholder="9876543210 (10-digit Indian mobile)" style="flex:1; font-size:13px; font-family:monospace;" required />
           <button type="submit" style="background:#0284c7; color:white; font-weight:bold; white-space:nowrap;">🔢 Get Login Code</button>
         </form>
         <div id="pairbox" data-key="{{ wa_key }}" style="margin-top:10px;">
@@ -754,7 +810,7 @@
             <label style="font-size:12px; font-weight:bold; color:#86efac; display:block; margin-bottom:4px;">
               ⭐ A) Channels / Groups where +{{ wa_status_info.phone }} is ADMIN (pick one by name):
             </label>
-            <select name="chat_jid" style="width:100%; padding:8px; font-size:13px;">
+            <select name="admin_chat_jid" style="width:100%; padding:8px; font-size:13px;">
               <option value="">-- Pick your channel here --</option>
               {% for chat in wa_status_info.admin_chats %}
                 <option value="{{ chat.jid }}|{{ chat.name }}">{{ chat.name }} · {{ 'Channel' if chat.kind == 'channel' else 'Group' }} · you are {{ chat.role }}{% if chat.members %} · {{ chat.members }} members{% endif %}</option>
@@ -772,7 +828,7 @@
             <summary style="cursor:pointer; font-size:12px; color:#cbd5e1;">
               {{ 'B)' if wa_status_info.admin_chats else 'A)' }} All groups / channels this phone sees (any role)
             </summary>
-            <select name="chat_jid" style="width:100%; padding:8px; font-size:13px; margin-top:6px;">
+            <select name="any_chat_jid" style="width:100%; padding:8px; font-size:13px; margin-top:6px;">
               <option value="">-- Or Paste Link Below --</option>
               {% for chat in wa_status_info.chats %}
                 <option value="{{ chat.jid }}|{{ chat.name }}">{{ chat.name }} ({{ 'Group' if chat.isGroup else 'Channel' }})</option>

@@ -11,7 +11,7 @@ import asyncio
 import logging
 import random
 import signal
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from . import config, db, pipeline, polls, puller, scheduler, sources
 
@@ -37,6 +37,20 @@ def _delivery_counts(results: dict) -> tuple[int, int]:
             elif normalized.startswith("failed"):
                 failed += 1
     return posted, failed
+
+
+def _skip_summary(results: dict) -> str:
+    """Compactly expose why channels skipped a source post without one DB row per creator."""
+    reasons = Counter(
+        str(status).strip()
+        for per_channel in (results or {}).values()
+        for status in (per_channel or {}).values()
+        if str(status).strip().lower().startswith("skipped")
+    )
+    if not reasons:
+        return ""
+    details = ", ".join(f"{reason} ×{count}" for reason, count in reasons.most_common(5))
+    return f"Delivery skips across channels: {details}"[:300]
 
 
 def _first_failure_reason(results: dict) -> str:
@@ -141,7 +155,12 @@ async def drain_deferred_deals(limit: int = 3) -> int:
         strict_mode = pipeline.strict_commission_mode_enabled()
         try:
             result = await pipeline.run_once(
-                [{"text": text, "source": item.get("source") or ""}],
+                [{
+                    "text": text,
+                    "source": item.get("source") or "",
+                    "source_token": item.get("source_token")
+                    or sources.normalize_selection(str(item.get("source") or "")),
+                }],
                 force_unconverted=exhausted and not strict_mode,
             )
         except Exception as exc:
@@ -254,7 +273,11 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
             posted = failed = 0
             failure_note = ""
             if text:
-                deal = {"text": text, "source": str(record.get("source") or "")}
+                deal = {
+                    "text": text,
+                    "source": str(record.get("source") or ""),
+                    "source_token": str(record.get("source_token") or ""),
+                }
                 try:
                     result = await pipeline.run_once([deal])
                 except Exception as exc:
@@ -275,6 +298,9 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                         source_key, message_id,
                     )
                     failure_note = _first_failure_reason(result)
+                    skipped_note = _skip_summary(result)
+                    if skipped_note:
+                        failure_note = f"{failure_note}; {skipped_note}"[:300]
                     _record_source_activity(
                         source_key, source_name=source_name, message_id=message_id,
                         posted=posted, failed=max(1, failed), error=failure_note,
@@ -284,6 +310,7 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                 _record_source_activity(
                     source_key, source_name=source_name, message_id=message_id,
                     posted=posted, failed=failed,
+                    error=_skip_summary(result),
                 )
 
             # Empty/media-only Telegram posts have no text parser input; mark

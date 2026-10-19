@@ -44,8 +44,11 @@
         cache: 'no-store',
         credentials: 'same-origin',
       });
-      const status = await statusResponse.json();
-      if (status && status.ok && status.status === 'connected') {
+      const status = await statusResponse.json().catch(() => ({}));
+      if (!statusResponse.ok || !status || !status.ok) {
+        showMessage(status?.error || 'WhatsApp hub did not return session status. Check that the hub is running, then retry.', '#fca5a5');
+        nextPollMs = 5000;
+      } else if (status.status === 'connected') {
         showConnected(status.phone);
         nextPollMs = 5000;
       } else if (status && status.ok && status.hasQR) {
@@ -53,11 +56,20 @@
           cache: 'no-store',
           credentials: 'same-origin',
         });
-        const qr = await qrResponse.json();
-        if (qr && qr.qr) showQR(qr.qr);
-        else showMessage('WhatsApp QR is refreshing. Please wait…');
+        const qr = await qrResponse.json().catch(() => ({}));
+        if (!qrResponse.ok || !qr?.ok) {
+          showMessage(qr?.error || 'Could not load the QR image. Retry Generate Live QR Code.', '#fca5a5');
+          nextPollMs = 5000;
+        } else if (qr.qr) showQR(qr.qr);
+        else if (qr.status === 'connected') showConnected(qr.phone);
+        else showMessage('WhatsApp QR is initializing. Keep this page open; it refreshes automatically…');
       } else if (status && status.ok && status.status === 'connecting') {
         showMessage('Connecting to WhatsApp…');
+      } else if (status && status.ok && status.status === 'qr') {
+        showMessage('WhatsApp is preparing the QR. Keep this page open; it refreshes automatically…');
+      } else if (status && status.ok && status.status === 'error') {
+        showMessage('WhatsApp could not create a QR. Check the hub logs, then press Generate Live QR Code again.', '#fca5a5');
+        nextPollMs = 5000;
       } else if (status && status.ok && status.status === 'offline') {
         showMessage('WhatsApp is offline. The hub may retry; use Generate Live QR Code to pair again.', '#fbbf24');
         nextPollMs = 5000;

@@ -576,6 +576,34 @@ def test_influencer_detail_renders_network_status_and_static_preview(
     assert "Meesho only; Amazon and other merchants are not routed through HYPD" in body
     assert "HYPD only retags existing HYPD affiliate URLs" in body
     assert "Static rendering only" in body
+    assert "Delivery readiness · configuration check" in body
+    assert "0 active destination(s)" in body
+    assert "This checks saved settings only" in body
+
+
+def test_delivery_readiness_explains_pending_whatsapp_and_paused_destinations(
+    dashboard_client, monkeypatch
+):
+    influencer_id = db.add_influencer("Readiness Creator", "readiness-21")
+    db.add_channel(influencer_id, "telegram", "@paused_dest", status="paused", role="broadcast")
+    db.add_channel(influencer_id, "whatsapp_channel", "120363000000000000@newsletter",
+                   status="pending", role="whatsapp")
+    monkeypatch.setattr(
+        dashboard_module.whatsapp_client, "session_status", lambda _key: None
+    )
+    monkeypatch.setattr(
+        dashboard_module.whatsapp_client, "pairing_state", lambda _key: None
+    )
+    monkeypatch.setattr(dashboard_module, "_run", lambda _coro: {"status": "offline"})
+
+    response = dashboard_client.get(f"/influencer/{influencer_id}")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "ACTION NEEDED" in body
+    assert "1 pending destination(s)" in body
+    assert "1 WhatsApp destination(s) need a successful test post and permission" in body
+    assert "1 paused destination(s) will not receive posts" in body
 
 
 def test_dashboard_preview_applies_selected_networks_without_posting(

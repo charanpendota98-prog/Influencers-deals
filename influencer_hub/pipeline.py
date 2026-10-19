@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections import defaultdict
 from typing import Iterable
 
 from . import (
@@ -437,6 +438,7 @@ async def _render_and_deliver_destination(
     *,
     sig: str,
     source_channel: str = "",
+    source_token: str = "",
     force_unconverted: bool = False,
     role: str = "broadcast",
     strip_amz: bool = False,
@@ -483,8 +485,13 @@ async def _render_and_deliver_destination(
     if not bypass_display_filters:
         # 1. Source Specification Filter (an empty/all/unrestricted value means no restriction)
         allowed_sources = ch.get("allowed_sources") or inf.get("allowed_sources") or ""
-        if source_channel and not _is_source_allowed(source_channel, allowed_sources):
-            return "skipped"
+        source_matches = (
+            bool(source_channel) and _is_source_allowed(source_channel, allowed_sources)
+        ) or (
+            bool(source_token) and _is_source_allowed(source_token, allowed_sources)
+        )
+        if (source_channel or source_token) and not source_matches:
+            return "skipped:source_filter"
 
         # 2. Posting window (empty/all/unrestricted remains 24/7)
         schedule = ch.get("posting_schedule") or inf.get("posting_schedule") or ""
@@ -730,7 +737,8 @@ async def _render_and_deliver_destination(
         )
         try:
             hold_id = db.defer_deal(
-                deal_text, source=source_channel, reason=tag_proof.HOLD_REASON,
+                deal_text, source=source_channel, source_token=source_token,
+                reason=tag_proof.HOLD_REASON,
                 delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
             )
         except Exception:  # pragma: no cover - retain source cursor on persistence failure
@@ -851,7 +859,8 @@ async def _render_and_deliver_destination(
                 # can fix credentials/routing and the worker will re-evaluate it.
                 try:
                     hold_id = db.defer_deal(
-                        deal_text, source=source_channel, reason="strict_commission_unverified",
+                        deal_text, source=source_channel, source_token=source_token,
+                        reason="strict_commission_unverified",
                         delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
                         max_attempts=DEFERRED_MAX_ATTEMPTS,
                     )
@@ -929,7 +938,8 @@ async def _render_and_deliver_destination(
                     )
                     try:
                         db.defer_deal(
-                            deal_text, source=source_channel, reason=park_reason,
+                            deal_text, source=source_channel, source_token=source_token,
+                            reason=park_reason,
                             delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
                             max_attempts=DEFERRED_MAX_ATTEMPTS,
                         )
@@ -954,7 +964,8 @@ async def _render_and_deliver_destination(
             if strict_commission:
                 try:
                     hold_id = db.defer_deal(
-                        deal_text, source=source_channel, reason="commission_guard_error",
+                        deal_text, source=source_channel, source_token=source_token,
+                        reason="commission_guard_error",
                         delay_seconds=DEFERRED_RETRY_DELAY_SECONDS,
                         max_attempts=DEFERRED_MAX_ATTEMPTS,
                     )
@@ -1060,6 +1071,7 @@ async def _mirror_main_posts_to_whatsapp(
     *,
     sig: str,
     source_channel: str = "",
+    source_token: str = "",
     force_unconverted: bool = False,
     per_channel: dict[int, str],
     ek_cache: dict | None = None,
@@ -1120,6 +1132,7 @@ async def _mirror_main_posts_to_whatsapp(
     for target in targets:
         status = await _render_and_deliver_destination(
             inf, target, deal_text, sig=sig, source_channel=source_channel,
+            source_token=source_token,
             force_unconverted=force_unconverted,
             role=(target.get("role") or "whatsapp").strip().lower(),
             strip_amz=_setting_enabled(
@@ -1220,7 +1233,8 @@ def mirror_plan(inf: dict, *, channels: list[dict] | None = None,
 
 
 async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | None = None,
-                              source_channel: str = "", force_unconverted: bool = False) -> dict:
+                              source_channel: str = "", force_unconverted: bool = False,
+                              source_token: str = "") -> dict:
     """Render one deal for every active influencer and dispatch to their channels.
 
     ``force_unconverted`` is used by the deferred-retry drain: once a deal has
@@ -1253,10 +1267,18 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
         want = set(influencer_ids)
         influencers = [i for i in influencers if i["id"] in want]
 
+    # One batched channel read is essential for a 1000+ creator fleet. The old
+    # per-creator list_channels() loop opened a fresh SQLite connection 1000+
+    # times for every incoming deal, making the worker look alive while delivery
+    # lagged behind the source cursor.
+    channels_by_creator: dict[int, list[dict]] = defaultdict(list)
+    for channel in db.list_channels():
+        if str(channel.get("status", "")).strip().lower() in ACTIVE_CHANNEL_STATUSES:
+            channels_by_creator[int(channel.get("influencer_id") or 0)].append(channel)
+
     results: dict[int, dict[int, str]] = {}
     for inf in influencers:
-        channels = [c for c in db.list_channels(inf["id"])
-                    if str(c.get("status", "")).strip().lower() in ACTIVE_CHANNEL_STATUSES]
+        channels = channels_by_creator.get(int(inf["id"]), [])
         per_channel: dict[int, str] = {}
         for ch in channels:
             role = (ch.get("role") or "broadcast").strip().lower()
@@ -1280,6 +1302,7 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
 
             per_channel[ch["id"]] = await _render_and_deliver_destination(
                 inf, ch, deal_text, sig=sig, source_channel=source_channel,
+                source_token=source_token,
                 force_unconverted=force_unconverted, role=role, strip_amz=strip_amz,
                 effective_amz_tag=effective_amz_tag, ek_cache=ek_cache,
                 seen_physical_in_this_run=seen_physical_in_this_run,
@@ -1290,6 +1313,7 @@ async def render_and_dispatch(deal_text: str, influencer_ids: Iterable[int] | No
         # for that surface and signed with the creator's own Amazon tag.
         per_channel.update(await _mirror_main_posts_to_whatsapp(
             inf, channels, deal_text, sig=sig, source_channel=source_channel,
+            source_token=source_token,
             force_unconverted=force_unconverted, per_channel=per_channel,
             ek_cache=ek_cache,
             seen_physical_in_this_run=seen_physical_in_this_run,
@@ -1317,11 +1341,15 @@ async def run_once(deals: Iterable[dict | str], influencer_ids: Iterable[int] | 
         if isinstance(deal, dict):
             d_text = deal.get("text", "")
             d_src = deal.get("source", "")
+            d_source_token = deal.get("source_token", "")
         else:
             d_text = str(deal)
             d_src = ""
+            d_source_token = ""
         res = await render_and_dispatch(
-            d_text, influencer_ids, source_channel=d_src, force_unconverted=force_unconverted
+            d_text, influencer_ids, source_channel=d_src,
+            source_token=d_source_token,
+            force_unconverted=force_unconverted
         )
         for iid, chmap in res.items():
             all_results.setdefault(iid, {}).update(chmap)

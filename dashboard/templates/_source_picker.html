@@ -16,6 +16,13 @@
     <strong>{{ source_default }}</strong> — a creator never ends up posting from every source
     in the hub by accident.
   </p>
+  <div style="display:flex; gap:7px; flex-wrap:wrap; margin:6px 0 8px;">
+    <button type="button" onclick="const f=this.closest('fieldset'); f.querySelectorAll(&quot;input[name='sources']&quot;).forEach(x=>x.checked=true); f.querySelector(&quot;input[name='sources_all']&quot;).checked=false;"
+            style="background:#1d4ed8; color:white; border:0; border-radius:5px; padding:5px 9px; cursor:pointer; font-size:11px;">☑ Select all current sources</button>
+    <button type="button" onclick="const f=this.closest('fieldset'); f.querySelectorAll(&quot;input[name='sources']&quot;).forEach(x=>x.checked=false); f.querySelector(&quot;input[name='sources_all']&quot;).checked=false;"
+            style="background:#334155; color:#e2e8f0; border:0; border-radius:5px; padding:5px 9px; cursor:pointer; font-size:11px;">Clear selections</button>
+    <span class="hint" style="font-size:10px; align-self:center;">Select multiple current sources; or tick “every source” to include future sources too.</span>
+  </div>
   <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:6px 14px;">
     {% for row in source_rows %}
       <label style="display:flex; gap:8px; align-items:flex-start; font-size:12px;">

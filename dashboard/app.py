@@ -2025,6 +2025,27 @@ def setup():
     current_ek_key = settings.get("earnkaro_api_key") or config.EARNKARO_API_KEY or ""
     current_ek_pubid = settings.get("earnkaro_publisher_id") or _effective_earnkaro_publisher_id()
     current_hypd_store = settings.get("hypd_store_id") or _effective_hypd_store_id()
+    # Advanced source diagnostics: last 24h posting stats + per-source activity
+    try:
+        source_activity = db.list_source_activity()
+    except Exception:
+        source_activity = []
+    try:
+        recent_posts = db.list_recent_posts(hours=24, limit=500)
+        # Aggregate skip reasons
+        from collections import Counter
+        skip_counter: Counter = Counter()
+        for post in recent_posts:
+            status = str(post.get("status") or "")
+            if status.startswith("skipped"):
+                skip_counter[status] += 1
+        skip_reasons = [{"status": k, "count": v} for k, v in skip_counter.most_common(8)]
+    except Exception:
+        recent_posts, skip_reasons = [], []
+    try:
+        channel_activity = db.channel_post_activity(hours=24)
+    except Exception:
+        channel_activity = []
     return render_template(
         "setup.html",
         influencers=influencers,
@@ -2063,6 +2084,9 @@ def setup():
         source_default=_default_source_state(sources),
         source_usage=_source_usage(influencers),
         source_rows=_source_rows(),
+        source_activity=source_activity,
+        skip_reasons=skip_reasons,
+        channel_activity=channel_activity,
     )
 
 
@@ -2110,8 +2134,11 @@ def _default_source_state(configured: list[dict] | None = None) -> dict:
     spec = sources.DEFAULT_SPEC
     token = sources.default_token()
     rows = configured if configured is not None else db.list_sources(active_only=False)
-    have = [row for row in (rows or [])
-            if str(row.get("spec") or "").strip() == spec]
+    default_key = sources.selector_key(spec)
+    have = [
+        row for row in (rows or [])
+        if sources.selector_key(str(row.get("spec") or "")) == default_key
+    ]
     return {
         "name": sources.DEFAULT_NAME or token,
         "label": sources.DEFAULT_NAME or token or spec,
@@ -2623,12 +2650,16 @@ def setup_live_checks():
 @app.route("/sources/seed-defaults", methods=["POST"])
 def seed_default_sources():
     """Register the suggested source catalog only after an explicit operator action."""
-    existing_specs = {source["spec"] for source in db.list_sources(active_only=False)}
+    existing_specs = {
+        sources.selector_key(str(source.get("spec") or ""))
+        for source in db.list_sources(active_only=False)
+    }
     added = 0
     for name, spec in DEFAULT_SOURCE_CATALOG:
-        if spec not in existing_specs:
+        key = sources.selector_key(spec)
+        if key not in existing_specs:
             db.add_source(name, spec, kind="production")
-            existing_specs.add(spec)
+            existing_specs.add(key)
             added += 1
     return redirect(url_for("setup", sources_added=added))
 
@@ -2682,17 +2713,35 @@ def add_deal_source():
     from_setup = request.form.get("from_setup") == "1"
     if kind not in {"production", "dummy"}:
         kind = "production"
-    if not spec or len(spec) > 512:
-        return redirect(url_for("setup", source_error="invalid_spec"))
+    valid_spec, source_error = sources.validate_spec(spec)
+    if not valid_spec:
+        flash(source_error, "error")
+        return redirect(url_for("setup", source_error="invalid_spec", source_saved=0))
+    selector = sources.selector_key(spec)
+    if any(
+        sources.selector_key(str(row.get("spec") or "")) == selector
+        for row in db.list_sources(active_only=False)
+    ):
+        if from_setup:
+            return redirect(url_for(
+                "setup", source_saved=0, sources_added=0, sources_skipped=1,
+                sources_invalid=0,
+            ))
+        flash("That Telegram source is already configured.", "warning")
+        return redirect(url_for("secret_vault_tab" if from_vault else "index"))
     _, _, is_private_invite = puller._source_parts(spec)
+    if is_private_invite and not name:
+        flash(
+            "Private invite links need the exact Telegram dialog title as the label. "
+            "The invite hash alone cannot identify a joined chat without joining/checking it.",
+            "error",
+        )
+        return redirect(url_for("setup", source_error="private_label_required"))
     if not name:
-        # Invite hashes are secrets/identifiers, not useful display names. A
-        # generic label is fine because private invites are resolved only by
-        # an exact joined-dialog title; otherwise puller.py uses safe fallback.
-        name = "Private Telegram source" if is_private_invite else spec.split("/")[-1].replace("+", "").replace("@", "")
+        name = spec.split("/")[-1].replace("+", "").replace("@", "")
     db.add_source(name[:120], spec, kind=kind)
     if from_setup:
-        return redirect(url_for("setup", source_saved=1))
+        return redirect(url_for("setup", source_saved=1, sources_added=1))
     if from_vault:
         return redirect(url_for("secret_vault_tab"))
     return redirect(url_for("index"))
@@ -2720,6 +2769,199 @@ def toggle_deal_source(source_id):
     if from_vault:
         return redirect(url_for("secret_vault_tab"))
     return redirect(url_for("index"))
+
+
+def _parse_bulk_source_line(line: str) -> tuple[str, str] | None:
+    """One line → (name, spec) for bulk paste.
+
+    Supports:
+      • https://t.me/powerloot
+      • https://t.me/+AbC123 | My Private Source
+      • My Label | @username
+      • @username
+      •  -1001234567890
+    Separator candidates: '|' , ' - ', ' :: ', tab. Comma-separated specs
+    on one line are handled by the caller.
+    """
+    raw = str(line or "").strip()
+    if not raw:
+        return None
+    # Skip comment lines
+    if raw.startswith("#"):
+        return None
+    name = ""
+    spec = raw
+    # Try explicit separators in priority order
+    for sep in (" | ", "|", " :: ", "::", " - ", "\t"):
+        if sep in raw:
+            left, right = [part.strip() for part in raw.split(sep, 1)]
+            if not left or not right:
+                continue
+            # Heuristic: which side looks like a Telegram selector?
+            def _looks_like_spec(value: str) -> bool:
+                low = value.lower()
+                return (
+                    "t.me/" in low
+                    or "telegram.me/" in low
+                    or value.startswith("@")
+                    or value.startswith("+")
+                    or value.lstrip("-").isdigit()
+                    or value.startswith("https://")
+                    or value.startswith("http://")
+                )
+            if _looks_like_spec(left) and not _looks_like_spec(right):
+                spec, name = left, right
+            elif _looks_like_spec(right) and not _looks_like_spec(left):
+                name, spec = left, right
+            else:
+                # If both look like specs or neither, treat whole line as spec
+                # (e.g. a single URL without label)
+                if sep == "|" and "," not in raw:
+                    # For single '|' we prefer left=spec right=name fallback
+                    spec, name = left, right
+                else:
+                    continue
+            break
+    spec = spec.strip()
+    name = name.strip()[:120]
+    valid_spec, _error = sources.validate_spec(spec)
+    if not valid_spec:
+        return None
+    try:
+        _, _, is_private = puller._source_parts(spec)
+    except Exception:
+        is_private = False
+    if is_private and not name:
+        return None
+    if not name:
+        # Derive a readable label from a public username or numeric ID.
+        base = spec.split("/")[-1].replace("+", "").replace("@", "").strip()
+        name = base[:120] if base else spec[:120]
+    return name, spec
+
+
+@app.route("/sources/bulk-add", methods=["POST"])
+def bulk_add_sources():
+    """Paste many channel links at once — each line is one source.
+
+    Handles t.me URLs, @usernames, private invite hashes, numeric IDs and
+    optional friendly labels separated by '|' . Duplicate specs are skipped.
+    """
+    raw = str(request.form.get("bulk_specs") or "").strip()
+    kind = str(request.form.get("kind") or "production").strip().lower()
+    if kind not in {"production", "dummy"}:
+        kind = "production"
+    if not raw:
+        flash("Paste at least one Telegram link or username.", "warning")
+        return redirect(url_for("setup"))
+    existing = {
+        sources.selector_key(str(row.get("spec") or "")): row
+        for row in db.list_sources(active_only=False)
+    }
+    added = 0
+    skipped = 0
+    invalid = 0
+    # Split by newlines and also handle comma-separated entries per line
+    lines: list[str] = []
+    for block in raw.splitlines():
+        block = block.strip()
+        if not block:
+            continue
+        # If line has multiple specs separated by commas but no label separator, split
+        if "|" not in block and " :: " not in block and " - " not in block:
+            if "," in block and "t.me" not in block.lower().split(",")[0]:
+                # Actually split by comma only when multiple plain tokens
+                parts = [part.strip() for part in block.split(",")]
+                # Heuristic: if any part contains t.me/http/@ we keep as separate lines
+                if any("t.me" in p.lower() or p.startswith("@") or p.startswith("http") for p in parts):
+                    lines.extend(parts)
+                    continue
+        lines.append(block)
+    for line in lines:
+        # Also allow comma-separated specs inside a line without label
+        sub_parts = [line]
+        if "|" not in line and "::" not in line and " - " not in line and "," in line:
+            # Only split if comma parts individually look like specs
+            maybe = [p.strip() for p in line.split(",") if p.strip()]
+            if len(maybe) > 1 and all(len(p) <= 512 for p in maybe):
+                sub_parts = maybe
+        for part in sub_parts:
+            parsed = _parse_bulk_source_line(part)
+            if not parsed:
+                invalid += 1
+                continue
+            name, spec = parsed
+            key = sources.selector_key(spec)
+            if key in existing:
+                skipped += 1
+                continue
+            try:
+                _, _, is_private = puller._source_parts(spec)
+            except Exception:
+                is_private = False
+            if not name:
+                name = "Private Telegram source" if is_private else spec.split("/")[-1].replace("+", "").replace("@", "")[:120]
+            try:
+                db.add_source(name[:120], spec.strip(), kind=kind)
+                existing[key] = {"spec": spec.strip()}
+                added += 1
+            except Exception:
+                invalid += 1
+    if added:
+        security.audit(_session_actor(), _session_role(), "sources_bulk_added",
+                       target=str(added), detail=f"skipped:{skipped} invalid:{invalid}", ip=_client_ip())
+        flash(f"✅ Added {added} source(s){f' · {skipped} duplicate(s) skipped' if skipped else ''}{f' · {invalid} invalid ignored' if invalid else ''}. Telegram joining is still manual — open Telegram and join them with the same account.", "success")
+    else:
+        flash(f"No new source added — {skipped} duplicate(s), {invalid} invalid. Check the links and try again.", "warning")
+    return redirect(url_for(
+        "setup", source_saved=1 if added else 0, sources_added=added,
+        sources_skipped=skipped, sources_invalid=invalid,
+    ))
+
+
+@app.route("/sources/bulk-delete", methods=["POST"])
+def bulk_delete_sources():
+    ids = request.form.getlist("source_ids")
+    # Also handle comma-separated hidden field fallback
+    if not ids:
+        raw = str(request.form.get("source_ids_raw") or "").strip()
+        if raw:
+            ids = [part.strip() for part in raw.split(",") if part.strip()]
+    deleted = 0
+    for sid in ids:
+        try:
+            source_id = int(str(sid).strip())
+            db.delete_source(source_id)
+            deleted += 1
+        except Exception:
+            continue
+    if deleted:
+        security.audit(_session_actor(), _session_role(), "sources_bulk_deleted",
+                       target=str(deleted), detail=",".join(str(i) for i in ids[:10]), ip=_client_ip())
+        flash(f"🗑️ Removed {deleted} source(s). Their queued cursors remain until the worker advances.", "success")
+    else:
+        flash("No source selected.", "warning")
+    return redirect(url_for("setup", source_deleted=1 if deleted else 0))
+
+
+@app.route("/sources/bulk-toggle", methods=["POST"])
+def bulk_toggle_sources():
+    ids = request.form.getlist("source_ids")
+    if not ids:
+        raw = str(request.form.get("source_ids_raw") or "").strip()
+        if raw:
+            ids = [part.strip() for part in raw.split(",") if part.strip()]
+    toggled = 0
+    for sid in ids:
+        try:
+            source_id = int(str(sid).strip())
+            db.toggle_source(source_id)
+            toggled += 1
+        except Exception:
+            continue
+    if toggled:
+        flash(f"🔄 Toggled {toggled} source(s) active/paused.", "success")
+    return redirect(url_for("setup", source_updated=1 if toggled else 0))
 
 
 @app.route("/global-settings/update", methods=["POST"])
@@ -5444,7 +5686,7 @@ def influencer_detail(inf_id):
                 wa_pairing.update({
                     "phone": str(live_pairing.get("phone") or "") or wa_pairing["phone"],
                     "code": str(live_pairing.get("code") or ""),
-                    "error": str(live_pairing.get("error") or ""),
+                    "error": str(live_pairing.get("error") or wa_pairing["error"] or ""),
                     "has_code": bool(live_pairing.get("hasCode")),
                 })
         except Exception:
@@ -5474,6 +5716,59 @@ def influencer_detail(inf_id):
         hypd_store_id=str(inf.get("hypd_store_id") or "").strip() or _effective_hypd_store_id(),
     )
     source_rows = _source_rows()
+    # A Telegram test alert contains no Amazon URL and bypasses the commission
+    # guard, so it cannot tell an operator whether real Amazon deals will post.
+    # Show the exact per-channel signing source on the creator page instead.
+    tag_diag = []
+    try:
+        for ch in channels:
+            if str(ch.get("platform") or "").lower() != "telegram":
+                continue
+            signing = tag_proof.signing(inf, ch)
+            tag_diag.append({
+                "channel": str(ch.get("identifier") or ""),
+                "role": str(ch.get("role") or "broadcast"),
+                "status": str(ch.get("status") or ""),
+                "tag": signing.get("tag") or "",
+                "source": signing.get("source") or "fallback",
+                "own": bool(signing.get("own")),
+                "usable": bool(signing.get("usable")),
+            })
+    except Exception:
+        tag_diag = []
+
+    active_channels = [
+        ch for ch in channels
+        if str(ch.get("status") or "").strip().lower() in {"ready", "active"}
+    ]
+    pending_channels = [
+        ch for ch in channels
+        if str(ch.get("status") or "").strip().lower() == "pending"
+    ]
+    paused_channels = [
+        ch for ch in channels
+        if str(ch.get("status") or "").strip().lower() == "paused"
+    ]
+    active_tag_holds = [
+        item for item in tag_diag
+        if item.get("status") in {"ready", "active"}
+        and (not item.get("own") or not item.get("usable"))
+    ]
+    delivery_readiness = {
+        "profile_active": bool(inf.get("active", True)),
+        "active_destinations": len(active_channels),
+        "pending_destinations": len(pending_channels),
+        "paused_destinations": len(paused_channels),
+        "amazon_tag_holds": len(active_tag_holds),
+        "pending_whatsapp": sum(
+            str(ch.get("platform") or "").lower() in {"whatsapp", "whatsapp_group", "whatsapp_channel"}
+            for ch in pending_channels
+        ),
+        "active_names": [
+            f"{ch.get('platform', 'channel')} · {ch.get('title') or ch.get('identifier') or 'unnamed'}"
+            for ch in active_channels
+        ],
+    }
     return render_template(
         "influencer.html", inf=inf, channels=channels,
         # Let the source fields suggest what exists: a creator's allowed_sources
@@ -5498,6 +5793,8 @@ def influencer_detail(inf_id):
         earnkaro_configured=bool(
             db.get_global_setting("earnkaro_api_key") or config.EARNKARO_API_KEY
         ),
+        tag_diag=tag_diag,
+        delivery_readiness=delivery_readiness,
     )
 
 
@@ -5588,11 +5885,17 @@ async def telegram_ops_create(inf_id, title, about, role="broadcast"):
 def pair_wa(inf_id):
     key = WA_SESSION_KEY(inf_id)
     try:
-        res = _run(whatsapp_client.create_session(inf_id, "wa"))
+        res = _run(whatsapp_client.create_session(inf_id, "wa")) or {}
+        if not res.get("ok"):
+            raise RuntimeError(str(res.get("error") or "WhatsApp hub did not start the session"))
         db.upsert_wa_session(inf_id, key, phone="")
-        db.set_wa_session_status(key, "qr")
+        db.set_wa_session_status(key, "connected" if res.get("status") == "connected" else "qr")
+        if res.get("status") == "connected":
+            flash("WhatsApp account is already connected. QR is not needed.", "success")
+        else:
+            flash("WhatsApp session started. Keep this page open while the live QR loads.", "success")
     except Exception as e:  # pragma: no cover
-        res = {"error": str(e)}
+        flash(f"Could not start WhatsApp QR session: {str(e)[:240]}", "error")
     return _redirect_after_action(url_for("influencer_detail", inf_id=inf_id))
 
 
@@ -5608,9 +5911,12 @@ def pair_wa_phone(inf_id):
     """
     key = WA_SESSION_KEY(inf_id)
     raw_phone = request.form.get("pairing_phone", "").strip()
-    # Same rule the hub enforces: a full international number, digits only.
-    # Rejecting it here keeps a mistyped number from creating a live session.
+    # The dashboard is commonly used for Indian numbers. Accept a local 10-digit
+    # mobile and normalize it to E.164 digits before asking Baileys for a code.
+    # If +91 was supplied, stripping punctuation already leaves the full number.
     phone = re.sub(r"[^0-9]", "", raw_phone)
+    if len(phone) == 10:
+        phone = "91" + phone
     if not raw_phone:
         return _redirect_after_action(
             url_for("influencer_detail", inf_id=inf_id),
@@ -5681,7 +5987,14 @@ def wa_connect_chat(inf_id):
     main→WhatsApp mirror can be switched on in the same step, so "whatever comes
     into their Telegram channel also goes to this WhatsApp channel".
     """
-    chat_jid = request.form.get("chat_jid", "").strip()
+    # These are separate selects; older pages sent the same `chat_jid` name
+    # twice, where browsers/Flask could read the empty first select and ignore
+    # the actual choice in the second dropdown.
+    chat_jid = (
+        request.form.get("admin_chat_jid", "").strip()
+        or request.form.get("any_chat_jid", "").strip()
+        or request.form.get("chat_jid", "").strip()  # backward compatibility
+    )
     invite_link = request.form.get("invite_link", "").strip()
     # The dropdown submits "jid|name"; the name is what the operator recognises.
     # Split first: the classifier must see a bare JID, never "…|Pick Loot Deals".
@@ -5936,8 +6249,12 @@ def send_test_message(channel_id):
         url_for(
             "influencer_detail", inf_id=inf_id, test_status=status,
             test_err=err_msg, ch_name=ch["identifier"] if ch else "",
+            ch_platform=ch.get("platform", "") if ch else "",
+            ch_status=ch.get("status", "") if ch else "",
         ),
         test_status=status, test_err=err_msg, ch_name=ch["identifier"] if ch else "",
+        ch_platform=ch.get("platform", "") if ch else "",
+        ch_status=ch.get("status", "") if ch else "",
     )
 
 
