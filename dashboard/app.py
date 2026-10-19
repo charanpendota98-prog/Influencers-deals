@@ -2025,6 +2025,27 @@ def setup():
     current_ek_key = settings.get("earnkaro_api_key") or config.EARNKARO_API_KEY or ""
     current_ek_pubid = settings.get("earnkaro_publisher_id") or _effective_earnkaro_publisher_id()
     current_hypd_store = settings.get("hypd_store_id") or _effective_hypd_store_id()
+    # Advanced source diagnostics: last 24h posting stats + per-source activity
+    try:
+        source_activity = db.list_source_activity()
+    except Exception:
+        source_activity = []
+    try:
+        recent_posts = db.list_recent_posts(hours=24, limit=500)
+        # Aggregate skip reasons
+        from collections import Counter
+        skip_counter: Counter = Counter()
+        for post in recent_posts:
+            status = str(post.get("status") or "")
+            if status.startswith("skipped"):
+                skip_counter[status] += 1
+        skip_reasons = [{"status": k, "count": v} for k, v in skip_counter.most_common(8)]
+    except Exception:
+        recent_posts, skip_reasons = [], []
+    try:
+        channel_activity = db.channel_post_activity(hours=24)
+    except Exception:
+        channel_activity = []
     return render_template(
         "setup.html",
         influencers=influencers,
@@ -2063,6 +2084,9 @@ def setup():
         source_default=_default_source_state(sources),
         source_usage=_source_usage(influencers),
         source_rows=_source_rows(),
+        source_activity=source_activity,
+        skip_reasons=skip_reasons,
+        channel_activity=channel_activity,
     )
 
 
@@ -2720,6 +2744,208 @@ def toggle_deal_source(source_id):
     if from_vault:
         return redirect(url_for("secret_vault_tab"))
     return redirect(url_for("index"))
+
+
+def _parse_bulk_source_line(line: str) -> tuple[str, str] | None:
+    """One line → (name, spec) for bulk paste.
+
+    Supports:
+      • https://t.me/powerloot
+      • https://t.me/+AbC123 | My Private Source
+      • My Label | @username
+      • @username
+      •  -1001234567890
+    Separator candidates: '|' , ' - ', ' :: ', tab. Comma-separated specs
+    on one line are handled by the caller.
+    """
+    raw = str(line or "").strip()
+    if not raw:
+        return None
+    # Skip comment lines
+    if raw.startswith("#"):
+        return None
+    name = ""
+    spec = raw
+    # Try explicit separators in priority order
+    for sep in (" | ", "|", " :: ", "::", " - ", "\t"):
+        if sep in raw:
+            left, right = [part.strip() for part in raw.split(sep, 1)]
+            if not left or not right:
+                continue
+            # Heuristic: which side looks like a Telegram selector?
+            def _looks_like_spec(value: str) -> bool:
+                low = value.lower()
+                return (
+                    "t.me/" in low
+                    or "telegram.me/" in low
+                    or value.startswith("@")
+                    or value.startswith("+")
+                    or value.lstrip("-").isdigit()
+                    or value.startswith("https://")
+                    or value.startswith("http://")
+                )
+            if _looks_like_spec(left) and not _looks_like_spec(right):
+                spec, name = left, right
+            elif _looks_like_spec(right) and not _looks_like_spec(left):
+                name, spec = left, right
+            else:
+                # If both look like specs or neither, treat whole line as spec
+                # (e.g. a single URL without label)
+                if sep == "|" and "," not in raw:
+                    # For single '|' we prefer left=spec right=name fallback
+                    spec, name = left, right
+                else:
+                    continue
+            break
+    spec = spec.strip()
+    name = name.strip()[:120]
+    if not spec or len(spec) > 512:
+        return None
+    # Reject obviously non-Telegram garbage (no @, no t.me, no +, not numeric)
+    low = spec.lower()
+    if not (
+        "t.me/" in low
+        or "telegram.me/" in low
+        or spec.startswith("@")
+        or spec.startswith("+")
+        or spec.lstrip("-").isdigit()
+        or low.startswith("https://")
+        or low.startswith("http://")
+        or spec.lstrip("@").replace("_", "").replace("-", "").isalnum()
+    ):
+        # Still allow bare usernames without @
+        if not spec.replace("_", "").replace("-", "").isalnum():
+            return None
+    if not name:
+        try:
+            _, _, is_private = puller._source_parts(spec)
+        except Exception:
+            is_private = False
+        if is_private:
+            name = "Private Telegram source"
+        else:
+            # Derive a readable label from spec
+            base = spec.split("/")[-1].replace("+", "").replace("@", "").strip()
+            name = base[:120] if base else spec[:120]
+    return name, spec
+
+
+@app.route("/sources/bulk-add", methods=["POST"])
+def bulk_add_sources():
+    """Paste many channel links at once — each line is one source.
+
+    Handles t.me URLs, @usernames, private invite hashes, numeric IDs and
+    optional friendly labels separated by '|' . Duplicate specs are skipped.
+    """
+    raw = str(request.form.get("bulk_specs") or "").strip()
+    kind = str(request.form.get("kind") or "production").strip().lower()
+    if kind not in {"production", "dummy"}:
+        kind = "production"
+    if not raw:
+        flash("Paste at least one Telegram link or username.", "warning")
+        return redirect(url_for("setup"))
+    existing = {str(row.get("spec") or "").strip().casefold(): row for row in db.list_sources(active_only=False)}
+    added = 0
+    skipped = 0
+    invalid = 0
+    # Split by newlines and also handle comma-separated entries per line
+    lines: list[str] = []
+    for block in raw.splitlines():
+        block = block.strip()
+        if not block:
+            continue
+        # If line has multiple specs separated by commas but no label separator, split
+        if "|" not in block and " :: " not in block and " - " not in block:
+            if "," in block and "t.me" not in block.lower().split(",")[0]:
+                # Actually split by comma only when multiple plain tokens
+                parts = [part.strip() for part in block.split(",")]
+                # Heuristic: if any part contains t.me/http/@ we keep as separate lines
+                if any("t.me" in p.lower() or p.startswith("@") or p.startswith("http") for p in parts):
+                    lines.extend(parts)
+                    continue
+        lines.append(block)
+    for line in lines:
+        # Also allow comma-separated specs inside a line without label
+        sub_parts = [line]
+        if "|" not in line and "::" not in line and " - " not in line and "," in line:
+            # Only split if comma parts individually look like specs
+            maybe = [p.strip() for p in line.split(",") if p.strip()]
+            if len(maybe) > 1 and all(len(p) <= 512 for p in maybe):
+                sub_parts = maybe
+        for part in sub_parts:
+            parsed = _parse_bulk_source_line(part)
+            if not parsed:
+                invalid += 1
+                continue
+            name, spec = parsed
+            key = spec.strip().casefold()
+            if key in existing:
+                skipped += 1
+                continue
+            try:
+                _, _, is_private = puller._source_parts(spec)
+            except Exception:
+                is_private = False
+            if not name:
+                name = "Private Telegram source" if is_private else spec.split("/")[-1].replace("+", "").replace("@", "")[:120]
+            try:
+                db.add_source(name[:120], spec.strip(), kind=kind)
+                existing[key] = {"spec": spec.strip()}
+                added += 1
+            except Exception:
+                invalid += 1
+    if added:
+        security.audit(_session_actor(), _session_role(), "sources_bulk_added",
+                       target=str(added), detail=f"skipped:{skipped} invalid:{invalid}", ip=_client_ip())
+        flash(f"✅ Added {added} source(s){f' · {skipped} duplicate(s) skipped' if skipped else ''}{f' · {invalid} invalid ignored' if invalid else ''}. Telegram joining is still manual — open Telegram and join them with the same account.", "success")
+    else:
+        flash(f"No new source added — {skipped} duplicate(s), {invalid} invalid. Check the links and try again.", "warning")
+    return redirect(url_for("setup", source_saved=1 if added else 0))
+
+
+@app.route("/sources/bulk-delete", methods=["POST"])
+def bulk_delete_sources():
+    ids = request.form.getlist("source_ids")
+    # Also handle comma-separated hidden field fallback
+    if not ids:
+        raw = str(request.form.get("source_ids_raw") or "").strip()
+        if raw:
+            ids = [part.strip() for part in raw.split(",") if part.strip()]
+    deleted = 0
+    for sid in ids:
+        try:
+            source_id = int(str(sid).strip())
+            db.delete_source(source_id)
+            deleted += 1
+        except Exception:
+            continue
+    if deleted:
+        security.audit(_session_actor(), _session_role(), "sources_bulk_deleted",
+                       target=str(deleted), detail=",".join(str(i) for i in ids[:10]), ip=_client_ip())
+        flash(f"🗑️ Removed {deleted} source(s). Their queued cursors remain until the worker advances.", "success")
+    else:
+        flash("No source selected.", "warning")
+    return redirect(url_for("setup", source_deleted=1 if deleted else 0))
+
+
+@app.route("/sources/bulk-toggle", methods=["POST"])
+def bulk_toggle_sources():
+    ids = request.form.getlist("source_ids")
+    if not ids:
+        raw = str(request.form.get("source_ids_raw") or "").strip()
+        if raw:
+            ids = [part.strip() for part in raw.split(",") if part.strip()]
+    toggled = 0
+    for sid in ids:
+        try:
+            source_id = int(str(sid).strip())
+            db.toggle_source(source_id)
+            toggled += 1
+        except Exception:
+            continue
+    if toggled:
+        flash(f"🔄 Toggled {toggled} source(s) active/paused.", "success")
+    return redirect(url_for("setup", source_updated=1 if toggled else 0))
 
 
 @app.route("/global-settings/update", methods=["POST"])
