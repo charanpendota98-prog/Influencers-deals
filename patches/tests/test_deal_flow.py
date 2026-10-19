@@ -129,6 +129,28 @@ def test_worker_records_posted_and_failed_per_source(monkeypatch, tmp_path):
     assert db.get_worker_offset("@two") == 0
 
 
+def test_worker_exposes_skip_reasons_without_marking_filtered_deals_failed(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "worker-skips.sqlite3")
+    db.init()
+
+    async def fake_pull(limit=None, use_dummy=False):
+        return [_record("@filtered", 19, "Deal https://www.amazon.in/dp/B0D9P2M1PB")]
+
+    async def fake_run_once(_deals):
+        return {1: {7: "skipped:source_filter", 8: "skipped:no_own_amazon_tag"}}
+
+    monkeypatch.setattr(worker.puller, "pull_new_deals", fake_pull)
+    monkeypatch.setattr(worker.pipeline, "run_once", fake_run_once)
+
+    stats = asyncio.run(worker.process_pending_batch(limit=10))
+    row = next(item for item in db.list_source_activity() if item["source_key"] == "@filtered")
+    assert stats["handled"] == 1 and stats["retry_sources"] == 0
+    assert row["failures"] == 0
+    assert "skipped:source_filter" in row["last_error"]
+    assert "skipped:no_own_amazon_tag" in row["last_error"]
+    assert db.get_worker_offset("@filtered") == 19
+
+
 def test_worker_counts_a_crash_as_a_failure_without_losing_the_cursor(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "worker-crash.sqlite3")
     db.init()

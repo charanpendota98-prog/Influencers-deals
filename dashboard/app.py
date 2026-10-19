@@ -5700,6 +5700,26 @@ def influencer_detail(inf_id):
         hypd_store_id=str(inf.get("hypd_store_id") or "").strip() or _effective_hypd_store_id(),
     )
     source_rows = _source_rows()
+    # A Telegram test alert contains no Amazon URL and bypasses the commission
+    # guard, so it cannot tell an operator whether real Amazon deals will post.
+    # Show the exact per-channel signing source on the creator page instead.
+    tag_diag = []
+    try:
+        for ch in channels:
+            if str(ch.get("platform") or "").lower() != "telegram":
+                continue
+            signing = tag_proof.signing(inf, ch)
+            tag_diag.append({
+                "channel": str(ch.get("identifier") or ""),
+                "role": str(ch.get("role") or "broadcast"),
+                "status": str(ch.get("status") or ""),
+                "tag": signing.get("tag") or "",
+                "source": signing.get("source") or "fallback",
+                "own": bool(signing.get("own")),
+                "usable": bool(signing.get("usable")),
+            })
+    except Exception:
+        tag_diag = []
     return render_template(
         "influencer.html", inf=inf, channels=channels,
         # Let the source fields suggest what exists: a creator's allowed_sources
@@ -5724,6 +5744,7 @@ def influencer_detail(inf_id):
         earnkaro_configured=bool(
             db.get_global_setting("earnkaro_api_key") or config.EARNKARO_API_KEY
         ),
+        tag_diag=tag_diag,
     )
 
 
@@ -6178,8 +6199,12 @@ def send_test_message(channel_id):
         url_for(
             "influencer_detail", inf_id=inf_id, test_status=status,
             test_err=err_msg, ch_name=ch["identifier"] if ch else "",
+            ch_platform=ch.get("platform", "") if ch else "",
+            ch_status=ch.get("status", "") if ch else "",
         ),
         test_status=status, test_err=err_msg, ch_name=ch["identifier"] if ch else "",
+        ch_platform=ch.get("platform", "") if ch else "",
+        ch_status=ch.get("status", "") if ch else "",
     )
 
 

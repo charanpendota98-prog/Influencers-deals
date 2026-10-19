@@ -255,11 +255,45 @@ def test_a_deal_from_a_source_the_creator_does_not_use_is_skipped(monkeypatch):
 
     other = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[inf_id],
                                                     source_channel="SomeOtherLootZone"))
-    assert other[inf_id][channel] == "skipped" and posted == []
+    assert other[inf_id][channel] == "skipped:source_filter" and posted == []
 
     mine = asyncio.run(pipeline.render_and_dispatch(deal, influencer_ids=[inf_id],
                                                     source_channel="LootZoneIndia11"))
     assert mine[inf_id][channel] == "posted" and len(posted) == 1
+
+def test_source_filter_matches_the_selected_public_username_not_only_dialog_title(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from influencer_hub import pipeline
+
+    posted = []
+
+    async def fake_dispatch(_influencer, _channel, text):
+        posted.append(text)
+        return "posted"
+
+    monkeypatch.setattr(pipeline, "_earnkaro_map_for", AsyncMock(return_value={}))
+    monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
+
+    inf_id = db.add_influencer(
+        "Username Filter Creator", "usernamefilter-21",
+        allowed_sources="LootZoneIndia11",
+    )
+    channel_id = db.add_channel(
+        inf_id, "telegram", "@username_filter_creator", status="ready", role="broadcast",
+    )
+    deal = "🔥 Deal https://www.amazon.in/dp/B0ABCDEFGH?tag=source-tag-21"
+
+    # Telegram's dialog title often differs from its selected @username.
+    result = asyncio.run(pipeline.render_and_dispatch(
+        deal, influencer_ids=[inf_id],
+        source_channel="Loot Zone India Deals",
+        source_token="lootzoneindia11",
+    ))
+
+    assert result[inf_id][channel_id] == "posted"
+    assert len(posted) == 1
+
 
 def test_the_worker_adds_the_default_source_before_its_first_pull():
     """A fresh box must post from the default even if nobody opened /setup."""

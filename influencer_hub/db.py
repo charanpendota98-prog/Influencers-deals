@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS deferred_deals (
     deal_hash     TEXT PRIMARY KEY,
     text          TEXT NOT NULL,
     source        TEXT NOT NULL DEFAULT '',
+    source_token  TEXT NOT NULL DEFAULT '',
     reason        TEXT NOT NULL DEFAULT '',
     attempts      INTEGER NOT NULL DEFAULT 0,
     max_attempts  INTEGER NOT NULL DEFAULT 6,
@@ -474,6 +475,14 @@ def migrate() -> None:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column name" not in str(exc).lower():
                         raise
+
+        deferred_cols = {r["name"] for r in con.execute("PRAGMA table_info(deferred_deals)")}
+        if deferred_cols and "source_token" not in deferred_cols:
+            try:
+                con.execute("ALTER TABLE deferred_deals ADD COLUMN source_token TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
         activity_cols = {r["name"] for r in con.execute("PRAGMA table_info(source_activity)")}
         if activity_cols and "source_name" not in activity_cols:
@@ -1588,7 +1597,7 @@ def _deferred_hash(text: str, source: str = "") -> str:
 
 
 def defer_deal(text: str, source: str = "", reason: str = "", delay_seconds: int = 300,
-               max_attempts: int = 6) -> str | None:
+               max_attempts: int = 6, source_token: str = "") -> str | None:
     """Park a deal for a bounded retry instead of posting a free link.
 
     Idempotent per (source, text): re-rendering the same deal for several
@@ -1605,12 +1614,13 @@ def defer_deal(text: str, source: str = "", reason: str = "", delay_seconds: int
     try:
         con.execute(
             "INSERT INTO deferred_deals "
-            "(deal_hash, text, source, reason, attempts, max_attempts, created_at, not_before, updated_at) "
-            "VALUES (?,?,?,?,0,?,?,?,datetime('now')) "
+            "(deal_hash, text, source, source_token, reason, attempts, max_attempts, created_at, not_before, updated_at) "
+            "VALUES (?,?,?,?,?,0,?,?,?,datetime('now')) "
             "ON CONFLICT(deal_hash) DO UPDATE SET "
+            "source_token=CASE WHEN excluded.source_token <> '' THEN excluded.source_token ELSE deferred_deals.source_token END, "
             "reason=excluded.reason, updated_at=excluded.updated_at",
-            (deal_hash, body, str(source or "").strip(), str(reason or "").strip(),
-             attempts, now, now + max(0, int(delay_seconds))),
+            (deal_hash, body, str(source or "").strip(), str(source_token or "").strip(),
+             str(reason or "").strip(), attempts, now, now + max(0, int(delay_seconds))),
         )
         con.commit()
     finally:

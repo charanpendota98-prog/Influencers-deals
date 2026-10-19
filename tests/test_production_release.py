@@ -461,6 +461,7 @@ def test_pull_new_deals_uses_cursor_and_skips_unchanged_dialog(monkeypatch):
     monkeypatch.setattr(db, "get_worker_offset", lambda _key: 4)
     records = asyncio.run(puller.pull_new_deals(limit=10))
     assert records[0]["message_id"] == 5
+    assert records[0]["source_token"] == "cursor_source"
     assert fake.calls[0][1]["min_id"] == 4
     assert fake.calls[0][1]["reverse"] is True
 
