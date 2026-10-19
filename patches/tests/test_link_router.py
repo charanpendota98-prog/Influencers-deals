@@ -91,6 +91,19 @@ def test_price_filter_matching():
     assert lr.matches_price_filter(deal_expensive, max_price=499) is False
 
 
+def test_indian_shorthand_prices_are_expanded_before_filters_and_scoring():
+    assert lr.extract_price("Phone at ₹30k") == 30_000
+    assert lr.extract_price("Deal price: Rs. 1.5 lakh") == 150_000
+    assert lr.extract_price("₹1 crore") == 10_000_000
+    assert lr.extract_price("4K TV, deal price ₹30,000") == 30_000
+    assert lr.matches_price_filter("Phone at ₹30k", max_price=499) is False
+    assert lr.calculate_deal_loot_score("Phone at ₹30k") == 10.0
+    rendered = lr.render_for_influencer(
+        "Phone at ₹30k\nhttps://www.amazon.in/dp/B0ABCDEFGH?tag=old-21", "owner-21"
+    )
+    assert rendered.splitlines()[0] == "Phone at ₹30k"
+
+
 def test_search_influencers_by_phone_and_name():
     iid = db.add_influencer("Suresh Reddy", "suresh099-21", phone_number="919988776655")
     res_phone = db.search_influencers("998877")
