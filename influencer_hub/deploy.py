@@ -199,6 +199,9 @@ def preflight(*, repo: Path | None = None, branch: str = "", env_path: Path | No
                        if line.startswith("flask ")), out.splitlines()[-1] if out else "")
         add("python-deps", code == 0, detail or "import failed",
             fix=".venv/bin/pip install -r requirements.txt")
+    else:
+        add("python-deps", False, f"{venv_python} is missing",
+            fix="python3 -m venv .venv && .venv/bin/pip install -r requirements.txt")
     requirements = repo / "requirements.txt"
     stamp = repo / ".venv" / ".deploy-requirements"
     if requirements.is_file() and stamp.is_file():
