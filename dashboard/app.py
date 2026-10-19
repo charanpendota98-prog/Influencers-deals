@@ -5670,7 +5670,7 @@ def influencer_detail(inf_id):
                 wa_pairing.update({
                     "phone": str(live_pairing.get("phone") or "") or wa_pairing["phone"],
                     "code": str(live_pairing.get("code") or ""),
-                    "error": str(live_pairing.get("error") or ""),
+                    "error": str(live_pairing.get("error") or wa_pairing["error"] or ""),
                     "has_code": bool(live_pairing.get("hasCode")),
                 })
         except Exception:
@@ -5814,11 +5814,17 @@ async def telegram_ops_create(inf_id, title, about, role="broadcast"):
 def pair_wa(inf_id):
     key = WA_SESSION_KEY(inf_id)
     try:
-        res = _run(whatsapp_client.create_session(inf_id, "wa"))
+        res = _run(whatsapp_client.create_session(inf_id, "wa")) or {}
+        if not res.get("ok"):
+            raise RuntimeError(str(res.get("error") or "WhatsApp hub did not start the session"))
         db.upsert_wa_session(inf_id, key, phone="")
-        db.set_wa_session_status(key, "qr")
+        db.set_wa_session_status(key, "connected" if res.get("status") == "connected" else "qr")
+        if res.get("status") == "connected":
+            flash("WhatsApp account is already connected. QR is not needed.", "success")
+        else:
+            flash("WhatsApp session started. Keep this page open while the live QR loads.", "success")
     except Exception as e:  # pragma: no cover
-        res = {"error": str(e)}
+        flash(f"Could not start WhatsApp QR session: {str(e)[:240]}", "error")
     return _redirect_after_action(url_for("influencer_detail", inf_id=inf_id))
 
 
@@ -5834,9 +5840,12 @@ def pair_wa_phone(inf_id):
     """
     key = WA_SESSION_KEY(inf_id)
     raw_phone = request.form.get("pairing_phone", "").strip()
-    # Same rule the hub enforces: a full international number, digits only.
-    # Rejecting it here keeps a mistyped number from creating a live session.
+    # The dashboard is commonly used for Indian numbers. Accept a local 10-digit
+    # mobile and normalize it to E.164 digits before asking Baileys for a code.
+    # If +91 was supplied, stripping punctuation already leaves the full number.
     phone = re.sub(r"[^0-9]", "", raw_phone)
+    if len(phone) == 10:
+        phone = "91" + phone
     if not raw_phone:
         return _redirect_after_action(
             url_for("influencer_detail", inf_id=inf_id),
@@ -5907,7 +5916,14 @@ def wa_connect_chat(inf_id):
     main→WhatsApp mirror can be switched on in the same step, so "whatever comes
     into their Telegram channel also goes to this WhatsApp channel".
     """
-    chat_jid = request.form.get("chat_jid", "").strip()
+    # These are separate selects; older pages sent the same `chat_jid` name
+    # twice, where browsers/Flask could read the empty first select and ignore
+    # the actual choice in the second dropdown.
+    chat_jid = (
+        request.form.get("admin_chat_jid", "").strip()
+        or request.form.get("any_chat_jid", "").strip()
+        or request.form.get("chat_jid", "").strip()  # backward compatibility
+    )
     invite_link = request.form.get("invite_link", "").strip()
     # The dropdown submits "jid|name"; the name is what the operator recognises.
     # Split first: the classifier must see a bare JID, never "…|Pick Loot Deals".

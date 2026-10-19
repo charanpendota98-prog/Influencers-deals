@@ -62,11 +62,11 @@
       </div>
     {% elif request.args.get('wa_pair_status') == 'missing_phone' %}
       <div style="background:#713f12; color:#fde68a; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
-        Country code tho full WhatsApp number ivvandi (e.g. 919876543210).
+10-digit Indian mobile number ivvandi; system +91 add chesthundi. Already +91 tho enter chesina kuda okay.
       </div>
     {% elif request.args.get('wa_pair_status') == 'bad_phone' %}
       <div style="background:#713f12; color:#fde68a; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
-        ⚠ Number 10-15 digits undali (country code tho). Example: 919876543210 — '+' leda spaces avasaram ledu.
+        ⚠ Indian mobile ki 10 digits enter cheyandi (e.g. 9876543210); +91 auto-add avutundi. Leda full international number enter cheyandi.
       </div>
     {% elif request.args.get('wa_pair_status') == 'failed' %}
       <div style="background:#7f1d1d; color:#fecaca; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:bold; margin-top:6px;">
@@ -725,10 +725,10 @@
       </form>
 
       <div style="margin-top:10px; padding-top:10px; border-top:1px dashed #14532d;">
-        <p class="hint" style="font-size:12px; margin:0 0 6px;">Leda QR scan kudarakapothe — <b>influencer phone number</b> isthe, WhatsApp aa phone lo <b>8-character code</b> chupistundi (Linked devices → Link with phone number). Camera avasaram ledu.</p>
+        <p class="hint" style="font-size:12px; margin:0 0 6px;">QR scan kudarakapothe, <b>10-digit Indian mobile number</b> enter cheyandi — system +91 auto-add chesthundi (full +91 number kuda accept chesthundi). WhatsApp app lo Linked devices → Link with phone number open chesi generated <b>8-character code</b> enter cheyandi.</p>
         <form method="post" action="{{ url_for('pair_wa_phone', inf_id=inf.id) }}" style="display:flex; gap:6px;">
           <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
-          <input name="pairing_phone" value="{{ wa_pairing.phone }}" placeholder="919876543210 (country code tho)" style="flex:1; font-size:13px; font-family:monospace;" required />
+          <input name="pairing_phone" value="{{ wa_pairing.phone }}" type="tel" inputmode="tel" autocomplete="tel" placeholder="9876543210 (10-digit Indian mobile)" style="flex:1; font-size:13px; font-family:monospace;" required />
           <button type="submit" style="background:#0284c7; color:white; font-weight:bold; white-space:nowrap;">🔢 Get Login Code</button>
         </form>
         <div id="pairbox" data-key="{{ wa_key }}" style="margin-top:10px;">
@@ -766,7 +766,7 @@
             <label style="font-size:12px; font-weight:bold; color:#86efac; display:block; margin-bottom:4px;">
               ⭐ A) Channels / Groups where +{{ wa_status_info.phone }} is ADMIN (pick one by name):
             </label>
-            <select name="chat_jid" style="width:100%; padding:8px; font-size:13px;">
+            <select name="admin_chat_jid" style="width:100%; padding:8px; font-size:13px;">
               <option value="">-- Pick your channel here --</option>
               {% for chat in wa_status_info.admin_chats %}
                 <option value="{{ chat.jid }}|{{ chat.name }}">{{ chat.name }} · {{ 'Channel' if chat.kind == 'channel' else 'Group' }} · you are {{ chat.role }}{% if chat.members %} · {{ chat.members }} members{% endif %}</option>
@@ -784,7 +784,7 @@
             <summary style="cursor:pointer; font-size:12px; color:#cbd5e1;">
               {{ 'B)' if wa_status_info.admin_chats else 'A)' }} All groups / channels this phone sees (any role)
             </summary>
-            <select name="chat_jid" style="width:100%; padding:8px; font-size:13px; margin-top:6px;">
+            <select name="any_chat_jid" style="width:100%; padding:8px; font-size:13px; margin-top:6px;">
               <option value="">-- Or Paste Link Below --</option>
               {% for chat in wa_status_info.chats %}
                 <option value="{{ chat.jid }}|{{ chat.name }}">{{ chat.name }} ({{ 'Group' if chat.isGroup else 'Channel' }})</option>

@@ -266,6 +266,7 @@
     </div>
     <form id="bulk-source-form" method="post" onsubmit="return confirmBulkAction(event)">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+    </form>
       <div style="overflow-x:auto;">
         <table style="width:100%; font-size:12px; border-collapse:collapse;">
           <thead>
@@ -282,7 +283,7 @@
             {% for s in sources %}
               {% set used = namespace(count=0) %}{% for row in source_rows %}{% if row.token.lower() == (s.spec.split('/')[-1].replace('+','').replace('@','')|lower) %}{% set used.count = row.used_by %}{% endif %}{% endfor %}
               <tr class="source-row" data-name="{{ (s.name or '')|lower }}" data-spec="{{ s.spec|lower }}" style="border-bottom:1px solid #0f172a;">
-                <td style="padding:6px;"><input type="checkbox" name="source_ids" value="{{ s.id }}" class="source-cb" /></td>
+                <td style="padding:6px;"><input type="checkbox" form="bulk-source-form" name="source_ids" value="{{ s.id }}" class="source-cb" /></td>
                 <td style="padding:6px; color:#e2e8f0; font-weight:600; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ s.name }}">{{ s.name or '—' }}</td>
                 <td style="padding:6px;"><code style="font-size:11px; background:#0f172a; padding:2px 6px; border-radius:4px; color:#7dd3fc; word-break:break-all;">{{ s.spec }}</code></td>
                 <td style="padding:6px;">
@@ -318,7 +319,6 @@
         <span id="bulk-count" style="font-size:11px; color:#fbbf24; font-weight:600;"></span>
         <span style="font-size:10px; color:#64748b; margin-left:auto;">Tip: paste links from any Telegram channel (even private invites with title) — worker matches by joined dialog. After bulk add, open Telegram and join them, then <b>Run live checks</b> to confirm.</span>
       </div>
-    </form>
   </div>
   {% else %}
     <div style="margin-top:12px; background:#0f172a; border:1px dashed #334155; padding:12px; border-radius:8px; text-align:center;">

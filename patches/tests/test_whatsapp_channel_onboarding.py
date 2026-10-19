@@ -108,6 +108,26 @@ def test_channel_invite_resolves_to_real_jid_and_stays_pending(whatsapp_dashboar
     assert channels[0]["wa_session_key"] == f"inf-{influencer_id}-wa"
 
 
+def test_dropdown_selection_saves_the_selected_chat_even_when_other_dropdown_is_empty(whatsapp_dashboard):
+    influencer_id = db.add_influencer("Selected Chat Creator", "selectedchat-21")
+    response = whatsapp_dashboard.post(
+        f"/influencer/{influencer_id}/wa-connect-chat",
+        data={
+            "admin_chat_jid": "120363012345678901@newsletter|My Admin Channel",
+            "any_chat_jid": "",
+            "mirror_whatsapp": "1",
+        },
+    )
+
+    assert response.status_code == 302
+    assert "wa_link_status=pending" in response.headers["Location"]
+    channel = db.list_channels(influencer_id)[0]
+    assert channel["identifier"] == "120363012345678901@newsletter"
+    assert channel["title"] == "My Admin Channel"
+    assert channel["status"] == "pending"
+    assert str(channel["mirror_whatsapp"]) == "1"
+
+
 def test_unresolved_channel_link_is_not_saved_as_a_ready_destination(whatsapp_dashboard, monkeypatch):
     influencer_id = db.add_influencer("Invalid Link Creator", "invalidlink-21")
 
