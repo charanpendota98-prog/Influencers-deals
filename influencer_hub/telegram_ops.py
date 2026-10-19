@@ -285,7 +285,8 @@ async def create_channel_for_influencer(influencer_id: int, title: str,
 
 
 async def post_to_channel(identifier: str, text: str, media_path: str | None = None,
-                          button_text: str | None = None, button_url: str | None = None) -> None:
+                          button_text: str | None = None, button_url: str | None = None,
+                          buttons: list[dict[str, str]] | None = None) -> None:
     client = _client()
     if not client.is_connected():
         await client.connect()
@@ -294,15 +295,22 @@ async def post_to_channel(identifier: str, text: str, media_path: str | None = N
         entity_selector = int(identifier)
     entity = await client.get_input_entity(entity_selector)
 
-    buttons = None
-    if button_text and button_url:
+    keyboard = None
+    if buttons:
         from telethon import Button
-        buttons = [Button.url(button_text.strip(), button_url.strip())]
+        # Two buttons per row stays readable on mobile; labels and links are
+        # generated from this creator's own ready Telegram destinations.
+        flat = [Button.url(str(item.get("text") or "Join channel")[:64],
+                           str(item["url"])) for item in buttons if item.get("url")]
+        keyboard = [flat[i:i + 2] for i in range(0, len(flat), 2)] or None
+    elif button_text and button_url:
+        from telethon import Button
+        keyboard = [Button.url(button_text.strip()[:64], button_url.strip())]
 
     if media_path:
-        await client.send_file(entity, media_path, caption=text, buttons=buttons)
+        await client.send_file(entity, media_path, caption=text, buttons=keyboard)
     else:
-        await client.send_message(entity, text, buttons=buttons)
+        await client.send_message(entity, text, buttons=keyboard)
 
 
 async def post_poll_to_channel(identifier: str, question: str, options: list[str],

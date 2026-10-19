@@ -174,9 +174,12 @@ LEHLAH_SHORTLINKS_ENABLED = _bool("LEHLAH_SHORTLINKS_ENABLED", False)
 # deal would post for free. With this fallback the raw link is sent to EarnKaro
 # instead (conversion is verified like any other merchant link).
 MEESHO_EARNKARO_FALLBACK = _bool("MEESHO_EARNKARO_FALLBACK", True)
-# Hold back deals whose links would all post without our attribution. Volume vs
-# earnings trade-off, so the operator decides; the Money Radar recommends it.
-ONLY_EARNING_DEALS = _bool("ONLY_EARNING_DEALS", False)
+# Additional zero-earning filter; strict commission mode below also blocks
+# mixed/unverified posts. Both protections default on.
+ONLY_EARNING_DEALS = _bool("ONLY_EARNING_DEALS", True)
+# Fail closed before dispatch whenever any link lacks verifiable attribution.
+# This reduces post volume during provider outages; it cannot guarantee payout.
+STRICT_COMMISSION_MODE = _bool("STRICT_COMMISSION_MODE", True)
 # A deal whose only links are raw merchant/raw Meesho URLs (EarnKaro down, bad
 # key, or an unsupported merchant) pays exactly zero. Default: hold it back for
 # this cycle instead of spending a post — the worker re-reads the source post,

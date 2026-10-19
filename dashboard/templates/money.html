@@ -48,6 +48,30 @@
   </div>
 </section>
 
+{% if report.commission_hold_count %}
+<section class="card money-card" aria-labelledby="commission-holds-title">
+  <div class="setup-section-title">
+    <h2 id="commission-holds-title">⏸ Pending attribution holds</h2>
+    <span class="hint">{{ report.commission_hold_count }} deal{{ 's' if report.commission_hold_count != 1 else '' }} held; nothing was sent with unverified links. Configure the provider/tag or review unsupported stores, then the worker retries with backoff.</span>
+  </div>
+  {% if report.commission_holds %}
+    <table class="money-table">
+      <thead><tr><th scope="col">Deal</th><th scope="col">Reason</th><th scope="col">Attempts</th><th scope="col">Source</th></tr></thead>
+      <tbody>
+        {% for hold in report.commission_holds %}
+          <tr>
+            <td>{{ (hold.text or '')[:140] }}{% if (hold.text or '')|length > 140 %}…{% endif %}</td>
+            <td>{{ hold.reason or 'attribution_unverified' }}</td>
+            <td class="money-num">{{ hold.attempts or 0 }}</td>
+            <td>{{ hold.source or '—' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="card money-card">
   <div class="setup-section-title"><h2>What to fix, in order</h2></div>
   <div class="money-actions">

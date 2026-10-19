@@ -56,16 +56,40 @@ def test_hypd_link_earns_only_on_our_store():
     assert "another store" in theirs["reason"]
 
 
-def test_earnkaro_links_are_checked_against_our_publisher_id():
-    ours = money_radar.classify_link(
-        "https://ekaro.in/abc123?affextparam2=99999", earnkaro_pubid="99999"
+def test_earnkaro_links_require_visible_or_persisted_publisher_proof():
+    owned_url = "https://ekaro.in/abc123?affextparam2=99999"
+    unproven = money_radar.classify_link(owned_url, earnkaro_pubid="99999")
+    assert unproven["state"] == money_radar.STATE_LEAK
+    assert "destination is unverified" in unproven["reason"]
+
+    assert db.record_verified_earnkaro_link(
+        owned_url, "99999", "https://www.flipkart.com/p/itm1?affExtParam2=99999"
     )
+    ours = money_radar.classify_link(owned_url, earnkaro_pubid="99999")
     theirs = money_radar.classify_link(
         "https://ekaro.in/abc123?affextparam2=11111", earnkaro_pubid="99999"
     )
     assert ours["state"] == money_radar.STATE_EARNING
     assert theirs["state"] == money_radar.STATE_LEAK
     assert "another publisher" in theirs["reason"]
+
+
+def test_direct_earnkaro_merchant_links_are_checked_by_publisher_id():
+    ours = money_radar.classify_link(
+        "https://www.flipkart.com/p/itm1?affExtParam2=99999", earnkaro_pubid="99999"
+    )
+    theirs = money_radar.classify_link(
+        "https://www.flipkart.com/p/itm1?affExtParam2=11111", earnkaro_pubid="99999"
+    )
+    assert ours["state"] == money_radar.STATE_LEAK  # visible id alone is not conversion proof
+    assert theirs["state"] == money_radar.STATE_LEAK
+    db.record_verified_earnkaro_link(
+        "https://www.flipkart.com/p/itm1?affExtParam2=99999", "99999",
+        "https://www.flipkart.com/p/itm1?affExtParam2=99999",
+    )
+    assert money_radar.classify_link(
+        "https://www.flipkart.com/p/itm1?affExtParam2=99999", earnkaro_pubid="99999"
+    )["state"] == money_radar.STATE_EARNING
 
 
 def test_raw_merchant_and_raw_meesho_links_leak():
@@ -77,10 +101,11 @@ def test_raw_merchant_and_raw_meesho_links_leak():
     assert "earns nothing" in meesho["reason"]
 
 
-def test_lehlah_and_only_stored_first_party_short_links_earn(monkeypatch, tmp_path):
+def test_lehlah_source_attribution_is_not_mistaken_for_our_account(monkeypatch, tmp_path):
     lehlah = money_radar.classify_link("https://meesho.com/s/p/x?mcn=lehlah")
-    assert lehlah["state"] == money_radar.STATE_EARNING
+    assert lehlah["state"] == money_radar.STATE_LEAK
     assert lehlah["kind"] == "lehlah"
+    assert "source network" in lehlah["reason"]
 
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "radar-branded.sqlite3")
     monkeypatch.setattr(config, "AFFILIATE_SHORT_LINK_BASE_URL", "https://hub.example")
@@ -202,7 +227,8 @@ def test_money_page_is_reachable_from_the_dashboard_nav(dashboard_client):
 
 def test_money_switch_persists_and_is_read_back_by_the_pipeline(dashboard_client):
     assert pipeline.meesho_earnkaro_fallback_enabled() is True
-    assert pipeline.only_earning_deals_enabled() is False
+    assert pipeline.only_earning_deals_enabled() is True
+    assert pipeline.strict_commission_mode_enabled() is True
 
     response = dashboard_client.post(
         "/money/switch",
@@ -216,6 +242,32 @@ def test_money_switch_persists_and_is_read_back_by_the_pipeline(dashboard_client
         "/money/switch", data={"setting": "only_earning_deals", "value": "on"}
     )
     assert pipeline.only_earning_deals_enabled() is True
+
+
+def test_strict_commission_switch_can_be_changed_and_is_enabled_by_default(dashboard_client):
+    assert pipeline.strict_commission_mode_enabled() is True
+    response = dashboard_client.post(
+        "/money/switch",
+        data={"setting": "strict_commission_mode", "value": "off"},
+    )
+    assert response.status_code == 302
+    assert pipeline.strict_commission_mode_enabled() is False
+    dashboard_client.post(
+        "/money/switch",
+        data={"setting": "strict_commission_mode", "value": "on"},
+    )
+    assert pipeline.strict_commission_mode_enabled() is True
+
+
+def test_money_page_lists_pending_commission_holds(dashboard_client):
+    db.defer_deal("Deal https://tinystore.example/p/1", source="@deals",
+                   reason="strict_commission_unverified")
+    response = dashboard_client.get("/money")
+    body = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "Pending attribution holds" in body
+    assert "tinystore.example" in body
+    assert "strict_commission_unverified" in body
 
 
 def test_money_switch_rejects_unknown_settings(dashboard_client):
@@ -262,11 +314,12 @@ def test_only_earning_deals_skips_a_deal_with_no_earning_link(monkeypatch, tmp_p
         monkeypatch, tmp_path, "money_filter", "Deal https://www.flipkart.com/p/itm123",
         settings={"only_earning_deals": "on"},
     )
-    assert result[influencer_id][channel_id] == "skipped:no_commission_link"
+    assert result[influencer_id][channel_id] == "skipped:strict_commission_unverified"
     assert sent == []
+    assert result[influencer_id][channel_id] == "skipped:strict_commission_unverified"
 
 
-def test_only_earning_deals_still_posts_when_a_link_earns(monkeypatch, tmp_path):
+def test_strict_mode_holds_a_mixed_post_even_when_one_link_earns(monkeypatch, tmp_path):
     result, influencer_id, channel_id, sent = _run_pipeline(
         monkeypatch,
         tmp_path,
@@ -275,17 +328,18 @@ def test_only_earning_deals_still_posts_when_a_link_earns(monkeypatch, tmp_path)
         "and https://www.flipkart.com/p/itm123",
         settings={"only_earning_deals": "on"},
     )
-    assert result[influencer_id][channel_id] == "posted"
-    assert sent
+    assert result[influencer_id][channel_id] == "skipped:strict_commission_unverified"
+    assert sent == []
 
 
-def test_free_posts_are_still_allowed_by_default(monkeypatch, tmp_path):
-    """Volume stays untouched until the operator turns the switch on."""
+def test_strict_commission_mode_holds_unverified_posts_by_default(monkeypatch, tmp_path):
+    """Default protection holds raw merchant links rather than posting free."""
     result, influencer_id, channel_id, sent = _run_pipeline(
         monkeypatch, tmp_path, "money_default", "Deal https://www.flipkart.com/p/itm123"
     )
-    assert result[influencer_id][channel_id] == "posted"
-    assert sent
+    assert result[influencer_id][channel_id] == "skipped:strict_commission_unverified"
+    assert sent == []
+    assert db.count_deferred_deals() == 1
 
 
 def test_meesho_fallback_offers_the_raw_url_to_earnkaro(monkeypatch, tmp_path):
@@ -308,7 +362,12 @@ def test_meesho_fallback_offers_the_raw_url_to_earnkaro(monkeypatch, tmp_path):
         sent.append(rendered)
         return "posted"
 
-    converter = AsyncMock(return_value={raw_meesho: "https://ekaro.in/meesho123"})
+    async def verified_meesho_converter(*_args, **_kwargs):
+        short = "https://ekaro.in/meesho123"
+        db.record_verified_earnkaro_link(short, "5478322", raw_meesho)
+        return {raw_meesho: short}
+
+    converter = AsyncMock(side_effect=verified_meesho_converter)
     monkeypatch.setattr(earnkaro, "convert_links", converter)
     monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
 
@@ -424,5 +483,5 @@ def test_global_quality_floor_applies_when_nothing_else_is_set(monkeypatch, tmp_
     ) == "skipped:quality_tier_C_lt_B"
 
 
-def test_without_a_quality_floor_every_deal_still_posts(monkeypatch, tmp_path):
-    assert _tier_run(monkeypatch, tmp_path, "tier_none") == "posted"
+def test_without_a_quality_floor_strict_mode_holds_unverified_links(monkeypatch, tmp_path):
+    assert _tier_run(monkeypatch, tmp_path, "tier_none") == "skipped:strict_commission_unverified"

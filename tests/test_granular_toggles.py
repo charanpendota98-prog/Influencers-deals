@@ -5,6 +5,10 @@ from influencer_hub import db, pipeline
 
 def test_granular_amazon_earnkaro_switches():
     db.init()
+    # This module isolates the network-toggle behavior; strict attribution has
+    # dedicated tests and is explicitly disabled here to preserve legacy routing.
+    db.set_global_setting("strict_commission_mode", "off")
+    db.set_global_setting("only_earning_deals", "off")
     # 1. Influencer with ONLY AMAZON = True (EarnKaro OFF)
     inf1 = db.add_influencer("Only Amz User", "myamz-21", only_amazon=True)
     ch1 = db.add_channel(inf1, "telegram", "@onlyamz_chan", role="broadcast", status="ready")

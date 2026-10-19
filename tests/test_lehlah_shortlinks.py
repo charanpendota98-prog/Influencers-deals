@@ -87,7 +87,7 @@ def test_first_party_shortening_preserves_full_lehlah_url_and_redirects(monkeypa
     assert client.get("/l/not-valid").status_code == 404
 
 
-def test_pipeline_keeps_lehlah_original_until_approved(monkeypatch, tmp_path):
+def test_pipeline_holds_source_owned_lehlah_without_our_account_proof(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "lehlah-pipeline.sqlite3")
     monkeypatch.setattr(
         config, "MEESHO_SHORT_LINK_BASE_URL", "https://go.example.test"
@@ -120,11 +120,10 @@ def test_pipeline_keeps_lehlah_original_until_approved(monkeypatch, tmp_path):
             influencer_ids=[influencer_id],
         )
     )
-    assert result[influencer_id][channel_id] == "posted"
+    assert result[influencer_id][channel_id] == "skipped:strict_commission_unverified"
+    assert sent == []
     converter.assert_not_awaited()
     bitly_shortener.assert_not_awaited()
-    assert LEHLAH_MEESHO_LINKS[0] in sent[0]
-    assert "https://go.example.test/l/" not in sent[0]
 
 
 def test_unconfigured_or_invalid_base_leaves_lehlah_url_unchanged():

@@ -81,6 +81,8 @@ def test_custom_wa_session_per_channel():
 def test_pipeline_uses_influencer_bitly_key_for_multilink():
     """Ensure pipeline passes the influencer's specific Bitly token when post has 2+ links."""
     db.init()
+    db.set_global_setting("strict_commission_mode", "off")
+    db.set_global_setting("only_earning_deals", "off")
     iid = db.add_influencer(
         "Bitly VIP", "vip-21", bitly_api_key="vip-secret-bitly-token",
         allow_amazon=False,
@@ -115,8 +117,10 @@ def test_pipeline_uses_influencer_bitly_key_for_multilink():
 
 
 def test_pipeline_skips_bitly_when_influencer_has_no_key():
-    """If influencer hasn't provided a Bitly key, standard affiliate links are used without Bitly."""
+    """If influencer hasn't provided a Bitly key, standard links are not shortened."""
     db.init()
+    db.set_global_setting("strict_commission_mode", "off")
+    db.set_global_setting("only_earning_deals", "off")
     iid = db.add_influencer(
         "No Bitly User", "nobitly-21", bitly_api_key="", allow_amazon=False
     )

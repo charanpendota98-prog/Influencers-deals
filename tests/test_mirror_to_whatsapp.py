@@ -169,7 +169,16 @@ def test_mirror_respects_the_destination_amazon_only_policy(wired):
     )
 
     async def fake_convert(urls, include_meesho=False):
-        return {url: url.replace("flipkart.com", "fktr.in") for url in urls}
+        publisher_id = str(
+            db.get_global_setting("earnkaro_publisher_id", config.EARNKARO_PUBLISHER_ID)
+            or config.EARNKARO_PUBLISHER_ID
+        )
+        converted = {}
+        for url in urls:
+            short = f"https://ekaro.in/mirror?affExtParam2={publisher_id}"
+            db.record_verified_earnkaro_link(short, publisher_id, url)
+            converted[url] = short
+        return converted
 
     monkeypatch_convert = pytest.MonkeyPatch()
     monkeypatch_convert.setattr("influencer_hub.earnkaro.convert_links", fake_convert)

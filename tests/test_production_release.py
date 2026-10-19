@@ -105,20 +105,25 @@ def test_active_channel_and_all_toggles_do_not_drop_shopsy_deal(monkeypatch):
         sent.append(text)
         return "posted"
 
-    monkeypatch.setattr(pipeline, "_earnkaro_map_for", AsyncMock(return_value={}))
+    flipkart = "https://www.flipkart.com/p/itm1234567890?pid=SHOE1"
+    converted_flipkart = "https://ekaro.in/shopsy-converted?affExtParam2=5478322"
+    monkeypatch.setattr(pipeline, "_earnkaro_map_for", AsyncMock(
+        return_value={flipkart: converted_flipkart}
+    ))
     monkeypatch.setattr(pipeline, "dispatch_to_channel", fake_dispatch)
     try:
         result = asyncio.run(pipeline.render_and_dispatch(
             "🔥 Shopsy loot at ₹199/-\n"
             "Amazon: https://amazon.in/dp/B0ABCDEFGH?ref=long&tag=old-21\n"
-            "Flipkart: https://www.flipkart.com/p/itm1234567890?pid=SHOE1\n"
+            f"Flipkart: {flipkart}\n"
             "Meesho: https://hypd.store/55555/afflink/abcde12345",
             influencer_ids=[influencer_id],
         ))
         assert result[influencer_id][channel_id] == "posted"
         assert len(sent) == 1
         assert "amazon.in" not in sent[0]
-        assert "https://www.flipkart.com/p/itm1234567890?pid=SHOE1" in sent[0]
+        assert converted_flipkart in sent[0]
+        assert flipkart not in sent[0]
         assert "https://hypd.store/93944/afflink/abcde12345" in sent[0]
     finally:
         db.delete_influencer(influencer_id)
@@ -166,6 +171,7 @@ def test_allowlisted_global_bitly_key_shortens_eligible_links_without_creator_ke
     monkeypatch.setattr(config, "BITLY_API_KEY", "global-bitly-test-token")
     monkeypatch.setattr(config, "BITLY_GLOBAL_INFLUENCER_IDS", set())
     db.init()
+    db.set_global_setting("strict_commission_mode", "off")
     influencer_id = db.add_influencer("Global Bitly", allow_amazon=False)
     monkeypatch.setattr(config, "BITLY_GLOBAL_INFLUENCER_IDS", {str(influencer_id)})
     channel_id = db.add_channel(
@@ -202,6 +208,7 @@ def test_global_bitly_key_is_not_used_for_unlisted_influencers(monkeypatch, tmp_
     monkeypatch.setattr(config, "BITLY_API_KEY", "global-bitly-test-token")
     monkeypatch.setattr(config, "BITLY_GLOBAL_INFLUENCER_IDS", set())
     db.init()
+    db.set_global_setting("strict_commission_mode", "off")
     influencer_id = db.add_influencer("No Global Bitly", allow_amazon=False)
     channel_id = db.add_channel(
         influencer_id, "telegram", "@no_global_bitly", status="ready",

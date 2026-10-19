@@ -244,7 +244,7 @@ def test_flow_api_surfaces_the_switches_that_control_flow(hub):
     flow = hub.get("/api/flow").get_json()
     assert flow["settings"] == {
         "hourly_loot_enabled": False,
-        "only_earning_deals": False,
+        "only_earning_deals": True,
     }
     db.set_global_setting("hourly_loot_enabled", "1")
     assert hub.get("/api/flow").get_json()["settings"]["hourly_loot_enabled"] is True

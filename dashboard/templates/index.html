@@ -22,6 +22,37 @@
   <div class="dashboard-alert dashboard-alert-muted" role="status"><strong>VM health has no snapshot yet.</strong> Start/configure the watcher to populate system status.</div>
 {% endif %}
 
+<section class="launch-panel" aria-labelledby="launch-title">
+  <div class="launch-topline">
+    <div>
+      <p class="eyebrow">QUICK START · SIMPLE TO ADVANCED</p>
+      <h2 id="launch-title">{% if launch_done == 4 %}🚀 Hub launch checklist{% else %}👋 Let’s get your hub ready{% endif %}</h2>
+      <p class="hint">Four clear checks from creator setup to live delivery. Start with the recommended next step; advanced controls are still one click away.</p>
+    </div>
+    <div class="launch-score" aria-label="{{ launch_done }} of 4 launch steps complete">
+      <strong>{{ launch_done }}/4</strong><span>steps complete</span>
+      <div class="launch-progress"><span style="width:{{ launch_done * 25 }}%"></span></div>
+    </div>
+  </div>
+  <div class="launch-steps">
+    {% for step in launch_steps %}
+      <a class="launch-step {{ 'is-done' if step.done else 'is-next' }}" href="{{ step.url }}">
+        <span class="launch-step-mark">{{ '✓' if step.done else loop.index }}</span>
+        <span><strong>{{ step.label }}</strong><small>{{ step.detail }}</small></span>
+        <span class="launch-step-state">{{ 'Done' if step.done else 'Open →' }}</span>
+      </a>
+    {% endfor %}
+  </div>
+  <div class="launch-next">
+    <div><span class="launch-next-label">Recommended next</span><strong>{{ launch_action.label }}</strong><p>{{ launch_action.detail }}</p></div>
+    <div class="launch-actions">
+      <a class="btn btn-primary" href="{{ launch_action.url }}">Continue →</a>
+      <a class="btn btn-secondary" href="{{ url_for('easy_setup') }}">⚡ Easy Setup</a>
+      <a class="text-link" href="{{ url_for('guided_setup') }}">Guided setup</a>
+    </div>
+  </div>
+</section>
+
 <section class="dashboard-metrics" aria-label="Hub metrics">
   <article class="dashboard-metric">
     <div class="dashboard-metric-label">Delivered · 24h</div>

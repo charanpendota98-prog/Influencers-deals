@@ -21,8 +21,6 @@ This module pins the whole matrix on a single deal:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
-
 import pytest
 
 from influencer_hub import config, db, earnkaro, fidelity, link_router, pipeline
@@ -53,10 +51,21 @@ def hub(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "network-routing.sqlite3")
     monkeypatch.setattr(config, "MEESHO_EARNKARO_FALLBACK", True)
     db.init()
+    # This matrix verifies category isolation and text fidelity, including a
+    # raw LehLah example; strict commission behavior is tested separately.
+    db.set_global_setting("strict_commission_mode", "off")
     # EarnKaro is the only external call in this path; the CRM answers with our
     # own conversion links, the same shape a real key returns.
-    monkeypatch.setattr(earnkaro, "convert_links",
-                        AsyncMock(return_value={FLIPKART: EK_FLIPKART, MEESHO: EK_MEESHO}))
+    async def fake_convert(urls, include_meesho=False):
+        result = {}
+        publisher_id = str(config.EARNKARO_PUBLISHER_ID or "").strip()
+        for source, short in ((FLIPKART, EK_FLIPKART), (MEESHO, EK_MEESHO)):
+            if source in urls:
+                db.record_verified_earnkaro_link(short, publisher_id, source)
+                result[source] = short
+        return result
+
+    monkeypatch.setattr(earnkaro, "convert_links", fake_convert)
     sent: dict[str, str] = {}
 
     async def fake_dispatch(_inf, channel, text):
