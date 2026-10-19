@@ -68,6 +68,81 @@ def test_token_for_accepts_every_shape_an_operator_pastes():
     assert sources.token_for("") == ""
 
 
+def test_source_selector_validation_accepts_telegram_forms_and_rejects_dead_urls():
+    for raw in (
+        "@LootZoneIndia11", "LootZoneIndia11", "t.me/LootZoneIndia11",
+        "https://telegram.me/LootZoneIndia11", "https://t.me/s/LootZoneIndia11",
+        "https://t.me/+AbC123", "https://t.me/joinchat/AbC123",
+        "-1001234567890", "+AbC123",
+    ):
+        assert sources.validate_spec(raw) == (True, ""), raw
+    for raw in (
+        "", "https://example.com/deal", "https://t.me", "https://t.me/",
+        "https://t.me/c/123/456", "@bad name", "t.me/joinchat",
+    ):
+        assert sources.validate_spec(raw)[0] is False, raw
+
+
+def test_bulk_parser_requires_a_label_for_private_invites():
+    import dashboard.app as dashboard_module
+
+    assert dashboard_module._parse_bulk_source_line("https://t.me/+AbC123") is None
+    assert dashboard_module._parse_bulk_source_line(
+        "My Exact Group | https://t.me/+AbC123"
+    ) == ("My Exact Group", "https://t.me/+AbC123")
+
+
+def test_telegram_preview_source_link_resolves_to_its_public_username():
+    from influencer_hub import puller
+
+    assert puller._source_parts("https://t.me/s/LootZoneIndia11") == (
+        "lootzoneindia11", None, False
+    )
+    assert puller._source_parts("+AbC123") == (None, None, True)
+
+
+def test_equivalent_selector_forms_share_one_canonical_identity():
+    assert sources.selector_key("@LootZoneIndia11") == sources.selector_key(
+        "https://t.me/LootZoneIndia11"
+    )
+    assert sources.selector_key("t.me/s/LootZoneIndia11") == sources.selector_key(
+        "LootZoneIndia11"
+    )
+    assert sources.selector_key("https://t.me/+AbC123") == sources.selector_key(
+        "https://t.me/joinchat/AbC123"
+    )
+
+
+def test_default_source_does_not_duplicate_an_equivalent_saved_username():
+    saved_id = db.add_source("Default source", "@LootZoneIndia11")
+
+    result = sources.ensure_default()
+
+    assert result["added"] is False
+    assert result["source_id"] == saved_id
+    assert len(db.list_sources(active_only=False)) == 1
+
+
+def test_source_add_routes_reject_non_telegram_urls_and_skip_them_in_bulk(client):
+    token = _csrf(client, "/setup")
+    invalid_response = client.post("/sources/add", data={
+        "_csrf_token": token, "from_setup": "1", "spec": "https://example.com/deal",
+    }, follow_redirects=True)
+    assert db.list_sources(active_only=False) == []
+    assert "Source not saved" in invalid_response.get_data(as_text=True)
+
+    response = client.post("/sources/bulk-add", data={
+        "_csrf_token": token, "bulk_specs": (
+            "@valid_source\nhttps://t.me/valid_source\nhttps://example.com/deal\nhttps://t.me/c/123/456"
+        ),
+    }, follow_redirects=True)
+    sources_now = db.list_sources(active_only=False)
+    assert [row["spec"] for row in sources_now] == ["@valid_source"]
+    assert "Saved 1 Telegram source selector(s)" in response.get_data(as_text=True)
+    assert "1 duplicate(s) skipped" in response.get_data(as_text=True)
+    assert "2 invalid entry/entries rejected" in response.get_data(as_text=True)
+
+
 def test_normalize_selection_stores_plain_tokens():
     assert sources.normalize_selection(
         "https://t.me/LootZoneIndia11, @powerloot\nmyntra_loots, , lootzoneindia11"

@@ -91,6 +91,8 @@ def _source_parts(spec: str) -> tuple[str | None, str | None, bool]:
         return None, None, False
     if raw.startswith("@"):
         return raw.lstrip("@").casefold(), None, False
+    if raw.startswith("+"):
+        return None, None, True
     if raw.lstrip("-").isdigit():
         return None, raw, False
 
@@ -105,6 +107,10 @@ def _source_parts(spec: str) -> tuple[str | None, str | None, bool]:
             first = segments[0]
             if first.startswith("+") or first.casefold() == "joinchat":
                 return None, None, True
+            if first.casefold() == "s" and len(segments) > 1:
+                # Telegram's public web preview form t.me/s/<username> points
+                # at the same public dialog as t.me/<username>.
+                first = segments[1]
             if first.lstrip("-").isdigit():
                 return None, first, False
             return first.lstrip("@").casefold(), None, False

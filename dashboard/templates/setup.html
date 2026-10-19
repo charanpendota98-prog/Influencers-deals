@@ -84,8 +84,26 @@
 </section>
 
 <section id="source-pool" class="card" style="margin-top:16px;">
+  {% if request.args.get('source_error') == 'invalid_spec' %}
+    <div role="alert" style="margin:0 0 12px; padding:10px 12px; border:1px solid #b91c1c; border-radius:8px; background:#2a1010; color:#fecaca; font-size:12px;">
+      ❌ Source not saved. Use a Telegram public username, numeric peer ID, or valid <code>t.me</code>/<code>telegram.me</code> invite link — other website links and private post links are not source selectors.
+    </div>
+  {% elif request.args.get('source_error') == 'private_label_required' %}
+    <div role="alert" style="margin:0 0 12px; padding:10px 12px; border:1px solid #b45309; border-radius:8px; background:#2a1d0a; color:#fde68a; font-size:12px;">
+      ⚠ Private invite not saved. Enter the exact joined Telegram chat title as its label; that lets the worker match the right private dialog without checking or joining the invite.
+    </div>
+  {% elif request.args.get('sources_added') is not none %}
+    {% set added_count = request.args.get('sources_added', '0')|int %}
+    {% set skipped_count = request.args.get('sources_skipped', '0')|int %}
+    {% set invalid_count = request.args.get('sources_invalid', '0')|int %}
+    <div role="status" style="margin:0 0 12px; padding:10px 12px; border:1px solid {{ '#166534' if added_count else '#92400e' }}; border-radius:8px; background:{{ '#052e16' if added_count else '#2a1d0a' }}; color:{{ '#bbf7d0' if added_count else '#fde68a' }}; font-size:12px;">
+      {% if added_count %}✅ Saved {{ added_count }} Telegram source selector(s).{% else %}⚠ No new source selector was saved.{% endif %}
+      {% if skipped_count %} {{ skipped_count }} duplicate(s) skipped.{% endif %}
+      {% if invalid_count %} {{ invalid_count }} invalid entry/entries rejected — check that each link is a Telegram source, not a post or shopping URL.{% endif %}
+    </div>
+  {% endif %}
   <div class="setup-section-title" style="margin-top:0;">
-    <div><h2>📡 Source pool</h2><p class="hint">Add Telegram sources or the suggested catalog. This stores selectors only: it never checks invite links or joins channels. The Telegram account must already be a member. For private invite links, a label is optional; if it is not an exact match for a joined dialog title, the worker warns and reads only already-joined eligible groups/channels. Known output channels are excluded. Public usernames are the most precise selectors.</p></div>
+    <div><h2>📡 Source pool</h2><p class="hint">Add Telegram sources or the suggested catalog. This stores selectors only: it never checks invite links or joins channels. The Telegram account must already be a member. For private invite links, enter the exact joined-dialog title as the label; otherwise the worker cannot identify that private source. Known output channels are excluded. Public usernames are the most precise selectors.</p></div>
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
       {% if source_default %}
         <span class="pill" title="A creator saved without a source selection posts from this channel">
@@ -125,7 +143,7 @@
   <form method="post" action="{{ url_for('add_deal_source') }}" class="source-add-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
     <input type="hidden" name="from_setup" value="1" />
-    <label><span>Friendly label (optional)</span><input name="name" maxlength="120" placeholder="e.g. Priority Source — a label, not an invite identity" /></label>
+    <label><span>Source label (required for private invites)</span><input name="name" maxlength="120" placeholder="Public: optional · Private: exact Telegram chat title" /></label>
     <label class="source-spec-field"><span>Telegram username, numeric ID, or t.me selector</span><input name="spec" maxlength="512" required placeholder="@channelname or https://t.me/+private-invite" /></label>
     <label><span>Environment</span><select name="kind"><option value="production">Production</option><option value="dummy">Staging / test</option></select></label>
     <button type="submit" class="btn btn-primary">Save source</button>

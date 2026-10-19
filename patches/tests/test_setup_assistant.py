@@ -68,16 +68,23 @@ def test_setup_source_pool_can_add_pause_and_remove_without_joining(setup_client
     assert db.list_sources(active_only=False) == []
 
 
-def test_private_source_label_is_optional_and_never_exposes_invite_as_label(setup_client):
-    response = setup_client.post(
+def test_private_source_requires_exact_joined_dialog_title_label(setup_client):
+    missing_label = setup_client.post(
         "/sources/add",
         data={"from_setup": "1", "spec": "https://t.me/+privatehash123"},
     )
+    assert "private_label_required" in missing_label.headers["Location"]
+    assert db.list_sources(active_only=False) == []
 
+    response = setup_client.post(
+        "/sources/add",
+        data={"from_setup": "1", "spec": "https://t.me/+privatehash123",
+              "name": "My Exact Telegram Group Title"},
+    )
     assert response.status_code == 302
     assert "source_saved=1" in response.headers["Location"]
     source = db.list_sources(active_only=False)[0]
-    assert source["name"] == "Private Telegram source"
+    assert source["name"] == "My Exact Telegram Group Title"
     assert source["spec"] == "https://t.me/+privatehash123"
 
 

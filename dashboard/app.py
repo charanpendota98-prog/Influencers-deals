@@ -2134,8 +2134,11 @@ def _default_source_state(configured: list[dict] | None = None) -> dict:
     spec = sources.DEFAULT_SPEC
     token = sources.default_token()
     rows = configured if configured is not None else db.list_sources(active_only=False)
-    have = [row for row in (rows or [])
-            if str(row.get("spec") or "").strip() == spec]
+    default_key = sources.selector_key(spec)
+    have = [
+        row for row in (rows or [])
+        if sources.selector_key(str(row.get("spec") or "")) == default_key
+    ]
     return {
         "name": sources.DEFAULT_NAME or token,
         "label": sources.DEFAULT_NAME or token or spec,
@@ -2647,12 +2650,16 @@ def setup_live_checks():
 @app.route("/sources/seed-defaults", methods=["POST"])
 def seed_default_sources():
     """Register the suggested source catalog only after an explicit operator action."""
-    existing_specs = {source["spec"] for source in db.list_sources(active_only=False)}
+    existing_specs = {
+        sources.selector_key(str(source.get("spec") or ""))
+        for source in db.list_sources(active_only=False)
+    }
     added = 0
     for name, spec in DEFAULT_SOURCE_CATALOG:
-        if spec not in existing_specs:
+        key = sources.selector_key(spec)
+        if key not in existing_specs:
             db.add_source(name, spec, kind="production")
-            existing_specs.add(spec)
+            existing_specs.add(key)
             added += 1
     return redirect(url_for("setup", sources_added=added))
 
@@ -2706,17 +2713,35 @@ def add_deal_source():
     from_setup = request.form.get("from_setup") == "1"
     if kind not in {"production", "dummy"}:
         kind = "production"
-    if not spec or len(spec) > 512:
-        return redirect(url_for("setup", source_error="invalid_spec"))
+    valid_spec, source_error = sources.validate_spec(spec)
+    if not valid_spec:
+        flash(source_error, "error")
+        return redirect(url_for("setup", source_error="invalid_spec", source_saved=0))
+    selector = sources.selector_key(spec)
+    if any(
+        sources.selector_key(str(row.get("spec") or "")) == selector
+        for row in db.list_sources(active_only=False)
+    ):
+        if from_setup:
+            return redirect(url_for(
+                "setup", source_saved=0, sources_added=0, sources_skipped=1,
+                sources_invalid=0,
+            ))
+        flash("That Telegram source is already configured.", "warning")
+        return redirect(url_for("secret_vault_tab" if from_vault else "index"))
     _, _, is_private_invite = puller._source_parts(spec)
+    if is_private_invite and not name:
+        flash(
+            "Private invite links need the exact Telegram dialog title as the label. "
+            "The invite hash alone cannot identify a joined chat without joining/checking it.",
+            "error",
+        )
+        return redirect(url_for("setup", source_error="private_label_required"))
     if not name:
-        # Invite hashes are secrets/identifiers, not useful display names. A
-        # generic label is fine because private invites are resolved only by
-        # an exact joined-dialog title; otherwise puller.py uses safe fallback.
-        name = "Private Telegram source" if is_private_invite else spec.split("/")[-1].replace("+", "").replace("@", "")
+        name = spec.split("/")[-1].replace("+", "").replace("@", "")
     db.add_source(name[:120], spec, kind=kind)
     if from_setup:
-        return redirect(url_for("setup", source_saved=1))
+        return redirect(url_for("setup", source_saved=1, sources_added=1))
     if from_vault:
         return redirect(url_for("secret_vault_tab"))
     return redirect(url_for("index"))
@@ -2799,34 +2824,19 @@ def _parse_bulk_source_line(line: str) -> tuple[str, str] | None:
             break
     spec = spec.strip()
     name = name.strip()[:120]
-    if not spec or len(spec) > 512:
+    valid_spec, _error = sources.validate_spec(spec)
+    if not valid_spec:
         return None
-    # Reject obviously non-Telegram garbage (no @, no t.me, no +, not numeric)
-    low = spec.lower()
-    if not (
-        "t.me/" in low
-        or "telegram.me/" in low
-        or spec.startswith("@")
-        or spec.startswith("+")
-        or spec.lstrip("-").isdigit()
-        or low.startswith("https://")
-        or low.startswith("http://")
-        or spec.lstrip("@").replace("_", "").replace("-", "").isalnum()
-    ):
-        # Still allow bare usernames without @
-        if not spec.replace("_", "").replace("-", "").isalnum():
-            return None
+    try:
+        _, _, is_private = puller._source_parts(spec)
+    except Exception:
+        is_private = False
+    if is_private and not name:
+        return None
     if not name:
-        try:
-            _, _, is_private = puller._source_parts(spec)
-        except Exception:
-            is_private = False
-        if is_private:
-            name = "Private Telegram source"
-        else:
-            # Derive a readable label from spec
-            base = spec.split("/")[-1].replace("+", "").replace("@", "").strip()
-            name = base[:120] if base else spec[:120]
+        # Derive a readable label from a public username or numeric ID.
+        base = spec.split("/")[-1].replace("+", "").replace("@", "").strip()
+        name = base[:120] if base else spec[:120]
     return name, spec
 
 
@@ -2844,7 +2854,10 @@ def bulk_add_sources():
     if not raw:
         flash("Paste at least one Telegram link or username.", "warning")
         return redirect(url_for("setup"))
-    existing = {str(row.get("spec") or "").strip().casefold(): row for row in db.list_sources(active_only=False)}
+    existing = {
+        sources.selector_key(str(row.get("spec") or "")): row
+        for row in db.list_sources(active_only=False)
+    }
     added = 0
     skipped = 0
     invalid = 0
@@ -2878,7 +2891,7 @@ def bulk_add_sources():
                 invalid += 1
                 continue
             name, spec = parsed
-            key = spec.strip().casefold()
+            key = sources.selector_key(spec)
             if key in existing:
                 skipped += 1
                 continue
@@ -2900,7 +2913,10 @@ def bulk_add_sources():
         flash(f"✅ Added {added} source(s){f' · {skipped} duplicate(s) skipped' if skipped else ''}{f' · {invalid} invalid ignored' if invalid else ''}. Telegram joining is still manual — open Telegram and join them with the same account.", "success")
     else:
         flash(f"No new source added — {skipped} duplicate(s), {invalid} invalid. Check the links and try again.", "warning")
-    return redirect(url_for("setup", source_saved=1 if added else 0))
+    return redirect(url_for(
+        "setup", source_saved=1 if added else 0, sources_added=added,
+        sources_skipped=skipped, sources_invalid=invalid,
+    ))
 
 
 @app.route("/sources/bulk-delete", methods=["POST"])

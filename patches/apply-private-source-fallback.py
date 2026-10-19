@@ -48,7 +48,7 @@ def patch_in_place() -> bool:
         ("puller", "def _dialog_summary("),
         ("dashboard", "def _live_source_selection("),
         ("dashboard", "private invite label(s)"),
-        ("setup", "Friendly label (optional)"),
+        ("setup", "Source label (required for private invites)"),
         ("easy_setup", "Live Telegram check"),
         ("cli", '"--telegram-sources"'),
         ("db", "source_name       TEXT NOT NULL"),

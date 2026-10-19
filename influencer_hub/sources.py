@@ -30,6 +30,99 @@ def _clean(value: str) -> str:
     return " ".join(str(value or "").split()).strip()
 
 
+def validate_spec(spec: str) -> tuple[bool, str]:
+    """Validate a Telegram source selector before it enters the active pool.
+
+    Accept public usernames, t.me/telegram.me URLs, private invite links,
+    numeric peer IDs, and bare username tokens. Reject arbitrary web URLs and
+    empty Telegram paths early so the dashboard cannot report a source saved
+    when the worker can never match it.
+    """
+    from urllib.parse import urlsplit
+
+    value = _clean(spec)
+    if not value:
+        return False, "Enter a Telegram username, channel ID, or t.me invite link."
+    if len(value) > 512:
+        return False, "Telegram source selectors must be 512 characters or fewer."
+
+    candidate = value if "://" in value else (
+        "https://" + value if value.casefold().startswith(("t.me/", "telegram.me/")) else ""
+    )
+    if candidate:
+        try:
+            parsed = urlsplit(candidate)
+            host = (parsed.hostname or "").casefold()
+        except ValueError:
+            return False, "That source URL is malformed. Use a t.me or telegram.me link."
+        if parsed.scheme.casefold() not in {"http", "https"} or host not in {
+            "t.me", "www.t.me", "telegram.me", "www.telegram.me"
+        }:
+            return False, "Only Telegram t.me or telegram.me source links are accepted."
+        segments = [part for part in parsed.path.split("/") if part]
+        if not segments or not segments[0].strip():
+            return False, "The Telegram link needs a channel username or invite code after the domain."
+        first = segments[0]
+        if first.casefold() == "c":
+            return False, "That is a private Telegram post link, not a source selector. Use the channel invite link or numeric peer ID."
+        if first.casefold() == "s":
+            if len(segments) < 2 or not re.fullmatch(r"[A-Za-z0-9_]{5,32}", segments[1]):
+                return False, "That Telegram preview link needs a valid public channel username."
+        elif first.casefold() == "joinchat":
+            if len(segments) < 2 or not re.fullmatch(r"[A-Za-z0-9_-]{5,256}", segments[1]):
+                return False, "The private invite link is missing a valid invite code."
+        elif first.startswith("+"):
+            if not re.fullmatch(r"\+[A-Za-z0-9_-]{5,256}", first):
+                return False, "The private invite link is missing a valid invite code."
+        elif first.lstrip("-").isdigit():
+            pass
+        elif not re.fullmatch(r"[A-Za-z0-9_]{5,32}", first):
+            return False, "The Telegram link needs a valid public username or private invite code."
+        return True, ""
+
+    if value.startswith("@"):
+        token = value[1:]
+        if not token or not re.fullmatch(r"[A-Za-z0-9_]{5,32}", token):
+            return False, "Enter a valid Telegram @username (5–32 letters, numbers, or underscores)."
+        return True, ""
+    if value.startswith("+"):
+        if not re.fullmatch(r"\+[A-Za-z0-9_-]{5,256}", value):
+            return False, "Enter the complete Telegram private invite code after the plus sign."
+        return True, ""
+    if value.lstrip("-").isdigit():
+        return True, ""
+    if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", value):
+        return False, "Enter a Telegram @username, bare username, numeric ID, or t.me invite link."
+    return True, ""
+
+
+def selector_key(spec: str) -> str:
+    """Canonical identity used to detect equivalent source selectors.
+
+    ``@name``, ``name``, ``t.me/name`` and ``t.me/s/name`` identify one public
+    dialog. Private invite URL forms normalize to the same invite key, while
+    numeric peer IDs remain distinct from usernames.
+    """
+    value = _clean(spec)
+    valid, _error = validate_spec(value)
+    if not valid:
+        return value.casefold()
+    if value.startswith("+"):
+        return "invite:" + value[1:].casefold()
+    # Import locally to avoid a module-import cycle: puller imports config/db,
+    # while source-management helpers are also used from the worker/dashboard.
+    from . import puller
+    username, peer_id, is_private = puller._source_parts(value)
+    if username:
+        return "username:" + username.casefold()
+    if peer_id:
+        return "peer:" + peer_id.casefold()
+    if is_private:
+        token = token_for(value).lstrip("+").casefold()
+        return "invite:" + token
+    return value.casefold()
+
+
 def token_for(spec: str) -> str:
     """``https://t.me/LootZoneIndia11`` / ``@LootZoneIndia11`` → ``LootZoneIndia11``.
 
@@ -190,11 +283,13 @@ def ensure_default() -> dict:
     if not spec:
         return result
     try:
-        existing = {str(row.get("spec") or "").strip(): row
-                    for row in db.list_sources(active_only=False)}
+        existing = {
+            selector_key(str(row.get("spec") or "")): row
+            for row in db.list_sources(active_only=False)
+        }
     except Exception:  # pragma: no cover - defensive
         existing = {}
-    row = existing.get(spec)
+    row = existing.get(selector_key(spec))
     if row:
         result["source_id"] = int(row.get("id") or 0)
         return result
