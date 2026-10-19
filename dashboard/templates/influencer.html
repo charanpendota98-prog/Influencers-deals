@@ -123,6 +123,24 @@
   </div>
 </section>
 
+<section class="card" style="border:1px solid {{ '#166534' if delivery_readiness.profile_active and delivery_readiness.active_destinations else '#b45309' }}; background:#0b1220; padding:12px 14px; border-radius:8px;">
+  <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap;">
+    <h2 style="margin:0; color:#e2e8f0; font-size:14px;">📡 Delivery readiness · configuration check</h2>
+    <b style="color:{{ '#86efac' if delivery_readiness.profile_active and delivery_readiness.active_destinations else '#fbbf24' }}; font-size:11px;">
+      {{ 'DESTINATION CONFIGURED' if delivery_readiness.profile_active and delivery_readiness.active_destinations else 'ACTION NEEDED' }}
+    </b>
+  </div>
+  <p class="hint" style="margin:6px 0; font-size:11px;">This checks saved settings only; it cannot prove live Telegram/WhatsApp permissions or that a real deal passed the pipeline.</p>
+  <ul style="margin:4px 0; font-size:11px; color:#cbd5e1;">
+    <li>Profile: {{ 'Active' if delivery_readiness.profile_active else 'Inactive — no deals will be dispatched' }}</li>
+    <li>{{ delivery_readiness.active_destinations }} active destination(s){% if delivery_readiness.active_names %}: {{ delivery_readiness.active_names | join(', ') }}{% endif %}</li>
+    {% if delivery_readiness.pending_destinations %}<li style="color:#fbbf24;">{{ delivery_readiness.pending_destinations }} pending destination(s){% if delivery_readiness.pending_whatsapp %} ({{ delivery_readiness.pending_whatsapp }} WhatsApp destination(s) need a successful test post and permission){% endif %}</li>{% endif %}
+    {% if delivery_readiness.paused_destinations %}<li style="color:#fca5a5;">{{ delivery_readiness.paused_destinations }} paused destination(s) will not receive posts.</li>{% endif %}
+    {% if delivery_readiness.amazon_tag_holds %}<li style="color:#fecaca;">{{ delivery_readiness.amazon_tag_holds }} active Telegram destination(s) have an Amazon tag proof blocker.</li>{% endif %}
+  </ul>
+  <p class="hint" style="margin:4px 0 0; font-size:10px;">For actual delivery evidence, check <a href="{{ url_for('setup') }}" style="color:#38bdf8;">Setup → Source activity</a> after a real source deal arrives.</p>
+</section>
+
 {% set tag_blockers = namespace(rows=[]) %}
 {% for item in tag_diag %}
   {% if item.status in ['ready', 'active'] and (not item.own or not item.usable) %}

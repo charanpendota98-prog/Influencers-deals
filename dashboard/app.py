@@ -5720,6 +5720,39 @@ def influencer_detail(inf_id):
             })
     except Exception:
         tag_diag = []
+
+    active_channels = [
+        ch for ch in channels
+        if str(ch.get("status") or "").strip().lower() in {"ready", "active"}
+    ]
+    pending_channels = [
+        ch for ch in channels
+        if str(ch.get("status") or "").strip().lower() == "pending"
+    ]
+    paused_channels = [
+        ch for ch in channels
+        if str(ch.get("status") or "").strip().lower() == "paused"
+    ]
+    active_tag_holds = [
+        item for item in tag_diag
+        if item.get("status") in {"ready", "active"}
+        and (not item.get("own") or not item.get("usable"))
+    ]
+    delivery_readiness = {
+        "profile_active": bool(inf.get("active", True)),
+        "active_destinations": len(active_channels),
+        "pending_destinations": len(pending_channels),
+        "paused_destinations": len(paused_channels),
+        "amazon_tag_holds": len(active_tag_holds),
+        "pending_whatsapp": sum(
+            str(ch.get("platform") or "").lower() in {"whatsapp", "whatsapp_group", "whatsapp_channel"}
+            for ch in pending_channels
+        ),
+        "active_names": [
+            f"{ch.get('platform', 'channel')} · {ch.get('title') or ch.get('identifier') or 'unnamed'}"
+            for ch in active_channels
+        ],
+    }
     return render_template(
         "influencer.html", inf=inf, channels=channels,
         # Let the source fields suggest what exists: a creator's allowed_sources
@@ -5745,6 +5778,7 @@ def influencer_detail(inf_id):
             db.get_global_setting("earnkaro_api_key") or config.EARNKARO_API_KEY
         ),
         tag_diag=tag_diag,
+        delivery_readiness=delivery_readiness,
     )
 
 
