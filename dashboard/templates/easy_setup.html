@@ -5,7 +5,7 @@
   <div>
     <p class="eyebrow">MOST EASY SETUP · ONE SCREEN</p>
     <h1>⚡ Easy Setup</h1>
-    <p class="hint">Creator name, two channels, three switches — that's it. Deals keep flowing from your sources automatically.</p>
+    <p class="hint">One screen for creator details, channels, source selection and routing. Saving records the setup; delivery is shown as ready only after its real prerequisites check out.</p>
   </div>
   <div style="display:flex; gap:10px; flex-wrap:wrap;">
     {% if focus_id or result %}<a class="btn btn-primary" href="{{ url_for('easy_setup') }}">➕ New creator</a>{% endif %}
@@ -94,23 +94,28 @@
 
 {% if result %}
   <section class="easy-result" role="status" aria-live="polite">
-    <h2>✅ {{ result.name }} {{ 'updated' if result.action == 'updated' else 'is ready' }}</h2>
+    <h2>✅ {{ result.name }} {{ 'updated' if result.action == 'updated' else 'saved' }}</h2>
     <div class="easy-result-grid">
       <div><span>Creator</span><strong>#{{ result.inf_id }} · {{ result.name }}</strong></div>
-      <div><span>Posting</span><strong style="color:#6ee7b7;">🟢 ON</strong></div>
+      <div><span>Delivery</span><strong style="color:#fcd34d;">🧪 Verify destinations</strong></div>
       <div><span>Channels added</span><strong>{{ result.created | length }}</strong></div>
       <div><span>Channels refreshed</span><strong>{{ result.updated | length }}</strong></div>
-      <div><span>Feeding sources</span><strong>{{ result.active_sources }}</strong></div>
+      <div><span>Selected active sources</span><strong>{{ result.selected_active_sources }}</strong></div>
     </div>
     <ul class="easy-result-list">
       {% for identifier in result.created %}<li>➕ {{ identifier }} connected</li>{% endfor %}
       {% for identifier in result.updated %}<li>🔄 {{ identifier }} updated</li>{% endfor %}
       {% for identifier in result.whatsapp %}<li>💬 {{ identifier }} saved as Pending — pair the phone and send one Test post to activate it</li>{% endfor %}
       {% if result.whatsapp_note %}<li>⚠ WhatsApp channel not saved: {{ result.whatsapp_note }}</li>{% endif %}
-      <li>📡 New deals from {{ result.active_sources }} active source(s) will post automatically.</li>
+      <li>📡 Selected deal sources: <strong>{{ result.source_selection or 'every source in the hub' }}</strong>.</li>
+      {% if result.selected_active_sources %}
+        <li>{{ result.selected_active_sources }} selected active source(s) can feed this creator. Eligible deals route automatically only while the worker is healthy and the destination is usable. A saved channel is not proof of a successful post.</li>
+      {% else %}
+        <li>⚠ None of this creator's selected sources is active. Select or activate sources in <a class="text-link" href="{{ url_for('setup') }}#source-pool">Setup → Sources</a> before expecting automatic posts.</li>
+      {% endif %}
     </ul>
     <div class="easy-result-actions">
-      <a class="btn btn-primary" href="{{ url_for('influencer_detail', inf_id=result.inf_id) }}">Open {{ result.name }} →</a>
+      <a class="btn btn-primary" href="{{ url_for('influencer_detail', inf_id=result.inf_id) }}#channels">🧪 Verify &amp; test destinations →</a>
       <a class="btn btn-secondary" href="{{ url_for('easy_setup') }}">➕ Add another creator</a>
     </div>
   </section>
@@ -296,6 +301,11 @@
       </label>
     </div>
     <p class="hint">Paste an existing channel (<code>@username</code> or a <code>t.me/…</code> link). This never creates or joins a channel — it only posts to it, so make sure the connected account can post there.</p>
+    {% with source_rows=easy_source_rows, source_picked=easy_source_picked,
+            source_all=easy_source_all, source_line=easy_source_line,
+            source_default=easy_source_default %}
+      {% include "_source_picker.html" %}
+    {% endwith %}
   </section>
 
   <section class="easy-card">
