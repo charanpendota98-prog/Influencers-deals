@@ -143,6 +143,35 @@ def test_easy_setup_source_picker_saves_multiple_or_every_source(hub):
     )
 
 
+def test_easy_setup_saves_category_selection_to_creator_and_added_channels(hub):
+    client, session = hub
+    session.unlock()
+    from influencer_hub import sources
+
+    db.add_source("Power Loot", "https://t.me/powerloot")
+    source_token = sources.token_for("https://t.me/powerloot")
+    response = _setup(
+        client, session.token,
+        categories_present="1", categories=["electronics", "home"],
+        sources=[source_token], sources_text="",
+    )
+    assert response.status_code == 302
+
+    profile = next(row for row in db.list_influencers() if row["name"] == "Ravi Loots")
+    assert profile["categories"] == "electronics,home"
+    assert sources.selection_tokens(profile["allowed_sources"]) == [source_token]
+    channels = db.list_channels(profile["id"])
+    assert len(channels) == 2
+    assert all(row["categories"] == "electronics,home" for row in channels)
+    assert all(sources.selection_tokens(row["allowed_sources"]) == [source_token]
+               for row in channels)
+
+    page = client.get(f"/easy-setup?creator={profile['id']}").get_data(as_text=True)
+    assert re.search(r'name="categories" value="electronics"\s+checked', page)
+    assert re.search(r'name="categories" value="home"\s+checked', page)
+    assert "Product categories" in page
+
+
 def test_easy_setup_updates_an_existing_creator_instead_of_duplicating(hub):
     client, session = hub
     session.unlock()

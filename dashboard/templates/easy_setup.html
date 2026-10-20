@@ -108,6 +108,7 @@
       {% for identifier in result.whatsapp %}<li>💬 {{ identifier }} saved as Pending — pair the phone and send one Test post to activate it</li>{% endfor %}
       {% if result.whatsapp_note %}<li>⚠ WhatsApp channel not saved: {{ result.whatsapp_note }}</li>{% endif %}
       <li>📡 Selected deal sources: <strong>{{ result.source_selection or 'every source in the hub' }}</strong>.</li>
+      <li>🎯 Product categories: <strong>{{ result.category_selection or 'all categories' }}</strong>.</li>
       {% if result.selected_active_sources %}
         <li>{{ result.selected_active_sources }} selected active source(s) can feed this creator. Eligible deals route automatically only while the worker is healthy and the destination is usable. A saved channel is not proof of a successful post.</li>
       {% else %}
@@ -306,10 +307,22 @@
             source_default=easy_source_default %}
       {% include "_source_picker.html" %}
     {% endwith %}
+    <fieldset class="easy-category-picker" style="margin:16px 0 0;padding:14px;border:1px solid var(--border,#334155);border-radius:12px;">
+      <legend><strong>🎯 Product categories for these channels</strong></legend>
+      <input type="hidden" name="categories_present" value="1" />
+      <p class="hint">Choose the product types this creator wants. The same selection is saved on the creator and the channels added here. “All categories” or no selection means unrestricted; source selection above is saved separately.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;">
+        {% for key, label, hint in product_category_choices %}
+          <label title="{{ hint }}"><input type="checkbox" name="categories" value="{{ key }}"
+            {% if key in product_category_picked(values.categories) %}checked{% endif %} /> {{ label }}</label>
+        {% endfor %}
+      </div>
+      <p class="hint" style="margin-bottom:0;">Unknown products and all other posting checks still follow the saved creator policy, schedule, destination permissions and affiliate safety rules.</p>
+    </fieldset>
   </section>
 
   <section class="easy-card">
-    <h2>3️⃣ What gets posted — three switches</h2>
+    <h2>4️⃣ What gets posted — three switches</h2>
     <div class="easy-switches">
       {% for switch in switches %}
         <label class="easy-switch" for="switch-{{ switch.name }}">
@@ -348,7 +361,7 @@
   </section>
 
   <section class="easy-card">
-    <h2>4️⃣ This is exactly what will be posted</h2>
+    <h2>5️⃣ This is exactly what will be posted</h2>
     <div id="routing-preview">{% include "_routing_preview.html" %}</div>
   </section>
 
@@ -357,6 +370,24 @@
     <span class="hint">Easy Setup saves immediately — no password. Only removals (delete a channel, a creator or a deal source) ask for the password, once per unlock window.</span>
   </div>
 </form>
+<script>
+(function () {
+  var picker = document.querySelector('.easy-category-picker');
+  if (!picker) return;
+  var boxes = Array.from(picker.querySelectorAll('input[name="categories"]'));
+  boxes.forEach(function (box) {
+    box.addEventListener('change', function () {
+      if (!box.checked) return;
+      if (box.value === 'all') {
+        boxes.forEach(function (other) { if (other !== box) other.checked = false; });
+      } else {
+        var all = boxes.find(function (other) { return other.value === 'all'; });
+        if (all) all.checked = false;
+      }
+    });
+  });
+})();
+</script>
 <section class="easy-card">
   {% include "_category_preview.html" %}
 </section>

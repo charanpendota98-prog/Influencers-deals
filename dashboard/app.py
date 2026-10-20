@@ -4159,8 +4159,15 @@ def _easy_setup_form_values() -> dict:
             or _effective_hypd_store_id()
         ),
         # The owner's presets travel with the row, so a bulk import also sets the
-        # categories / hours / price filter they chose once.
-        "categories": str(values.get("categories") or "").strip(),
+        # categories / hours / price filter they chose once. Easy Setup includes
+        # an explicit category picker; the hidden presence marker distinguishes
+        # "all unchecked = all categories" from an older caller that omitted it.
+        "categories": (
+            onboarding.category_text(request.form.getlist("categories"))
+            if request.form.get("categories_present") == "1"
+            else str(values.get("categories") or "").strip()
+        ),
+        "_sync_channel_categories": request.form.get("categories_present") == "1",
         "posting_schedule": str(values.get("posting_schedule") or "").strip(),
         "price_filter": str(values.get("price_filter") or "all").strip() or "all",
     })
@@ -4867,6 +4874,7 @@ def _easy_setup_values_from_profile(profile: dict) -> dict:
         "main": _identifier("broadcast"),
         "whatsapp": str((whatsapp or {}).get("identifier") or ""),
         "allowed_sources": str(profile.get("allowed_sources") or ""),
+        "categories": str(profile.get("categories") or ""),
         "allow_amazon": bool(profile.get("allow_amazon", True)),
         "allow_earnkaro": bool(profile.get("allow_earnkaro", True)),
         "allow_hypd": bool(profile.get("allow_hypd", True)),
@@ -4933,6 +4941,9 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
         selected_sources = str(values.get("allowed_sources") or "").strip()
         settings["allowed_sources"] = selected_sources
         source_settings["allowed_sources"] = selected_sources
+    category_settings: dict[str, str] = {}
+    if values.get("_sync_channel_categories"):
+        category_settings["categories"] = str(values.get("categories") or "").strip()
     # Optional profile details a row may carry (phone, categories, hours, price
     # filter, notes). None of them is written as an empty value on an update, so
     # a paste that only mentions channels never wipes a saved field.
@@ -4993,6 +5004,7 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
                 hypd_store_id=values["hypd_store_id"],
                 mirror_whatsapp=mirror_flag,
                 **source_settings,
+                **category_settings,
             )
             updated.append(identifier)
         else:
@@ -5004,6 +5016,7 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
                 hypd_store_id=values["hypd_store_id"],
                 mirror_whatsapp=mirror_flag or "",
                 allowed_sources=source_settings.get("allowed_sources", ""),
+                categories=category_settings.get("categories", ""),
             )
             channels.append({
                 "id": 0, "influencer_id": inf_id, "platform": "telegram",
@@ -5026,6 +5039,7 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
                 inf_id, destination, role="whatsapp",
                 allowed_sources=source_settings.get("allowed_sources", ""),
                 wa_session_key=WA_SESSION_KEY(inf_id),
+                channel_settings=category_settings,
             )
             whatsapp_added.append(destination["identifier"])
         else:
@@ -5061,6 +5075,10 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
             values.get("allowed_sources")
             if values.get("allowed_sources") is not None
             else (db.get_influencer(inf_id) or {}).get("allowed_sources", "")
+        ),
+        "category_selection": ", ".join(
+            label for key, label, _hint in onboarding.CATEGORY_CHOICES
+            if key in onboarding.selected_categories(values.get("categories", ""))
         ),
     }
 
