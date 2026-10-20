@@ -103,8 +103,73 @@ def test_easy_setup_creates_creator_plus_both_channels_and_starts_posting(hub):
         assert channel["status"] == "ready", "channels must post without another step"
 
     summary = client.get("/easy-setup").get_data(as_text=True)
-    assert "is ready" in summary
+    assert "saved" in summary
     assert "@ravi_loots" in summary
+    assert "Verify &amp; test destinations" in summary
+    assert "Selected deal sources" in summary
+
+
+def test_easy_setup_source_picker_saves_multiple_or_every_source(hub):
+    client, session = hub
+    session.unlock()
+    db.add_source("Power Loot", "https://t.me/powerloot")
+    db.add_source("Daily Deals", "https://t.me/dailydeals")
+    from influencer_hub import sources
+    first = sources.token_for("https://t.me/powerloot")
+    second = sources.token_for("https://t.me/dailydeals")
+
+    page = client.get("/easy-setup").get_data(as_text=True)
+    assert "Deal sources — which channels these posts come from" in page
+    assert "Post from every source in the hub" in page
+
+    response = _setup(client, session.token, sources_text="")
+    assert response.status_code == 302
+    profile = next(row for row in db.list_influencers() if row["name"] == "Ravi Loots")
+    assert profile["allowed_sources"] == sources.default_token()
+
+    response = _setup(client, session.token, sources=[first, second], sources_text="")
+    assert response.status_code == 302
+    profile = next(row for row in db.list_influencers() if row["name"] == "Ravi Loots")
+    assert sources.selection_tokens(profile["allowed_sources"]) == [first, second]
+    assert all(sources.selection_tokens(channel["allowed_sources"]) == [first, second]
+               for channel in db.list_channels(profile["id"]))
+
+    response = _setup(client, session.token, sources_all="1", sources_text="")
+    assert response.status_code == 302
+    profile = next(row for row in db.list_influencers() if row["name"] == "Ravi Loots")
+    assert profile["allowed_sources"] == "", "explicit every-source choice remains unrestricted"
+    assert all(not channel["allowed_sources"] for channel in db.list_channels(profile["id"])), (
+        "the every-source choice must apply consistently to every saved destination"
+    )
+
+
+def test_easy_setup_saves_category_selection_to_creator_and_added_channels(hub):
+    client, session = hub
+    session.unlock()
+    from influencer_hub import sources
+
+    db.add_source("Power Loot", "https://t.me/powerloot")
+    source_token = sources.token_for("https://t.me/powerloot")
+    response = _setup(
+        client, session.token,
+        categories_present="1", categories=["electronics", "home"],
+        sources=[source_token], sources_text="",
+    )
+    assert response.status_code == 302
+
+    profile = next(row for row in db.list_influencers() if row["name"] == "Ravi Loots")
+    assert profile["categories"] == "electronics,home"
+    assert sources.selection_tokens(profile["allowed_sources"]) == [source_token]
+    channels = db.list_channels(profile["id"])
+    assert len(channels) == 2
+    assert all(row["categories"] == "electronics,home" for row in channels)
+    assert all(sources.selection_tokens(row["allowed_sources"]) == [source_token]
+               for row in channels)
+
+    page = client.get(f"/easy-setup?creator={profile['id']}").get_data(as_text=True)
+    assert re.search(r'name="categories" value="electronics"\s+checked', page)
+    assert re.search(r'name="categories" value="home"\s+checked', page)
+    assert "Product categories" in page
 
 
 def test_easy_setup_updates_an_existing_creator_instead_of_duplicating(hub):
@@ -337,7 +402,7 @@ def test_easy_setup_reports_how_many_sources_will_feed_the_creator(hub):
 
     _setup(client, session.token)
     page = client.get("/easy-setup").get_data(as_text=True)
-    assert "2 active source(s)" in page
+    assert "2 selected active source(s)" in page
 
 
 # --------------------------------------------------------------------------

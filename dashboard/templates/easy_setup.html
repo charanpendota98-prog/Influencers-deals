@@ -5,7 +5,7 @@
   <div>
     <p class="eyebrow">MOST EASY SETUP · ONE SCREEN</p>
     <h1>⚡ Easy Setup</h1>
-    <p class="hint">Creator name, two channels, three switches — that's it. Deals keep flowing from your sources automatically.</p>
+    <p class="hint">One screen for creator details, channels, source selection and routing. Saving records the setup; delivery is shown as ready only after its real prerequisites check out.</p>
   </div>
   <div style="display:flex; gap:10px; flex-wrap:wrap;">
     {% if focus_id or result %}<a class="btn btn-primary" href="{{ url_for('easy_setup') }}">➕ New creator</a>{% endif %}
@@ -94,23 +94,29 @@
 
 {% if result %}
   <section class="easy-result" role="status" aria-live="polite">
-    <h2>✅ {{ result.name }} {{ 'updated' if result.action == 'updated' else 'is ready' }}</h2>
+    <h2>✅ {{ result.name }} {{ 'updated' if result.action == 'updated' else 'saved' }}</h2>
     <div class="easy-result-grid">
       <div><span>Creator</span><strong>#{{ result.inf_id }} · {{ result.name }}</strong></div>
-      <div><span>Posting</span><strong style="color:#6ee7b7;">🟢 ON</strong></div>
+      <div><span>Delivery</span><strong style="color:#fcd34d;">🧪 Verify destinations</strong></div>
       <div><span>Channels added</span><strong>{{ result.created | length }}</strong></div>
       <div><span>Channels refreshed</span><strong>{{ result.updated | length }}</strong></div>
-      <div><span>Feeding sources</span><strong>{{ result.active_sources }}</strong></div>
+      <div><span>Selected active sources</span><strong>{{ result.selected_active_sources }}</strong></div>
     </div>
     <ul class="easy-result-list">
       {% for identifier in result.created %}<li>➕ {{ identifier }} connected</li>{% endfor %}
       {% for identifier in result.updated %}<li>🔄 {{ identifier }} updated</li>{% endfor %}
       {% for identifier in result.whatsapp %}<li>💬 {{ identifier }} saved as Pending — pair the phone and send one Test post to activate it</li>{% endfor %}
       {% if result.whatsapp_note %}<li>⚠ WhatsApp channel not saved: {{ result.whatsapp_note }}</li>{% endif %}
-      <li>📡 New deals from {{ result.active_sources }} active source(s) will post automatically.</li>
+      <li>📡 Selected deal sources: <strong>{{ result.source_selection or 'every source in the hub' }}</strong>.</li>
+      <li>🎯 Product categories: <strong>{{ result.category_selection or 'all categories' }}</strong>.</li>
+      {% if result.selected_active_sources %}
+        <li>{{ result.selected_active_sources }} selected active source(s) can feed this creator. Eligible deals route automatically only while the worker is healthy and the destination is usable. A saved channel is not proof of a successful post.</li>
+      {% else %}
+        <li>⚠ None of this creator's selected sources is active. Select or activate sources in <a class="text-link" href="{{ url_for('setup') }}#source-pool">Setup → Sources</a> before expecting automatic posts.</li>
+      {% endif %}
     </ul>
     <div class="easy-result-actions">
-      <a class="btn btn-primary" href="{{ url_for('influencer_detail', inf_id=result.inf_id) }}">Open {{ result.name }} →</a>
+      <a class="btn btn-primary" href="{{ url_for('influencer_detail', inf_id=result.inf_id) }}#channels">🧪 Verify &amp; test destinations →</a>
       <a class="btn btn-secondary" href="{{ url_for('easy_setup') }}">➕ Add another creator</a>
     </div>
   </section>
@@ -296,10 +302,27 @@
       </label>
     </div>
     <p class="hint">Paste an existing channel (<code>@username</code> or a <code>t.me/…</code> link). This never creates or joins a channel — it only posts to it, so make sure the connected account can post there.</p>
+    {% with source_rows=easy_source_rows, source_picked=easy_source_picked,
+            source_all=easy_source_all, source_line=easy_source_line,
+            source_default=easy_source_default %}
+      {% include "_source_picker.html" %}
+    {% endwith %}
+    <fieldset class="easy-category-picker" style="margin:16px 0 0;padding:14px;border:1px solid var(--border,#334155);border-radius:12px;">
+      <legend><strong>🎯 Product categories for these channels</strong></legend>
+      <input type="hidden" name="categories_present" value="1" />
+      <p class="hint">Choose the product types this creator wants. The same selection is saved on the creator and the channels added here. “All categories” or no selection means unrestricted; source selection above is saved separately.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;">
+        {% for key, label, hint in product_category_choices %}
+          <label title="{{ hint }}"><input type="checkbox" name="categories" value="{{ key }}"
+            {% if key in product_category_picked(values.categories) %}checked{% endif %} /> {{ label }}</label>
+        {% endfor %}
+      </div>
+      <p class="hint" style="margin-bottom:0;">Unknown products and all other posting checks still follow the saved creator policy, schedule, destination permissions and affiliate safety rules.</p>
+    </fieldset>
   </section>
 
   <section class="easy-card">
-    <h2>3️⃣ What gets posted — three switches</h2>
+    <h2>4️⃣ What gets posted — three switches</h2>
     <div class="easy-switches">
       {% for switch in switches %}
         <label class="easy-switch" for="switch-{{ switch.name }}">
@@ -338,7 +361,7 @@
   </section>
 
   <section class="easy-card">
-    <h2>4️⃣ This is exactly what will be posted</h2>
+    <h2>5️⃣ This is exactly what will be posted</h2>
     <div id="routing-preview">{% include "_routing_preview.html" %}</div>
   </section>
 
@@ -347,6 +370,24 @@
     <span class="hint">Easy Setup saves immediately — no password. Only removals (delete a channel, a creator or a deal source) ask for the password, once per unlock window.</span>
   </div>
 </form>
+<script>
+(function () {
+  var picker = document.querySelector('.easy-category-picker');
+  if (!picker) return;
+  var boxes = Array.from(picker.querySelectorAll('input[name="categories"]'));
+  boxes.forEach(function (box) {
+    box.addEventListener('change', function () {
+      if (!box.checked) return;
+      if (box.value === 'all') {
+        boxes.forEach(function (other) { if (other !== box) other.checked = false; });
+      } else {
+        var all = boxes.find(function (other) { return other.value === 'all'; });
+        if (all) all.checked = false;
+      }
+    });
+  });
+})();
+</script>
 <section class="easy-card">
   {% include "_category_preview.html" %}
 </section>
@@ -403,6 +444,7 @@
 {% if flow %}
 <section class="easy-card" id="deal-flow">
   <h2>🔄 Deal flow — sources → posts</h2>
+  <p class="hint">A Test Alert only proves the destination can receive a message; it does not test source reading, creator filters, or affiliate safety. The per-source rows below show what the worker actually read and the latest skip/failure reason.</p>
   <p class="hint">
     {% if flow.worker.alive %}
       ✅ Worker <strong>{{ flow.worker.state }}</strong> — last poll

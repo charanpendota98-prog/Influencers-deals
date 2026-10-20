@@ -704,15 +704,26 @@ def _cmd_tag_proof(args):
     fleet = tag_proof.fleet(active_only=True)
     if args.json:
         print(json.dumps(fleet, indent=2))
-        return 0 if fleet["ok"] else 1
+        return 0 if fleet["ok"] or (
+            getattr(args, "allow_held", False) and not fleet["broken_links"]
+        ) else 1
     print(fleet["summary"])
     fix = tag_proof.describe_fix(fleet["blocked"])
     if fix:
         print(fix)
+    for row in fleet["broken_links"]:
+        issues = "; ".join(row.get("issues") or ["rendered tag did not verify"])
+        print(f"  ⛔ broken rendered link: creator #{row['creator_id']}, "
+              f"channel #{row['channel_id']} — {issues}")
     if not fleet["blocked"]:
-        print(f"Nothing to fix — {fleet['creators']} creator(s), {fleet['channels']} active "
-              "channel(s) checked.")
-        return 0
+        if fleet["broken_links"]:
+            print("Rendered Amazon link verification failed; fix it before posting.")
+        else:
+            print(f"Nothing to fix — {fleet['creators']} creator(s), {fleet['channels']} active "
+                  "channel(s) checked.")
+        return 0 if fleet["ok"] or (
+            getattr(args, "allow_held", False) and not fleet["broken_links"]
+        ) else 1
     print()
     for row in fleet["blocked"]:
         held = ", ".join(channel["identifier"] or f"#{channel['channel_id']}"
@@ -721,8 +732,11 @@ def _cmd_tag_proof(args):
         print(f"     Amazon deals held: no own tag "
               f"(would post as {row['fallback_tag'] or '(none)'})")
     print("\nFix: paste each creator's own Associate tag (🧭 Guided setup or the creator "
-          "page). Held deals post on the next worker run.")
-    return 1
+          "page). Held deals can then retry on the next worker run.")
+    # Deployments may proceed when the only issue is an incomplete creator setup:
+    # the posting pipeline holds those Amazon deals rather than using a shared tag.
+    # Any malformed/mis-signed rendered link remains a hard failure.
+    return 0 if getattr(args, "allow_held", False) and not fleet["broken_links"] else 1
 
 
 def _cmd_add_defaults(args):
@@ -1298,6 +1312,10 @@ def build_parser() -> argparse.ArgumentParser:
     tpr.add_argument("--creator", type=int, default=0,
                      help="the single-creator proof: the exact link their posts will carry")
     tpr.add_argument("--json", action="store_true", help="machine-readable output")
+    tpr.add_argument(
+        "--allow-held", action="store_true",
+        help="deployment gate: succeed only when failures are safely held deals, not broken links",
+    )
     tpr.set_defaults(func=_cmd_tag_proof)
 
     ad = sub.add_parser("add-defaults",

@@ -286,10 +286,13 @@ if ! run "$PY" -m influencer_hub.cli self-check --blocking; then
   rollback "the hub self-check found a real failure after the deploy"
   exit 1
 fi
-log "checking that every Amazon link still carries its creator's own tag"
-if ! run "$PY" -m influencer_hub.cli tag-proof --json >/dev/null 2>&1; then
+log "checking Amazon tag safety (unsafe rendered links block; held creators are reported)"
+# A creator with no own Associate tag is safely held by the posting pipeline.
+# That onboarding gap must not roll back unrelated fixes for every other creator.
+# A malformed/mis-signed rendered link still fails this gate and triggers rollback.
+if ! run "$PY" -m influencer_hub.cli tag-proof --allow-held; then
   if [[ "$DRY_RUN" != "1" ]]; then
-    rollback "tag-proof failed: an active channel would not sign with its own tag"
+    rollback "tag-proof found a malformed or mis-signed rendered Amazon link"
     exit 1
   fi
 fi

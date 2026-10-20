@@ -81,6 +81,18 @@ def _record_source_activity(
         logger.warning("Could not record source activity", exc_info=True)
 
 
+def _record_record_activity(record: dict, source_key: str, **details) -> None:
+    """Record a message against configured source selectors, not just Telegram IDs."""
+    keys = record.get("source_activity_keys") or []
+    if not isinstance(keys, (list, tuple, set)):
+        keys = []
+    unique = list(dict.fromkeys(str(key or "").strip() for key in keys if str(key or "").strip()))
+    if not unique:
+        unique = [source_key]
+    for key in unique:
+        _record_source_activity(key, **details)
+
+
 def _record_heartbeat(state: str, *, poll_completed: bool = False, error_code: str = "") -> None:
     try:
         db.record_worker_heartbeat(
@@ -261,8 +273,8 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                     _sig = _sig_for_batch(text)
                     if _sig in seen_sigs_this_batch:
                         logger.info("Batch dedup: skipping duplicate deal from source %s message %s sig %s", source_key, message_id, _sig[:8])
-                        _record_source_activity(
-                            source_key, source_name=source_name, message_id=message_id
+                        _record_record_activity(
+                            record, source_key, source_name=source_name, message_id=message_id
                         )
                         db.set_worker_offset(source_key, message_id)
                         handled += 1
@@ -282,8 +294,8 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                     result = await pipeline.run_once([deal])
                 except Exception as exc:
                     logger.exception("Pipeline failed for source %s message %s", source_key, message_id)
-                    _record_source_activity(
-                        source_key, source_name=source_name, message_id=message_id, failed=1,
+                    _record_record_activity(
+                        record, source_key, source_name=source_name, message_id=message_id, failed=1,
                         error=f"{type(exc).__name__}: {exc}",
                     )
                     retried += 1
@@ -301,14 +313,14 @@ async def process_pending_batch(limit: int | None = None, use_dummy: bool = Fals
                     skipped_note = _skip_summary(result)
                     if skipped_note:
                         failure_note = f"{failure_note}; {skipped_note}"[:300]
-                    _record_source_activity(
-                        source_key, source_name=source_name, message_id=message_id,
+                    _record_record_activity(
+                        record, source_key, source_name=source_name, message_id=message_id,
                         posted=posted, failed=max(1, failed), error=failure_note,
                     )
                     retried += 1
                     break
-                _record_source_activity(
-                    source_key, source_name=source_name, message_id=message_id,
+                _record_record_activity(
+                    record, source_key, source_name=source_name, message_id=message_id,
                     posted=posted, failed=failed,
                     error=_skip_summary(result),
                 )

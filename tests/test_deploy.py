@@ -85,6 +85,15 @@ def test_the_dry_run_prints_the_plan_and_changes_nothing():
     assert "if [[ \"$DRY_RUN\" == \"1\" ]]; then" in text
 
 
+def test_the_deploy_gate_allows_safely_held_creators_but_keeps_link_safety():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "tag-proof --allow-held" in text
+    assert "malformed or mis-signed rendered Amazon link" in text
+    # A missing own tag is reported and held by the post pipeline; it must not
+    # make an unrelated code deployment roll back for every creator.
+    assert "safely held" in text
+
+
 def test_every_self_check_the_deploy_runs_gates_on_failures_only():
     """The one form a deploy may run is ``cli self-check --blocking``.
 

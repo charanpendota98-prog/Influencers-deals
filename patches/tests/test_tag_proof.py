@@ -415,7 +415,7 @@ def test_selfcheck_reports_the_hold_in_plain_words():
     assert "2 of 2" in item["detail"] and "own tag" in item["detail"]
 
 
-def test_cli_tag_proof_prints_the_fleet_and_the_single_creator(capsys):
+def test_cli_tag_proof_prints_the_fleet_and_the_single_creator(capsys, monkeypatch):
     from influencer_hub import cli
 
     good = _creator("Ravi Loots", "ravi-21")
@@ -433,6 +433,18 @@ def test_cli_tag_proof_prints_the_fleet_and_the_single_creator(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False and payload["fallback"] == 1
     assert payload["blocked"][0]["name"] == "No Tag Yet"
+
+    # Deploys may proceed past an onboarding gap only because those deals are
+    # held; a malformed rendered link must remain a hard stop.
+    assert cli.main(["tag-proof", "--allow-held"]) == 0
+    assert "Amazon deals held" in capsys.readouterr().out
+    with monkeypatch.context() as patch:
+        patch.setattr(tag_proof, "fleet", lambda **kwargs: {
+            "ok": False, "broken_links": [{"creator_id": good, "channel_id": 55,
+                                          "issues": ["tag mismatch"]}],
+            "blocked": [], "summary": "broken link", "creators": 2, "channels": 2,
+        })
+        assert cli.main(["tag-proof", "--allow-held"]) == 1
 
     assert cli.main(["tag-proof", "--creator", str(good)]) == 0
     out = capsys.readouterr().out

@@ -456,12 +456,16 @@ def test_pull_new_deals_uses_cursor_and_skips_unchanged_dialog(monkeypatch):
 
     fake = FakeClient()
     monkeypatch.setattr(telegram_ops, "_client", lambda: fake)
-    monkeypatch.setattr(puller, "_source_entries", lambda _use_dummy: [])
+    monkeypatch.setattr(
+        puller, "_source_entries",
+        lambda _use_dummy: [{"name": "Cursor Source", "spec": "@cursor_source", "kind": "production"}],
+    )
     monkeypatch.setattr(puller, "_excluded_output_keys", lambda: (set(), set()))
     monkeypatch.setattr(db, "get_worker_offset", lambda _key: 4)
     records = asyncio.run(puller.pull_new_deals(limit=10))
     assert records[0]["message_id"] == 5
     assert records[0]["source_token"] == "cursor_source"
+    assert records[0]["source_activity_keys"] == ["@cursor_source"]
     assert fake.calls[0][1]["min_id"] == 4
     assert fake.calls[0][1]["reverse"] is True
 

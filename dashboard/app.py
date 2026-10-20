@@ -4159,8 +4159,15 @@ def _easy_setup_form_values() -> dict:
             or _effective_hypd_store_id()
         ),
         # The owner's presets travel with the row, so a bulk import also sets the
-        # categories / hours / price filter they chose once.
-        "categories": str(values.get("categories") or "").strip(),
+        # categories / hours / price filter they chose once. Easy Setup includes
+        # an explicit category picker; the hidden presence marker distinguishes
+        # "all unchecked = all categories" from an older caller that omitted it.
+        "categories": (
+            onboarding.category_text(request.form.getlist("categories"))
+            if request.form.get("categories_present") == "1"
+            else str(values.get("categories") or "").strip()
+        ),
+        "_sync_channel_categories": request.form.get("categories_present") == "1",
         "posting_schedule": str(values.get("posting_schedule") or "").strip(),
         "price_filter": str(values.get("price_filter") or "all").strip() or "all",
     })
@@ -4630,9 +4637,9 @@ def _setup_page_context() -> dict:
 
 @app.route("/easy-setup", methods=["GET", "POST"])
 def easy_setup():
-    """One screen: creator + approval channel + main channel + 3 switches."""
-    sources = db.list_sources(active_only=False)
-    active_sources = sum(1 for source in sources if source.get("active"))
+    """One screen: creator + channels + deal-source scope + routing switches."""
+    source_rows = db.list_sources(active_only=False)
+    active_sources = sum(1 for source in source_rows if source.get("active"))
     values = _easy_setup_defaults()
     result: dict | None = session.pop("_easy_setup_result", None)
     bulk_result: dict | None = None
@@ -4675,6 +4682,13 @@ def easy_setup():
             errors.append("Approval and main channels must be two different channels.")
 
         if not errors:
+            source_selection = _source_selection_from_form(use_default_when_empty=True)
+            if source_selection is not None:
+                values["allowed_sources"] = source_selection
+                if source_selection and sources.default_token() in sources.selection_tokens(source_selection):
+                    # Keep the promised default source selectable and actually
+                    # configured when the hub has one; never auto-join its chat.
+                    sources.ensure_default()
             applied = _apply_easy_setup(values, approval_ident, main_ident)
             session["_easy_setup_result"] = applied
             from influencer_hub import commission_guard
@@ -4683,7 +4697,7 @@ def easy_setup():
                 values["amazon_tag"], compact=bool(main_ident)
             )
             flash(
-                f"✅ {applied['name']} is set up and posting. "
+                f"✅ {applied['name']} profile and channel settings saved. "
                 f"Amazon → {values['amazon_tag']}"
                 + (", other merchants → EarnKaro" if values["allow_earnkaro"] else "")
                 + (f", Meesho → HYPD store {values['hypd_store_id']}" if values["allow_hypd"] else ""),
@@ -4784,14 +4798,31 @@ def easy_setup():
         if profile:
             example_link = readiness.example_tagged_link(profile)
 
+    easy_source_rows = _source_rows()
+    source_selection_display = values.get("allowed_sources")
+    if source_selection_display is None:
+        source_selection_display = sources.default_token()
+    easy_source_picked = {
+        token.lower() for token in sources.selection_tokens(source_selection_display)
+    }
+    easy_source_all = bool(
+        (focus_id and not str(values.get("allowed_sources") or "").strip())
+        or sources.asks_for_everything(source_selection_display)
+    )
+
     return render_template(
         "easy_setup.html",
         values=values,
+        easy_source_rows=easy_source_rows,
+        easy_source_picked=easy_source_picked,
+        easy_source_all=easy_source_all,
+        easy_source_line=sources.selection_line(source_selection_display),
+        easy_source_default=sources.default_token(),
         preview=preview,
         result=result,
         errors=errors,
         switches=ROUTING_SWITCHES,
-        source_count=len(sources),
+        source_count=len(source_rows),
         active_source_count=active_sources,
         flow=_flow_snapshot(live_probe=_wants_live_probe()),
         plan=plan,
@@ -4842,6 +4873,8 @@ def _easy_setup_values_from_profile(profile: dict) -> dict:
         "approval": _identifier("approval"),
         "main": _identifier("broadcast"),
         "whatsapp": str((whatsapp or {}).get("identifier") or ""),
+        "allowed_sources": str(profile.get("allowed_sources") or ""),
+        "categories": str(profile.get("categories") or ""),
         "allow_amazon": bool(profile.get("allow_amazon", True)),
         "allow_earnkaro": bool(profile.get("allow_earnkaro", True)),
         "allow_hypd": bool(profile.get("allow_hypd", True)),
@@ -4903,6 +4936,14 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
         "hypd_store_id": values["hypd_store_id"],
         "active": True,
     }
+    source_settings: dict[str, str] = {}
+    if values.get("allowed_sources") is not None:
+        selected_sources = str(values.get("allowed_sources") or "").strip()
+        settings["allowed_sources"] = selected_sources
+        source_settings["allowed_sources"] = selected_sources
+    category_settings: dict[str, str] = {}
+    if values.get("_sync_channel_categories"):
+        category_settings["categories"] = str(values.get("categories") or "").strip()
     # Optional profile details a row may carry (phone, categories, hours, price
     # filter, notes). None of them is written as an empty value on an update, so
     # a paste that only mentions channels never wipes a saved field.
@@ -4923,6 +4964,7 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
             name, values["amazon_tag"], allow_amazon=values["allow_amazon"],
             allow_earnkaro=values["allow_earnkaro"], allow_hypd=values["allow_hypd"],
             only_amazon=values["only_amazon"], hypd_store_id=values["hypd_store_id"],
+            allowed_sources=str(values.get("allowed_sources") or "").strip(),
             phone_number=str(values.get("phone_number") or "").strip(),
             categories=str(values.get("categories") or "").strip(),
             posting_schedule=str(values.get("posting_schedule") or "").strip(),
@@ -4961,6 +5003,8 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
                 allow_hypd=values["allow_hypd"],
                 hypd_store_id=values["hypd_store_id"],
                 mirror_whatsapp=mirror_flag,
+                **source_settings,
+                **category_settings,
             )
             updated.append(identifier)
         else:
@@ -4971,6 +5015,8 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
                 allow_hypd=values["allow_hypd"],
                 hypd_store_id=values["hypd_store_id"],
                 mirror_whatsapp=mirror_flag or "",
+                allowed_sources=source_settings.get("allowed_sources", ""),
+                categories=category_settings.get("categories", ""),
             )
             channels.append({
                 "id": 0, "influencer_id": inf_id, "platform": "telegram",
@@ -4991,13 +5037,29 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
         if destination:
             _save_whatsapp_destination(
                 inf_id, destination, role="whatsapp",
+                allowed_sources=source_settings.get("allowed_sources", ""),
                 wa_session_key=WA_SESSION_KEY(inf_id),
+                channel_settings=category_settings,
             )
             whatsapp_added.append(destination["identifier"])
         else:
             whatsapp_note = wa_error or "The WhatsApp channel link could not be resolved."
 
-    sources = db.list_sources(active_only=False)
+    source_rows = db.list_sources(active_only=False)
+    selected_source_tokens = {
+        token.lower() for token in sources.selection_tokens(
+            values.get("allowed_sources")
+            if values.get("allowed_sources") is not None
+            else (db.get_influencer(inf_id) or {}).get("allowed_sources", "")
+        )
+    }
+    selected_active_sources = [
+        row for row in source_rows
+        if row.get("active") and (
+            not selected_source_tokens
+            or sources.token_from_source_row(row).lower() in selected_source_tokens
+        )
+    ]
     return {
         "action": action,
         "inf_id": inf_id,
@@ -5007,7 +5069,17 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
         "whatsapp": whatsapp_added,
         "whatsapp_note": whatsapp_note,
         "existing_channels": len(channels),
-        "active_sources": sum(1 for source in sources if source.get("active")),
+        "active_sources": sum(1 for source in source_rows if source.get("active")),
+        "selected_active_sources": len(selected_active_sources),
+        "source_selection": sources.selection_line(
+            values.get("allowed_sources")
+            if values.get("allowed_sources") is not None
+            else (db.get_influencer(inf_id) or {}).get("allowed_sources", "")
+        ),
+        "category_selection": ", ".join(
+            label for key, label, _hint in onboarding.CATEGORY_CHOICES
+            if key in onboarding.selected_categories(values.get("categories", ""))
+        ),
     }
 
 

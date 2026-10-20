@@ -1787,8 +1787,8 @@ def record_source_activity(
             "deals_seen=source_activity.deals_seen + excluded.deals_seen, "
             "posts_dispatched=source_activity.posts_dispatched + excluded.posts_dispatched, "
             "failures=source_activity.failures + excluded.failures, "
-            "last_error=CASE WHEN excluded.last_error <> '' THEN excluded.last_error "
-            "ELSE source_activity.last_error END, "
+            "last_error=CASE WHEN excluded.last_message_id >= source_activity.last_message_id "
+            "THEN excluded.last_error ELSE source_activity.last_error END, "
             "updated_at=excluded.updated_at",
             (key, str(source_name or "").strip()[:200], stamp, stamp if message_id else 0.0,
              message_id, 1, int(posted or 0), int(failed or 0), str(error or "")[:300], _now()),
