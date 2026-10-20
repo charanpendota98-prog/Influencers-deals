@@ -413,6 +413,7 @@
 {% if flow %}
 <section class="easy-card" id="deal-flow">
   <h2>🔄 Deal flow — sources → posts</h2>
+  <p class="hint">A Test Alert only proves the destination can receive a message; it does not test source reading, creator filters, or affiliate safety. The per-source rows below show what the worker actually read and the latest skip/failure reason.</p>
   <p class="hint">
     {% if flow.worker.alive %}
       ✅ Worker <strong>{{ flow.worker.state }}</strong> — last poll

@@ -527,8 +527,18 @@ async def pull_new_deals(limit: int | None = None, use_dummy: bool = False) -> l
     client = telegram_ops._client()
     records: list[dict] = []
     dialog_count = 0
+    source_entries = _source_entries(use_dummy)
     for dialog, source, source_id in await _iter_source_dialogs(client, use_dummy):
         key = source_id or _dialog_username(dialog) or _normal_name(source)
+        # Cursor identity is the Telegram dialog ID, but the admin flow board is
+        # keyed by the configured selector. Keep both: the cursor stays stable,
+        # while diagnostics can attribute activity/errors to the source label.
+        activity_keys = [
+            str(entry.get("spec") or "").strip()
+            for entry in source_entries
+            if _dialog_matches_source_entry(dialog, entry)
+            and str(entry.get("spec") or "").strip()
+        ]
         if not key:
             continue
         cursor = db.get_worker_offset(key)
@@ -558,6 +568,7 @@ async def pull_new_deals(limit: int | None = None, use_dummy: bool = False) -> l
                 # a different display title for the same joined channel.
                 "source_token": _dialog_username(dialog) or _dialog_id(dialog) or source,
                 "source_id": key,
+                "source_activity_keys": activity_keys,
                 "message_id": message_id,
             })
     return records

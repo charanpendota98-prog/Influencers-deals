@@ -65,6 +65,12 @@ def test_source_activity_accumulates_and_remembers_the_last_error(monkeypatch, t
     assert row["last_message_id"] == 9
     assert row["deals_seen"] == 3
 
+    # A later successful source message clears the previous message's warning;
+    # replaying an older cursor never does.
+    db.record_source_activity("@loot", message_id=10, posted=1)
+    row = next(r for r in db.list_source_activity() if r["source_key"] == "@loot")
+    assert row["last_error"] == ""
+
 
 def test_channel_post_activity_reports_last_post_and_counts(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "channel-activity.sqlite3")
@@ -91,6 +97,28 @@ def _record(source: str, message_id: int, text: str = "deal") -> dict:
         "text": text,
         "source": source,
     }
+
+
+def test_worker_records_activity_under_the_configured_source_selector(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "worker-activity-alias.sqlite3")
+    db.init()
+    record = _record("-100123", 10, "Deal https://www.flipkart.com/p/itm123456")
+    record["source_activity_keys"] = ["https://t.me/powerloot"]
+
+    async def fake_pull(limit=None, use_dummy=False):
+        return [record]
+
+    async def fake_run_once(_deals):
+        return {1: {7: "posted"}}
+
+    monkeypatch.setattr(worker.puller, "pull_new_deals", fake_pull)
+    monkeypatch.setattr(worker.pipeline, "run_once", fake_run_once)
+    asyncio.run(worker.process_pending_batch(limit=10))
+
+    rows = {row["source_key"]: row for row in db.list_source_activity()}
+    assert rows["https://t.me/powerloot"]["posts_dispatched"] == 1
+    assert "-100123" not in rows, "the UI key must use the configured source selector"
+    assert db.get_worker_offset("-100123") == 10, "the cursor remains keyed by Telegram ID"
 
 
 def test_worker_records_posted_and_failed_per_source(monkeypatch, tmp_path):
@@ -249,6 +277,7 @@ def test_easy_setup_page_shows_the_flow_card(hub):
     page = hub.get("/easy-setup").get_data(as_text=True)
 
     assert "Deal flow — sources → posts" in page
+    assert "Test Alert only proves the destination can receive a message" in page
     assert "/api/flow" in page
     assert "@live_source" in page
     assert "Worker <strong>running</strong>" in page
