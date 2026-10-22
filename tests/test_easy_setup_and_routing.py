@@ -384,6 +384,20 @@ def test_influencer_page_shows_the_routing_table(hub):
     assert "tag=ravi-21" in page
 
 
+def test_influencer_tag_warning_labels_shared_default_as_not_creator_owned(hub):
+    client, _session = hub
+    creator_id = db.add_influencer("Creator Without Tag", "")
+    db.add_channel(
+        creator_id, "telegram", "@creator_without_tag", status="ready", role="broadcast"
+    )
+
+    page = client.get(f"/influencer/{creator_id}").get_data(as_text=True)
+
+    assert "Amazon deals held — own tag proof failed" in page
+    assert "shared hub default — not this creator’s own tag" in page
+    assert "(creator)" not in page
+
+
 # --------------------------------------------------------------------------
 # Deals keep flowing from the sources
 # --------------------------------------------------------------------------
