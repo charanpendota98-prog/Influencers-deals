@@ -1,0 +1,127 @@
+{% extends "layout.html" %}
+{% block title %}Channel Manager · Influencer Hub{% endblock %}
+{% block content %}
+<section class="dashboard-hero">
+  <div>
+    <p class="eyebrow">ADMIN ONLY · SEARCHABLE · PAGINATED</p>
+    <h1>📡 Channel Manager</h1>
+    <p class="hint">Search and manage large Telegram/WhatsApp fleets without loading every row at once. Team-submitted destinations stay blocked until you approve them. Counts are live-checked on demand and cached here.</p>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <a class="btn btn-secondary" href="{{ url_for('api_channels_csv', q=q, platform=platform, status=status, approval=approval, category=category, source=source, min_members=min_members, max_members=max_members, added_from=added_from, added_to=added_to, count_state=count_state, sort=sort) }}">⬇ Export filtered CSV</a>
+    <a class="btn btn-secondary" href="{{ url_for('setup') }}">⚙ Setup</a>
+  </div>
+</section>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}<div class="flash-stack" aria-live="polite">{% for kind, message in messages %}<div class="flash flash-{{ 'success' if kind == 'success' else 'error' if kind == 'error' else 'warning' }}" role="status">{{ message }}</div>{% endfor %}</div>{% endif %}
+{% endwith %}
+
+<section class="easy-card" style="border-color:#1d4ed8;">
+  <form method="get" action="{{ url_for('channel_manager') }}" class="easy-field-grid" style="align-items:end;">
+    <label class="easy-field"><span>🔎 Search channel, creator or added-by</span><input name="q" value="{{ q }}" maxlength="120" placeholder="@channel · exact title · creator name" /></label>
+    <label class="easy-field"><span>Platform</span><select name="platform"><option value="">All platforms</option><option value="telegram" {{ 'selected' if platform == 'telegram' else '' }}>Telegram</option><option value="whatsapp_channel" {{ 'selected' if platform == 'whatsapp_channel' else '' }}>WhatsApp Channel</option><option value="whatsapp_group" {{ 'selected' if platform == 'whatsapp_group' else '' }}>WhatsApp Group</option></select></label>
+    <label class="easy-field"><span>Delivery status</span><select name="status"><option value="all" {{ 'selected' if status in ['', 'all'] else '' }}>Any status</option>{% for value in status_choices %}<option value="{{ value }}" {{ 'selected' if status == value else '' }}>{{ value|replace('_',' ')|title }}</option>{% endfor %}</select></label>
+    <label class="easy-field"><span>Admin approval</span><select name="approval"><option value="">All approvals</option><option value="pending" {{ 'selected' if approval == 'pending' else '' }}>Needs approval</option><option value="approved" {{ 'selected' if approval == 'approved' else '' }}>Approved</option><option value="rejected" {{ 'selected' if approval == 'rejected' else '' }}>Rejected</option></select></label>
+    <label class="easy-field"><span>Category includes</span><input name="category" value="{{ category }}" maxlength="50" placeholder="electronics" /></label>
+    <label class="easy-field"><span>Source includes</span><input name="source" value="{{ source }}" maxlength="120" placeholder="source token / @handle" /></label>
+    <label class="easy-field"><span>Minimum members</span><input type="number" name="min_members" value="{{ min_members if min_members is not none else '' }}" min="0" max="1000000000" placeholder="1000" /></label>
+    <label class="easy-field"><span>Maximum members</span><input type="number" name="max_members" value="{{ max_members if max_members is not none else '' }}" min="0" max="1000000000" placeholder="50000" /></label>
+    <label class="easy-field"><span>Channel added from</span><input type="date" name="added_from" value="{{ added_from }}" /></label>
+    <label class="easy-field"><span>Channel added through</span><input type="date" name="added_to" value="{{ added_to }}" /></label>
+    <label class="easy-field"><span>Audience data</span><select name="count_state"><option value="">Any freshness</option><option value="missing" {{ 'selected' if count_state == 'missing' else '' }}>Never checked</option><option value="stale" {{ 'selected' if count_state == 'stale' else '' }}>Stale / 30+ days</option><option value="fresh" {{ 'selected' if count_state == 'fresh' else '' }}>Fresh / under 30 days</option></select></label>
+    <label class="easy-field"><span>Sort results</span><select name="sort"><option value="newest" {{ 'selected' if sort == 'newest' else '' }}>Newest channel first</option><option value="oldest" {{ 'selected' if sort == 'oldest' else '' }}>Oldest channel first</option><option value="members_desc" {{ 'selected' if sort == 'members_desc' else '' }}>Largest audience first</option><option value="members_asc" {{ 'selected' if sort == 'members_asc' else '' }}>Smallest known audience first</option><option value="creator" {{ 'selected' if sort == 'creator' else '' }}>Creator name A–Z</option></select></label>
+    <label class="easy-field"><span>Rows per page</span><select name="size">{% for value in [25,50,100] %}<option value="{{ value }}" {{ 'selected' if size == value else '' }}>{{ value }}</option>{% endfor %}</select></label>
+    <button class="btn btn-primary" type="submit">Apply filters</button>
+    <a class="btn btn-secondary" href="{{ url_for('channel_manager') }}">Clear</a>
+  </form>
+</section>
+
+<section class="easy-card" aria-label="Quick channel views">
+  <strong>Quick views</strong>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+    <a class="btn btn-secondary" href="{{ url_for('channel_manager', approval='pending') }}">⏳ Needs your approval</a>
+    <a class="btn btn-secondary" href="{{ url_for('channel_manager', count_state='missing') }}">❔ No audience count</a>
+    <a class="btn btn-secondary" href="{{ url_for('channel_manager', count_state='stale') }}">🕒 Stale counts</a>
+    <a class="btn btn-secondary" href="{{ url_for('channel_manager', status='paused') }}">⏸ Paused</a>
+    <a class="btn btn-secondary" href="{{ url_for('channel_manager', platform='telegram') }}">✈ Telegram</a>
+    <a class="btn btn-secondary" href="{{ url_for('channel_manager', platform='whatsapp_channel') }}">◉ WhatsApp Channels</a>
+    <a class="btn btn-secondary" href="{{ url_for('channel_manager', platform='whatsapp_group') }}">▦ WhatsApp Groups</a>
+  </div>
+</section>
+
+<section class="easy-card" aria-label="Saved channel views">
+  <h2 style="margin-top:0;">Saved views · this browser</h2>
+  <p class="hint">Save a useful filter set once, then reopen it with one click. Views stay private to this browser.</p>
+  <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;">
+    <label class="easy-field" style="min-width:220px;"><span>View name</span><input id="saved-view-name" maxlength="40" placeholder="e.g. WhatsApp needs counts" /></label>
+    <button class="btn btn-primary" type="button" id="saved-view-save">Save current filters</button>
+    <label class="easy-field" style="min-width:220px;"><span>Saved views</span><select id="saved-view-select"><option value="">Loading…</option></select></label>
+    <button class="btn btn-secondary" type="button" id="saved-view-apply">Open view</button>
+    <button class="btn btn-secondary" type="button" id="saved-view-delete">Remove</button>
+    <span id="saved-view-status" class="hint" aria-live="polite"></span>
+  </div>
+</section>
+<script src="{{ url_for('static', filename='channel-manager.js') }}" defer></script>
+
+<section class="setup-shortcuts">
+  <div class="dashboard-status"><strong>{{ all_channels }} channels in inventory</strong><p>{{ total_channels }} match these filters · page {{ page }} of {{ pages }}</p></div>
+  <div class="dashboard-status"><strong>{{ pending_approvals }} need your approval</strong><p>Unapproved destinations stay blocked from deals and polls.</p></div>
+  <div class="dashboard-status"><strong>{{ count_attention }} count snapshots need refresh</strong><p>Unchecked or at least 30 days old on this page.</p></div>
+  <div class="dashboard-status"><strong>{{ page_rows|length }} shown</strong><p>Out of {{ total_channels }} matching channels · server-paginated.</p></div>
+</section>
+
+<section class="easy-card" style="overflow-x:auto;">
+  <table class="table" style="min-width:1100px;">
+    <thead><tr><th>Destination</th><th>Creator / submitter</th><th>Platform</th><th>Approval</th><th>Delivery</th><th>Members / followers</th><th>Categories / sources</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for row in page_rows %}
+      <tr>
+        <td><strong>{{ row.title or row.identifier }}</strong><br><code>{{ row.identifier }}</code><br><small>ID {{ row.id }}</small><br><small title="{{ row.channel_created_time or 'Timestamp unavailable' }}">Channel added {{ row.channel_created_date }} · {{ row.channel_age_label }}{% if row.channel_created_time %} · {{ row.channel_created_time }}{% endif %}</small></td>
+        <td><a class="text-link" href="{{ url_for('influencer_detail', inf_id=row.influencer_id) }}">{{ row.influencer_name }}</a><br><small title="{{ row.creator_created_time or 'Timestamp unavailable' }}">Creator added {{ row.creator_created_date }} · {{ row.creator_age_label }}{% if row.creator_created_time %} · {{ row.creator_created_time }}{% endif %}</small><br><small>{{ row.creator_added_by or 'Admin' }} added creator</small>{% if row.approval_requested_by %}<br><small>Channel submitted by {{ row.approval_requested_by }}</small>{% endif %}</td>
+        <td>{{ {'telegram':'Telegram','whatsapp_channel':'WhatsApp Channel','whatsapp_group':'WhatsApp Group'}.get(row.platform, row.platform) }}</td>
+        <td>
+          {% if row.admin_approval_status == 'pending' %}<strong style="color:#fbbf24;">⏳ Needs approval</strong>
+          {% elif row.admin_approval_status == 'rejected' %}<strong style="color:#fca5a5;">⛔ Rejected</strong>
+          {% else %}<strong style="color:#86efac;">✅ Approved</strong>{% endif %}
+          {% if row.approval_reviewed_by %}<br><small>by {{ row.approval_reviewed_by }}{% if row.approval_reviewed_at %} · {{ row.approval_reviewed_at[:16] }}{% endif %}</small>{% endif %}
+        </td>
+        <td>{{ row.status|replace('_',' ')|title }}</td>
+        <td>
+          {% if row.member_count is not none %}<strong>{{ '{:,}'.format(row.member_count) }}</strong>{% else %}<span class="hint">Not checked</span>{% endif %}
+          {% if row.member_count_checked_at %}<br><small>Checked {{ row.member_count_checked_date }} {{ row.member_count_checked_time }} · {{ row.member_count_age_label }}</small>{% endif %}
+          {% if row.member_count_error %}<br><small style="color:#fca5a5;">{{ row.member_count_error }}</small>{% endif %}
+        </td>
+        <td><small>Category: {{ row.effective_categories or 'All' }}</small><br><small>Effective source filter: {{ row.effective_sources or 'All' }}</small></td>
+        <td style="min-width:170px;">
+          {% if row.admin_approval_status != 'approved' %}
+            <form method="post" action="{{ url_for('channel_review', channel_id=row.id) }}" style="display:inline-block;margin:2px;">
+              <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" /><input type="hidden" name="decision" value="approved" />
+              <input type="hidden" name="q" value="{{ q }}" /><input type="hidden" name="platform" value="{{ platform }}" /><input type="hidden" name="status" value="{{ status }}" /><input type="hidden" name="approval" value="{{ approval }}" /><input type="hidden" name="category" value="{{ category }}" /><input type="hidden" name="source" value="{{ source }}" /><input type="hidden" name="min_members" value="{{ min_members if min_members is not none else '' }}" /><input type="hidden" name="max_members" value="{{ max_members if max_members is not none else '' }}" /><input type="hidden" name="added_from" value="{{ added_from }}" /><input type="hidden" name="added_to" value="{{ added_to }}" /><input type="hidden" name="count_state" value="{{ count_state }}" /><input type="hidden" name="sort" value="{{ sort }}" /><input type="hidden" name="page" value="{{ page }}" /><input type="hidden" name="size" value="{{ size }}" />
+              <button class="btn btn-primary" type="submit">✅ Approve</button>
+            </form>
+            {% if row.admin_approval_status == 'pending' %}<form method="post" action="{{ url_for('channel_review', channel_id=row.id) }}" style="display:inline-block;margin:2px;">
+              <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" /><input type="hidden" name="decision" value="rejected" />
+              <input type="hidden" name="q" value="{{ q }}" /><input type="hidden" name="platform" value="{{ platform }}" /><input type="hidden" name="status" value="{{ status }}" /><input type="hidden" name="approval" value="{{ approval }}" /><input type="hidden" name="category" value="{{ category }}" /><input type="hidden" name="source" value="{{ source }}" /><input type="hidden" name="min_members" value="{{ min_members if min_members is not none else '' }}" /><input type="hidden" name="max_members" value="{{ max_members if max_members is not none else '' }}" /><input type="hidden" name="added_from" value="{{ added_from }}" /><input type="hidden" name="added_to" value="{{ added_to }}" /><input type="hidden" name="count_state" value="{{ count_state }}" /><input type="hidden" name="sort" value="{{ sort }}" /><input type="hidden" name="page" value="{{ page }}" /><input type="hidden" name="size" value="{{ size }}" />
+              <button class="btn btn-secondary" type="submit">Reject</button>
+            </form>{% endif %}
+          {% endif %}
+          <form method="post" action="{{ url_for('channel_refresh_count', channel_id=row.id) }}" style="display:inline-block;margin:2px;">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" /><input type="hidden" name="q" value="{{ q }}" /><input type="hidden" name="platform" value="{{ platform }}" /><input type="hidden" name="status" value="{{ status }}" /><input type="hidden" name="approval" value="{{ approval }}" /><input type="hidden" name="category" value="{{ category }}" /><input type="hidden" name="source" value="{{ source }}" /><input type="hidden" name="min_members" value="{{ min_members if min_members is not none else '' }}" /><input type="hidden" name="max_members" value="{{ max_members if max_members is not none else '' }}" /><input type="hidden" name="added_from" value="{{ added_from }}" /><input type="hidden" name="added_to" value="{{ added_to }}" /><input type="hidden" name="count_state" value="{{ count_state }}" /><input type="hidden" name="sort" value="{{ sort }}" /><input type="hidden" name="page" value="{{ page }}" /><input type="hidden" name="size" value="{{ size }}" />
+            <button class="btn btn-secondary" type="submit">↻ Refresh count</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}<tr><td colspan="8" class="hint">No matching channels. Try clearing one of the filters.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<nav class="command-paging" aria-label="Channel pages" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+  <span class="hint">Showing {{ first_row }}–{{ last_row }} of {{ total_channels }}</span>
+  <div style="display:flex;gap:8px;">
+    {% if page > 1 %}<a class="btn btn-secondary" href="{{ url_for('channel_manager', q=q, platform=platform, status=status, approval=approval, category=category, source=source, min_members=min_members, max_members=max_members, added_from=added_from, added_to=added_to, count_state=count_state, sort=sort, size=size, page=page-1) }}">← Previous</a>{% endif %}
+    {% if page < pages %}<a class="btn btn-secondary" href="{{ url_for('channel_manager', q=q, platform=platform, status=status, approval=approval, category=category, source=source, min_members=min_members, max_members=max_members, added_from=added_from, added_to=added_to, count_state=count_state, sort=sort, size=size, page=page+1) }}">Next →</a>{% endif %}
+  </div>
+</nav>
+{% endblock %}

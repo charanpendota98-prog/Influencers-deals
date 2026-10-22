@@ -6,7 +6,7 @@
     <div class="auth-mark" aria-hidden="true">🛡️</div>
     <p class="eyebrow">SECURE SETUP REQUIRED</p>
     <h1 id="setup-title">Dashboard is locked</h1>
-    <p class="auth-copy">Secure dashboard credentials are missing or incomplete. Set <code>DASHBOARD_ADMIN_PASSWORD</code> and <code>DASHBOARD_SECRET_KEY</code> in the private server environment. Production requires a 16+ character password and persistent secret key. Restart the dashboard after configuration.</p>
+    <p class="auth-copy">Secure dashboard credentials are missing or incomplete. Set a unique 16+ character <code>DASHBOARD_ADMIN_PASSWORD</code> and a stable random <code>DASHBOARD_SECRET_KEY</code> (32+ characters) in the private server environment; keep the generated key file owner-only (mode 0600). Restart the dashboard after configuration.</p>
     <p class="auth-footnote">Do not put passwords or session keys in Git or a public URL.</p>
   </div>
 </section>

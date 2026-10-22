@@ -177,11 +177,13 @@ async def apply_whatsapp_safety_pacing(session_key: str) -> None:
 
 async def dispatch_poll(channel: dict, question: str, options: list[str],
                         allow_multiple: bool = False) -> dict:
-    """Send a native poll to a Telegram destination or WhatsApp group.
+    """Send a native poll to an approved Telegram destination or WhatsApp group.
 
     WhatsApp Channels/newsletters are intentionally unsupported until native
     poll delivery there is verified in the pinned Baileys integration.
     """
+    if str(channel.get("admin_approval_status") or "approved").strip().lower() != "approved":
+        raise ValueError("Poll destination requires admin approval")
     platform = str(channel.get("poll_platform") or channel.get("platform") or "").lower()
     identifier = str(channel.get("identifier") or "").strip()
     if platform == "telegram":
@@ -199,6 +201,8 @@ async def dispatch_poll(channel: dict, question: str, options: list[str],
 
 
 async def dispatch_to_channel(influencer: dict, channel: dict, text: str) -> str:
+    if str(channel.get("admin_approval_status") or "approved").strip().lower() != "approved":
+        return "skipped:admin_approval_required"
     if influencer.get("category_preferences"):
         from .category_preferences import evaluate, is_strict
         decision = evaluate(text, influencer, channel)
@@ -463,6 +467,9 @@ async def _render_and_deliver_destination(
     (source label, posting window, category, price, quality tier) must not drop
     it again on the WhatsApp side. Every affiliate/money check still runs.
     """
+    if str(ch.get("admin_approval_status") or "approved").strip().lower() != "approved":
+        return "skipped:admin_approval_required"
+
     ek_cache = ek_cache if ek_cache is not None else {}
     seen_physical_in_this_run = (
         seen_physical_in_this_run if seen_physical_in_this_run is not None else set()

@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import csv
 import hmac
+import io
 import json
 import os
 import re
@@ -501,6 +503,8 @@ def _save_whatsapp_destination(
     wa_session_key: str = "",
     channel_settings: dict | None = None,
     title: str = "",
+    admin_approval_status: str = "approved",
+    approval_requested_by: str = "",
 ) -> int:
     """Save a new WhatsApp destination as pending, deduplicating the same JID.
 
@@ -514,6 +518,10 @@ def _save_whatsapp_destination(
     if platform == "whatsapp_group" and not re.fullmatch(r"[0-9-]+@g\.us", jid):
         raise ValueError("WhatsApp Group destination must be a validated @g.us JID.")
     session_key = wa_session_key or WA_SESSION_KEY(inf_id)
+    channel_status = (
+        "pending_approval" if admin_approval_status == "pending" and platform == "telegram"
+        else "pending"
+    )
     existing = next(
         (channel for channel in db.list_channels(inf_id)
          if channel.get("platform") == platform and channel.get("identifier") == jid),
@@ -526,26 +534,29 @@ def _save_whatsapp_destination(
             identifier=jid,
             invite_link=destination.get("invite_link") or existing.get("invite_link") or "",
             role=role,
-            status="pending",
+            status=channel_status,
             allowed_sources=allowed_sources or existing.get("allowed_sources") or "",
             wa_session_key=session_key,
             title=title or existing.get("title") or "",
             **settings,
         )
-        return int(existing["id"])
-
-    return db.add_channel(
-        inf_id,
-        platform,
-        jid,
-        invite_link=destination.get("invite_link") or "",
-        status="pending",
-        role=role,
-        allowed_sources=allowed_sources,
-        wa_session_key=session_key,
-        title=title,
-        **settings,
-    )
+        channel_id = int(existing["id"])
+    else:
+        channel_id = db.add_channel(
+            inf_id,
+            platform,
+            jid,
+            invite_link=destination.get("invite_link") or "",
+            status=channel_status,
+            role=role,
+            allowed_sources=allowed_sources,
+            wa_session_key=session_key,
+            title=title,
+            **settings,
+        )
+    if admin_approval_status == "pending":
+        db.request_channel_approval(channel_id, approval_requested_by)
+    return channel_id
 
 
 def _get_csrf_token() -> str:
@@ -780,6 +791,7 @@ _AUDIT_EXEMPT_ENDPOINTS = {
     "lehlah_meesho_short_link", "healthz",
     "category_preview_api",  # read-only POST: product text stays out of URLs/logs
     "save_product_preferences",  # writes its own creator-scoped audit event
+    "channel_review", "channel_refresh_count", "api_channels_csv",
 }
 
 
@@ -828,11 +840,15 @@ def add_security_headers(response):
 
 
 def _dashboard_secret_key_is_persistent() -> bool:
-    """True when sessions survive a restart (env key or the generated key file)."""
-    if config.DASHBOARD_SECRET_KEY:
-        return True
+    """Require a stable 32+ character signing key and a private persisted key file."""
+    env_key = str(config.DASHBOARD_SECRET_KEY or "")
+    if env_key:
+        return len(env_key) >= 32
     try:
-        return Path(config.DASHBOARD_SECRET_KEY_FILE).exists()
+        path = Path(config.DASHBOARD_SECRET_KEY_FILE)
+        if not path.is_file() or path.stat().st_mode & 0o077:
+            return False
+        return len(path.read_text(encoding="utf-8").strip()) >= 32
     except OSError:
         return False
 
@@ -843,7 +859,7 @@ def _dashboard_security_ready() -> bool:
     if config.HUB_ENV == "production":
         return (
             _dashboard_secret_key_is_persistent()
-            and len(config.DASHBOARD_ADMIN_PASSWORD) >= 16
+            and security.strong_password(config.DASHBOARD_ADMIN_PASSWORD, minimum=16)
         )
     return True
 
@@ -1123,14 +1139,17 @@ def team_add():
         for role, identifier in (("approval", approval_ident), ("broadcast", main_ident)):
             if identifier:
                 try:
-                    db.add_channel(inf_id, "telegram", identifier, status="ready", role=role,
-                                   mirror_whatsapp="1" if role == "broadcast" else "")
-                    detail_bits.append(identifier)
+                    channel_id = db.add_channel(
+                        inf_id, "telegram", identifier, status="pending_approval", role=role,
+                        mirror_whatsapp="1" if role == "broadcast" else "",
+                    )
+                    db.request_channel_approval(channel_id, member)
+                    detail_bits.append(f"{identifier} · waiting for admin approval")
                 except Exception as exc:  # pragma: no cover - report, keep going
                     detail_bits.append(f"{role} failed: {str(exc)[:80]}")
-        whatsapp_saved, whatsapp_note = _bulk_whatsapp(values, int(inf_id))
+        whatsapp_saved, whatsapp_note = _bulk_whatsapp(values, int(inf_id), requested_by=member)
         if whatsapp_saved:
-            detail_bits.append(whatsapp_saved[0])
+            detail_bits.append(f"{whatsapp_saved[0]} · waiting for admin approval")
         if whatsapp_note:
             detail_bits.append(f"⚠ {whatsapp_note}")
         known_profiles[name.lower()] = db.get_influencer(inf_id) or {"id": inf_id, "name": name}
@@ -2078,6 +2097,7 @@ def setup():
         imported=request.args.get("imported", type=int),
         import_error=request.args.get("import_error", ""),
         team_access=_team_access_snapshot(),
+        credential_setup=_credential_setup_snapshot(),
         inventory_card=_inventory_snapshot(),
         assignments=_assignments_snapshot(),
         tag_proof_card=_tag_proof_snapshot(),
@@ -2392,6 +2412,93 @@ def _team_access_snapshot() -> dict:
         "limit_per_hour": config.TEAM_ADDS_PER_HOUR,
         "admin_password_strong": security.strong_password(config.DASHBOARD_ADMIN_PASSWORD, minimum=16),
     }
+
+
+def _credential_setup_snapshot() -> list[dict[str, str]]:
+    """Show secret configuration status only; never return credential values."""
+    admin_password = str(config.DASHBOARD_ADMIN_PASSWORD or "")
+    admin_strong = security.strong_password(admin_password, minimum=16)
+    team_password = str(config.DASHBOARD_TEAM_PASSWORD or "")
+    team_configured = bool(team_password)
+    team_strong = security.strong_password(team_password, minimum=16)
+    secret_key_ready = _dashboard_secret_key_is_persistent()
+    delete_password = str(config.ADMIN_DELETE_PASSWORD or "")
+    delete_separate = bool(delete_password and delete_password != admin_password)
+    delete_strong = security.strong_password(delete_password, minimum=16)
+    production = str(config.HUB_ENV or "").lower() == "production"
+    wa_host = (urlparse(config.WA_HUB_URL).hostname or "").lower()
+    wa_loopback = wa_host in {"localhost", "127.0.0.1", "::1"}
+    wa_token_ready = len(str(config.WA_HUB_TOKEN or "")) >= 32
+    wa_token_required = production or not wa_loopback
+    try:
+        earnkaro_key_set = bool(
+            db.get_global_setting("earnkaro_api_key", "") or config.EARNKARO_API_KEY
+        )
+    except Exception:
+        earnkaro_key_set = bool(config.EARNKARO_API_KEY)
+
+    return [
+        {
+            "name": "DASHBOARD_ADMIN_PASSWORD",
+            "purpose": "Your admin sign-in; approval and all editing controls.",
+            "state": "ready" if admin_strong else ("required" if not admin_password else "warning"),
+            "status": "Strong password set" if admin_strong else ("Set a 16+ character password" if not admin_password else "Upgrade to 16+ varied characters"),
+        },
+        {
+            "name": "DASHBOARD_SECRET_KEY",
+            "purpose": "Signs browser sessions; not a login password. Keep it stable across restarts/workers.",
+            "state": "ready" if secret_key_ready else "required",
+            "status": "Stable private key ready" if secret_key_ready else "Set a random 32+ character key or fix the owner-only key file (0600).",
+        },
+        {
+            "name": "ADMIN_DELETE_PASSWORD",
+            "purpose": "Separate confirmation for destructive actions and protected vault changes.",
+            "state": "ready" if delete_separate and delete_strong else ("warning" if delete_separate else "optional"),
+            "status": "Separate strong confirmation password set" if delete_separate and delete_strong else ("Upgrade the separate password to 16+ varied characters." if delete_separate else "Optional; currently reuses the admin password."),
+        },
+        {
+            "name": "ADMIN_TOTP_SECRET",
+            "purpose": "Recommended authenticator-app second factor for admin sign-in.",
+            "state": "ready" if security.totp_enabled() else "warning",
+            "status": "Two-factor enabled" if security.totp_enabled() else "Recommended; generate privately with `python -m influencer_hub.cli totp --new`.",
+        },
+        {
+            "name": "DASHBOARD_TEAM_PASSWORD",
+            "purpose": "Optional, separate add-only sign-in for workers; never share the admin password.",
+            "state": "ready" if team_configured and team_strong else ("warning" if team_configured else "optional"),
+            "status": "Separate team password set" if team_configured and team_strong else ("Upgrade to a 16+ character password" if team_configured else "Optional; team login is off."),
+        },
+        {
+            "name": "WA_HUB_TOKEN",
+            "purpose": "Authenticates the private WhatsApp service; never expose it in the browser.",
+            "state": "ready" if wa_token_ready else ("required" if wa_token_required else "optional"),
+            "status": "Strong service token set" if wa_token_ready else ("Required in production or for a non-loopback hub; use 32+ random bytes." if wa_token_required else "Optional for loopback development; required before production."),
+        },
+        {
+            "name": "TELEGRAM_API_HASH",
+            "purpose": "Telegram user-session API secret; needed for Telegram source/output operations.",
+            "state": "ready" if config.TELEGRAM_API_HASH else "warning",
+            "status": "Configured" if config.TELEGRAM_API_HASH else "Not configured; Telegram source/output operations will not work.",
+        },
+        {
+            "name": "BOT_TOKEN",
+            "purpose": "Optional Telegram bot credential for bot-specific features; do not confuse it with the user session.",
+            "state": "ready" if config.BOT_TOKEN else "optional",
+            "status": "Configured" if config.BOT_TOKEN else "Optional; set only when using bot-specific features.",
+        },
+        {
+            "name": "AMAZON_CREATORS_API_CLIENT_SECRET",
+            "purpose": "Optional secret for Creators API catalog/lookups; not your Associates tag.",
+            "state": "ready" if config.AMAZON_CREATORS_API_CLIENT_SECRET else "optional",
+            "status": "Configured" if config.AMAZON_CREATORS_API_CLIENT_SECRET else "Optional; manual creator tags still work without it.",
+        },
+        {
+            "name": "EARNKARO_API_KEY",
+            "purpose": "Credential for converting supported affiliate-network links; may be stored in the protected vault.",
+            "state": "ready" if earnkaro_key_set else "warning",
+            "status": "Configured in environment or protected vault" if earnkaro_key_set else "Needed only for creators/channels that enable EarnKaro conversion.",
+        },
+    ]
 
 
 # ---------- Money Radar: where commission leaks out of posted deals ----------
@@ -5195,7 +5302,7 @@ def _looks_like_whatsapp_jid(value: str) -> bool:
     )
 
 
-def _bulk_whatsapp(values: dict, inf_id: int) -> tuple[list[str], str]:
+def _bulk_whatsapp(values: dict, inf_id: int, *, requested_by: str = "") -> tuple[list[str], str]:
     """Save a WhatsApp destination when the row already has its real JID.
 
     A pasted invite link needs the creator's paired phone to resolve, so a bulk
@@ -5215,6 +5322,7 @@ def _bulk_whatsapp(values: dict, inf_id: int) -> tuple[list[str], str]:
     try:
         _save_whatsapp_destination(
             inf_id, destination, role="whatsapp", wa_session_key=WA_SESSION_KEY(inf_id),
+            admin_approval_status="pending", approval_requested_by=requested_by,
         )
     except Exception as exc:  # pragma: no cover - one bad row must not stop the batch
         return [], f"WhatsApp destination could not be saved: {exc}"
@@ -5467,6 +5575,252 @@ def bulk_import():
         return redirect(url_for("setup", imported=added))
 
     return redirect(url_for("setup", import_error="empty_file"))
+
+
+def _channel_manager_filters() -> dict:
+    def optional_count(name: str) -> int | None:
+        raw = str(request.values.get(name) or "").strip()
+        if not raw:
+            return None
+        try:
+            return max(0, min(1_000_000_000, int(raw)))
+        except (TypeError, ValueError):
+            return None
+
+    def optional_date(name: str) -> str:
+        raw = str(request.values.get(name) or "").strip()
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d").date().isoformat() if raw else ""
+        except ValueError:
+            return ""
+
+    sort = str(request.values.get("sort") or "newest").strip().lower()
+    if sort not in {"newest", "oldest", "members_desc", "members_asc", "creator"}:
+        sort = "newest"
+    count_state = str(request.values.get("count_state") or "").strip().lower()
+    if count_state not in {"missing", "stale", "fresh"}:
+        count_state = ""
+
+    return {
+        "q": str(request.values.get("q") or "").strip()[:120],
+        "platform": str(request.values.get("platform") or "").strip().lower(),
+        "status": str(request.values.get("status") or "all").strip().lower(),
+        "approval": str(request.values.get("approval") or "").strip().lower(),
+        "category": str(request.values.get("category") or "").strip().lower()[:50],
+        "source": str(request.values.get("source") or "").strip().lower()[:120],
+        "min_members": optional_count("min_members"),
+        "max_members": optional_count("max_members"),
+        "sort": sort,
+        "added_from": optional_date("added_from"),
+        "added_to": optional_date("added_to"),
+        "count_state": count_state,
+        "page": max(1, request.values.get("page", 1, type=int) or 1),
+        "size": min(100, max(25, request.values.get("size", 50, type=int) or 50)),
+    }
+
+
+def _channel_manager_date_fields(value: str) -> dict:
+    """Return local display date and exact elapsed-day count for a stored UTC time."""
+    moment = age.parse_moment(value)
+    if moment is None:
+        return {"date": "Date unknown", "time": "", "days": None, "age": "Age unknown"}
+    ist = timezone(timedelta(hours=5, minutes=30))
+    local = moment.astimezone(ist)
+    days = age.days_since(value)
+    if days is None:
+        age_label = "Age unknown"
+    elif days < 0:
+        age_label = f"in {abs(days)} days"
+    elif days == 0:
+        age_label = "today (0 days)"
+    else:
+        age_label = f"{days} day{'s' if days != 1 else ''} ago"
+    return {
+        "date": local.strftime("%d %b %Y"),
+        "time": local.strftime("%H:%M IST"),
+        "days": days,
+        "age": age_label,
+    }
+
+
+def _channel_manager_redirect():
+    filters = _channel_manager_filters()
+    return redirect(url_for("channel_manager", **filters))
+
+
+@app.route("/channels")
+def channel_manager():
+    """Admin-only, server-paginated channel inventory and approval desk."""
+    filters = _channel_manager_filters()
+    rows, total = db.search_channel_manager(
+        query=filters["q"], platform=filters["platform"], status=filters["status"],
+        approval=filters["approval"], category=filters["category"], source=filters["source"],
+        min_members=filters["min_members"], max_members=filters["max_members"],
+        added_from=filters["added_from"], added_to=filters["added_to"],
+        count_state=filters["count_state"],
+        sort=filters["sort"], limit=filters["size"], offset=(filters["page"] - 1) * filters["size"],
+    )
+    for row in rows:
+        channel_date = _channel_manager_date_fields(row.get("created_at"))
+        creator_date = _channel_manager_date_fields(row.get("creator_created_at"))
+        count_date = _channel_manager_date_fields(row.get("member_count_checked_at"))
+        row.update({
+            "member_count_age_label": count_date["age"],
+            "member_count_checked_date": count_date["date"],
+            "member_count_checked_time": count_date["time"],
+            "member_count_needs_refresh": (
+                row.get("member_count") is None or count_date["days"] is None
+                or count_date["days"] >= 30
+            ),
+            "channel_created_date": channel_date["date"],
+            "channel_created_time": channel_date["time"],
+            "channel_age_days": channel_date["days"],
+            "channel_age_label": channel_date["age"],
+            "creator_created_date": creator_date["date"],
+            "creator_created_time": creator_date["time"],
+            "creator_age_days": creator_date["days"],
+            "creator_age_label": creator_date["age"],
+        })
+    pages = max(1, (total + filters["size"] - 1) // filters["size"])
+    if filters["page"] > pages:
+        filters["page"] = pages
+        return redirect(url_for("channel_manager", **filters))
+    pending_count = db.search_channel_manager(approval="pending", limit=1)[1]
+    all_count = db.search_channel_manager(limit=1)[1]
+    count_attention = sum(1 for row in rows if row["member_count_needs_refresh"])
+    first = (filters["page"] - 1) * filters["size"] + 1 if total else 0
+    last = min(filters["page"] * filters["size"], total)
+    return render_template(
+        "channels.html", page_rows=rows, total_channels=total,
+        pending_approvals=pending_count, all_channels=all_count,
+        count_attention=count_attention,
+        pages=pages, first_row=first, last_row=last,
+        status_choices=("pending_approval", "pending", "ready", "active", "paused", "error", "rejected"),
+        **filters,
+    )
+
+
+@app.route("/api/channels.csv")
+def api_channels_csv():
+    """Export the filtered channel inventory; capped pages avoid a giant HTML list."""
+    filters = _channel_manager_filters()
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow([
+        "channel_id", "creator", "creator_added_at", "channel_added_at", "added_by",
+        "platform", "role", "title", "identifier", "admin_approval", "requested_by",
+        "reviewed_by", "reviewed_at", "delivery_status", "member_count", "member_count_checked_at",
+        "member_count_error", "categories", "effective_sources",
+    ])
+    total = db.search_channel_manager(
+        query=filters["q"], platform=filters["platform"], status=filters["status"],
+        approval=filters["approval"], category=filters["category"], source=filters["source"],
+        min_members=filters["min_members"], max_members=filters["max_members"],
+        added_from=filters["added_from"], added_to=filters["added_to"],
+        count_state=filters["count_state"],
+        sort=filters["sort"], limit=1,
+    )[1]
+    for offset in range(0, total, 2000):
+        rows, _ = db.search_channel_manager(
+            query=filters["q"], platform=filters["platform"], status=filters["status"],
+            approval=filters["approval"], category=filters["category"], source=filters["source"],
+            min_members=filters["min_members"], max_members=filters["max_members"],
+            added_from=filters["added_from"], added_to=filters["added_to"],
+            count_state=filters["count_state"],
+            sort=filters["sort"], limit=2000, offset=offset,
+        )
+        for row in rows:
+            values = [
+                row.get("id"), row.get("influencer_name"), row.get("creator_created_at"),
+                row.get("created_at"), row.get("creator_added_by"), row.get("platform"),
+                row.get("role"), row.get("title"), row.get("identifier"),
+                row.get("admin_approval_status"), row.get("approval_requested_by"),
+                row.get("approval_reviewed_by"), row.get("approval_reviewed_at"),
+                row.get("status"), row.get("member_count"),
+                row.get("member_count_checked_at"), row.get("member_count_error"),
+                row.get("effective_categories"), row.get("effective_sources"),
+            ]
+            # Avoid spreadsheet formula execution when exported text starts with
+            # a formula marker (channel names/handles are externally supplied).
+            writer.writerow([
+                ("'" + value)
+                if isinstance(value, str)
+                and value.lstrip(" \t\r\n\ufeff")[:1] in {"=", "+", "-", "@"}
+                else value
+                for value in values
+            ])
+    body = output.getvalue()
+    security.audit(_session_actor(), _session_role(), "channels_exported", target="filtered channel inventory",
+                   detail=f"{total} channel row(s)", ip=_client_ip())
+    return Response(
+        body, content_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=channel-inventory.csv"},
+    )
+
+
+@app.route("/channels/<int:channel_id>/review", methods=["POST"])
+def channel_review(channel_id: int):
+    decision = str(request.form.get("decision") or "").strip().lower()
+    if decision not in {"approved", "rejected"}:
+        flash("Choose Approve or Reject for this channel.", "error")
+        return _channel_manager_redirect()
+    row = db.get_channel_by_id(channel_id)
+    if not row:
+        flash("That channel was not found.", "warning")
+        return _channel_manager_redirect()
+    if str(row.get("admin_approval_status") or "approved").lower() == "approved" and decision == "approved":
+        flash("This channel is already approved.", "warning")
+        return _channel_manager_redirect()
+    reviewed = db.review_channel_approval(channel_id, decision, _session_actor())
+    if not reviewed:
+        flash("That channel was not found.", "warning")
+        return _channel_manager_redirect()
+    security.audit(
+        _session_actor(), _session_role(), f"channel_{decision}",
+        target=str(row.get("identifier") or channel_id),
+        detail=f"creator #{row.get('influencer_id')} · {row.get('platform')}",
+        ip=_client_ip(),
+    )
+    if decision == "approved":
+        next_step = " WhatsApp still needs phone pairing and one successful test post." if row.get("platform") in {"whatsapp_group", "whatsapp_channel"} else " Telegram is now eligible for delivery."
+        flash("✅ Channel approved." + next_step, "success")
+    else:
+        flash("Channel rejected; it remains blocked from delivery.", "warning")
+    return _channel_manager_redirect()
+
+
+@app.route("/channels/<int:channel_id>/refresh-count", methods=["POST"])
+def channel_refresh_count(channel_id: int):
+    row = db.get_channel_by_id(channel_id)
+    if not row:
+        flash("That channel was not found.", "warning")
+        return _channel_manager_redirect()
+    count = None
+    error = ""
+    try:
+        if row.get("platform") == "telegram":
+            count = _run(telegram_ops.get_member_count(str(row.get("identifier") or "")))
+        else:
+            session_key = row.get("wa_session_key") or WA_SESSION_KEY(int(row["influencer_id"]))
+            chats = _run(whatsapp_client.list_admin_chats(str(session_key)))
+            match = next((chat for chat in chats if str(chat.get("jid") or "").lower()
+                          == str(row.get("identifier") or "").lower()), None)
+            raw_count = (match or {}).get("members")
+            if raw_count is None:
+                raise RuntimeError("The paired WhatsApp account did not return a member/subscriber count. Re-pair or verify it can access this destination.")
+            count = int(raw_count)
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {str(exc)}"[:240]
+    db.record_channel_member_count(channel_id, count, error)
+    security.audit(
+        _session_actor(), _session_role(), "channel_member_count_refreshed",
+        target=str(row.get("identifier") or channel_id),
+        detail=(f"count={count}" if not error else f"count unavailable: {error}"),
+        ip=_client_ip(),
+    )
+    flash(f"Member count refreshed: {count:,}." if not error and count is not None
+          else "Could not refresh this channel's count: " + error, "success" if not error else "warning")
+    return _channel_manager_redirect()
 
 
 @app.route("/channel/<int:channel_id>/delete", methods=["POST"])

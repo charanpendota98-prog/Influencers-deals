@@ -141,10 +141,14 @@ def test_the_team_adds_a_creator_and_sees_it_stamped_with_their_name(env):
     created = next(i for i in db.list_influencers() if i["name"] == "Naveen Loots")
     assert created["added_by"] == "Ravi"
     assert created["amazon_tag"] == "naveen-21"
-    channels = {c["role"]: c["identifier"] for c in db.list_channels(created["id"])}
-    assert channels["broadcast"] == "@naveen_loots"
-    assert channels["approval"] == "@naveen_amazon"
-    assert any(c["role"] == "whatsapp" for c in db.list_channels(created["id"]))
+    channels = {c["role"]: c for c in db.list_channels(created["id"])}
+    assert channels["broadcast"]["identifier"] == "@naveen_loots"
+    assert channels["approval"]["identifier"] == "@naveen_amazon"
+    assert all(c["admin_approval_status"] == "pending" for c in channels.values())
+    assert all(c["approval_requested_by"] == "Ravi" for c in channels.values())
+    assert channels["broadcast"]["status"] == "pending_approval"
+    assert channels["approval"]["status"] == "pending_approval"
+    assert channels["whatsapp"]["status"] == "pending"
     assert db.list_audit(limit=1)[0]["action"] == "creator_added"
 
     page = client.get("/team").get_data(as_text=True)
@@ -231,14 +235,14 @@ def test_the_team_cannot_open_or_edit_admin_pages(env):
     _, client = env
     _team_login(client, "Ravi")
 
-    pages = ("/", "/setup", "/easy-setup", "/money", "/admin/secret-vault", "/influencer/1")
+    pages = ("/", "/setup", "/easy-setup", "/money", "/channels", "/admin/secret-vault", "/influencer/1")
     for path in pages:
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 302, path
         assert "/team" in str(response.headers.get("Location")), path
     # APIs answer with a refusal, never with a redirect into the console.
     for path in ("/api/readiness", "/api/digest", "/api/self-check", "/api/readiness.csv",
-                 "/api/metrics"):
+                 "/api/metrics", "/api/channels.csv"):
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 403, path
         assert response.get_json()["error"] == "admin_only"

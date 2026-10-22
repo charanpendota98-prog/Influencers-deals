@@ -42,7 +42,10 @@ def _status(value: Any) -> str:
 
 
 def _ready(channel: dict) -> bool:
-    return _status(channel.get("status")) in pipeline.ACTIVE_CHANNEL_STATUSES
+    return (
+        _status(channel.get("status")) in pipeline.ACTIVE_CHANNEL_STATUSES
+        and _status(channel.get("admin_approval_status") or "approved") == "approved"
+    )
 
 
 def _is_telegram(channel: dict) -> bool:

@@ -31,6 +31,36 @@
   <a class="setup-shortcut" href="#deal-simulator"><span>🧪 Safe preview</span><strong>Test routing without posting</strong><span>Preview Amazon, EarnKaro, and Meesho/HYPD decisions.</span></a>
 </section>
 
+<section id="security-credentials" class="card" style="margin-top:16px;border:1px solid #334155;">
+  <div class="setup-section-title" style="margin-top:0;">
+    <div>
+      <p class="eyebrow">PRIVATE CONFIGURATION · VALUES NEVER DISPLAYED</p>
+      <h2>🔐 Passwords &amp; service credentials</h2>
+      <p class="hint">This checklist shows presence/strength only; it never reveals a secret. Put values in the private server <code>.env</code>, keep it owner-only (<code>chmod 600 .env</code>), then restart services. Never paste passwords or tokens into chat.</p>
+    </div>
+    <a class="btn btn-secondary" href="{{ url_for('team_login') }}">Team sign-in →</a>
+  </div>
+  <div class="command-warnings" style="margin:10px 0;">
+    <p><strong>For you:</strong> set a unique <code>DASHBOARD_ADMIN_PASSWORD</code> (16+ characters). Generate a stable <code>DASHBOARD_SECRET_KEY</code> with <code>python -c 'import secrets; print(secrets.token_urlsafe(48))'</code>; it is a signing key, not a password.</p>
+    <p><strong>For optional protection:</strong> <code>ADMIN_TOTP_SECRET</code> adds authenticator-app 2FA; <code>ADMIN_DELETE_PASSWORD</code> can be a separate confirmation password; <code>DASHBOARD_TEAM_PASSWORD</code> is a different, add-only worker password.</p>
+  </div>
+  <div style="overflow-x:auto;">
+    <table class="table">
+      <thead><tr><th>Variable</th><th>Purpose</th><th>Configuration check</th></tr></thead>
+      <tbody>
+      {% for item in credential_setup %}
+        <tr>
+          <td><code>{{ item.name }}</code></td>
+          <td>{{ item.purpose }}</td>
+          <td><strong style="color:{{ '#86efac' if item.state == 'ready' else '#fca5a5' if item.state == 'required' else '#fcd34d' if item.state == 'warning' else '#cbd5e1' }};">{{ item.status }}</strong></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint">Generate a WhatsApp service token with <code>python -c 'import secrets; print(secrets.token_urlsafe(48))'</code>. Treat Telegram API hashes, bot tokens, Amazon API secrets and affiliate API keys as secrets too. Do not send actual values to anyone.</p>
+</section>
+
 <section id="branded-short-links" class="card" style="margin-top:16px;">
   <div class="setup-section-title" style="margin-top:0;">
     <div>

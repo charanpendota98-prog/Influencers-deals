@@ -99,6 +99,15 @@ def test_eligible_targets_include_telegram_and_whatsapp_groups_only(poll_databas
     db.add_channel(
         influencer_id, "whatsapp_group", "919876543210@s.whatsapp.net", role="whatsapp", status="ready"
     )
+    unapproved_id = db.add_channel(
+        influencer_id, "telegram", "@poll_unapproved", role="broadcast", status="ready"
+    )
+    con = db._connect()
+    try:
+        con.execute("UPDATE channels SET admin_approval_status='pending' WHERE id=?", (unapproved_id,))
+        con.commit()
+    finally:
+        con.close()
 
     influencer = db.get_influencer(influencer_id)
     targets = polls.eligible_poll_targets(influencer, db.list_channels(influencer_id))
@@ -177,6 +186,31 @@ def test_queued_poll_dispatches_once_and_blocks_repeat_submission(poll_database,
     assert sent == [(channel_id, question, options, False)]
 
 
+def test_queued_poll_is_skipped_if_admin_revokes_approval_before_delivery(poll_database, monkeypatch):
+    influencer_id = db.add_influencer("Revoked Poll", "revoked-poll-21")
+    channel_id = db.add_channel(
+        influencer_id, "telegram", "@revoked_poll", role="broadcast", status="ready"
+    )
+    targets = polls.eligible_poll_targets(
+        db.get_influencer(influencer_id), db.list_channels(influencer_id)
+    )
+    question, options, normalized = polls.validate_poll(
+        "Which deal type should be featured?", ["Tech", "Home"]
+    )
+    polls.enqueue_poll(influencer_id, question, options, normalized, False, targets)
+    db.request_channel_approval(channel_id, "reviewer")
+
+    async def unexpected_dispatch(*_args, **_kwargs):
+        pytest.fail("poll delivery must not reach the platform after approval is revoked")
+
+    monkeypatch.setattr(pipeline, "dispatch_poll", unexpected_dispatch)
+    stats = asyncio.run(polls.process_pending_polls(limit=5))
+    assert stats == {"processed": 1, "posted": 0, "failed": 0, "skipped": 1}
+    history = db.list_recent_polls(influencer_id)[0]
+    assert history["skipped_count"] == 1
+    assert "no longer active" in history["destination_details"]
+
+
 def test_failed_poll_is_not_automatically_retried(poll_database, monkeypatch):
     influencer_id = db.add_influencer("Poll Failure Test", "poll-failure-21")
     channel_id = db.add_channel(
@@ -225,6 +259,10 @@ def test_dispatch_poll_uses_native_platform_routes_and_whatsapp_pacing():
     send.assert_awaited_once_with(
         "inf-3-wa", "120363000@g.us", "Question?", ["A", "B"], allow_multiple=True
     )
+
+    unapproved = dict(wa_target, admin_approval_status="pending")
+    with pytest.raises(ValueError, match="requires admin approval"):
+        asyncio.run(pipeline.dispatch_poll(unapproved, "Question?", ["A", "B"]))
 
     newsletter = dict(wa_target, identifier="120363000@newsletter")
     with pytest.raises(ValueError, match="only in Telegram channels and WhatsApp groups"):
