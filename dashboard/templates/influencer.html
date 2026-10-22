@@ -155,7 +155,7 @@
   </p>
   <ul style="margin:4px 0; font-size:11px; color:#fecaca;">
     {% for item in tag_blockers.rows %}
-      <li>{{ item.channel }} · {{ item.role }} · currently using <code>{{ item.tag or 'no tag' }}</code> ({{ item.source }})</li>
+      <li>{{ item.channel }} · {{ item.role }} · currently using <code>{{ item.tag or 'no tag' }}</code> ({% if item.shared_default %}shared hub default — not this creator’s own tag{% else %}{{ item.source }}{% endif %})</li>
     {% endfor %}
   </ul>
 </section>

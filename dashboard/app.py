@@ -6157,6 +6157,7 @@ def influencer_detail(inf_id):
                 "status": str(ch.get("status") or ""),
                 "tag": signing.get("tag") or "",
                 "source": signing.get("source") or "fallback",
+                "shared_default": bool(signing.get("shared_default")),
                 "own": bool(signing.get("own")),
                 "usable": bool(signing.get("usable")),
             })
