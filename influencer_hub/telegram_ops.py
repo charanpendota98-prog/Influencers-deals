@@ -58,6 +58,38 @@ def session_ready() -> bool:
         return False
 
 
+async def get_member_count(identifier: str, timeout: float = 12.0) -> int:
+    """Fetch a Telegram group/channel member count without joining or posting."""
+    wanted = str(identifier or "").strip()
+    if not wanted:
+        raise ValueError("No Telegram channel identifier was supplied")
+
+    async def _read_count() -> int:
+        from telethon.tl.types import Channel as TgChannel, Chat as TgChat
+
+        client = _client()
+        if not client.is_connected():
+            await client.connect()
+        entity = await client.get_entity(int(wanted) if wanted.lstrip("-").isdigit() else wanted)
+        count = getattr(entity, "participants_count", None)
+        if isinstance(entity, TgChannel):
+            from telethon.tl.functions.channels import GetFullChannelRequest
+            full = await client(GetFullChannelRequest(entity))
+            count = getattr(getattr(full, "full_chat", None), "participants_count", count)
+        elif isinstance(entity, TgChat):
+            from telethon.tl.functions.messages import GetFullChatRequest
+            full = await client(GetFullChatRequest(entity.id))
+            participants = getattr(getattr(full, "full_chat", None), "participants", None)
+            rows = getattr(participants, "participants", None)
+            if rows is not None:
+                count = len(rows)
+        if count is None:
+            raise RuntimeError("Telegram did not return a member count for this destination")
+        return max(0, int(count))
+
+    return await asyncio.wait_for(_read_count(), timeout=max(1.0, float(timeout)))
+
+
 async def inspect_channel(identifier: str, timeout: float = 8.0) -> dict:
     """Read-only peek at a Telegram destination: real name, and can we post?
 

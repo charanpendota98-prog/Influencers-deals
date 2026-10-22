@@ -94,6 +94,8 @@ def eligible_poll_targets(influencer: dict, channels: Iterable[dict]) -> list[di
     targets: list[dict] = []
     seen: set[tuple[str, str]] = set()
     for channel in channels:
+        if str(channel.get("admin_approval_status") or "approved").strip().lower() != "approved":
+            continue
         status = str(channel.get("status") or "").strip().lower()
         if status not in {"ready", "active"}:
             continue
@@ -179,6 +181,7 @@ async def process_pending_polls(limit: int = 1) -> dict[str, int]:
             "identifier": job["channel_identifier"],
             "role": job["channel_role"],
             "status": job["channel_status"],
+            "admin_approval_status": job["channel_admin_approval_status"],
             "wa_session_key": job["wa_session_key"],
             "posting_schedule": job["channel_posting_schedule"],
         }

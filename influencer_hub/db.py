@@ -58,6 +58,13 @@ CREATE TABLE IF NOT EXISTS channels (
     posting_schedule TEXT NOT NULL DEFAULT '',     -- e.g. '06:00-09:00,18:00-23:00' (empty = 24/7)
     mirror_whatsapp TEXT NOT NULL DEFAULT '',      -- '' inherit | '1' mirror main posts to this creator's WhatsApp | '0' never
     title         TEXT NOT NULL DEFAULT '',        -- the channel's own name, as WhatsApp/Telegram shows it
+    admin_approval_status TEXT NOT NULL DEFAULT 'approved', -- pending|approved|rejected
+    approval_requested_by TEXT NOT NULL DEFAULT '',
+    approval_reviewed_by TEXT NOT NULL DEFAULT '',
+    approval_reviewed_at TEXT NOT NULL DEFAULT '',
+    member_count INTEGER,
+    member_count_checked_at TEXT NOT NULL DEFAULT '',
+    member_count_error TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -439,6 +446,13 @@ def migrate() -> None:
             # WhatsApp/Telegram shows it. Stored when a chat is picked from the
             # paired phone's list, so every screen can show a name, not a JID.
             ("title", "TEXT NOT NULL DEFAULT ''"),
+            ("admin_approval_status", "TEXT NOT NULL DEFAULT 'approved'"),
+            ("approval_requested_by", "TEXT NOT NULL DEFAULT ''"),
+            ("approval_reviewed_by", "TEXT NOT NULL DEFAULT ''"),
+            ("approval_reviewed_at", "TEXT NOT NULL DEFAULT ''"),
+            ("member_count", "INTEGER"),
+            ("member_count_checked_at", "TEXT NOT NULL DEFAULT ''"),
+            ("member_count_error", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in ch_cols:
                 try:
@@ -492,11 +506,19 @@ def migrate() -> None:
                 if "duplicate column name" not in str(exc).lower():
                     raise
 
-        # Same index for databases created before it existed in the schema.
+        # Same indexes for databases created before they existed in the schema.
         try:
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_posts_channel_status "
                 "ON posts(channel_id, status, posted_at)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_channels_approval_status "
+                "ON channels(admin_approval_status, id DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_channels_platform_status "
+                "ON channels(platform, status, id DESC)"
             )
         except sqlite3.OperationalError as exc:
             if "no such table" not in str(exc).lower():
@@ -1028,6 +1050,179 @@ def get_channel(influencer_id: int, role: str, platform: str | None = None) -> d
         con.close()
 
 
+def get_channel_by_id(channel_id: int) -> dict | None:
+    con = _connect()
+    try:
+        row = con.execute("SELECT * FROM channels WHERE id=?", (int(channel_id),)).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+
+def search_channel_manager(
+    *, query: str = "", platform: str = "", status: str = "",
+    approval: str = "", category: str = "", source: str = "",
+    min_members: int | None = None, max_members: int | None = None,
+    added_from: str = "", added_to: str = "", count_state: str = "",
+    sort: str = "newest", limit: int = 50, offset: int = 0,
+) -> tuple[list[dict], int]:
+    """Filter/paginate channels in SQL, keeping large channel fleets bounded."""
+    clauses: list[str] = []
+    params: list[object] = []
+    q = str(query or "").strip()[:120]
+    if q:
+        clauses.append("(c.identifier LIKE ? OR c.title LIKE ? OR i.name LIKE ? OR i.added_by LIKE ? OR c.approval_requested_by LIKE ?)")
+        like = f"%{q}%"
+        params.extend([like] * 5)
+    platform = str(platform or "").strip().lower()
+    if platform in {"telegram", "whatsapp_group", "whatsapp_channel"}:
+        clauses.append("c.platform=?")
+        params.append(platform)
+    status = str(status or "").strip().lower()
+    if status and status != "all":
+        clauses.append("lower(c.status)=?")
+        params.append(status[:40])
+    approval = str(approval or "").strip().lower()
+    if approval in {"pending", "approved", "rejected"}:
+        clauses.append("lower(c.admin_approval_status)=?")
+        params.append(approval)
+    category = str(category or "").strip().lower()[:50]
+    if category:
+        clauses.append("lower(CASE WHEN trim(c.categories)='' THEN i.categories ELSE c.categories END) LIKE ?")
+        params.append(f"%{category}%")
+    source = str(source or "").strip().lower()[:120]
+    if source:
+        clauses.append("lower(CASE WHEN trim(c.allowed_sources)='' THEN i.allowed_sources ELSE c.allowed_sources END) LIKE ?")
+        params.append(f"%{source}%")
+    if min_members is not None:
+        clauses.append("c.member_count >= ?")
+        params.append(max(0, min(1_000_000_000, int(min_members))))
+    if max_members is not None:
+        clauses.append("c.member_count <= ?")
+        params.append(max(0, min(1_000_000_000, int(max_members))))
+    if added_from:
+        clauses.append("date(c.created_at, '+5 hours', '+30 minutes') >= ?")
+        params.append(str(added_from)[:10])
+    if added_to:
+        clauses.append("date(c.created_at, '+5 hours', '+30 minutes') <= ?")
+        params.append(str(added_to)[:10])
+    count_state = str(count_state or "").strip().lower()
+    if count_state == "missing":
+        clauses.append("c.member_count IS NULL")
+    elif count_state == "stale":
+        clauses.append("c.member_count IS NOT NULL AND (datetime(c.member_count_checked_at) IS NULL OR datetime(c.member_count_checked_at) < datetime('now', '-30 days'))")
+    elif count_state == "fresh":
+        clauses.append("c.member_count IS NOT NULL AND datetime(c.member_count_checked_at) >= datetime('now', '-30 days')")
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    size = max(1, min(2000, int(limit or 50)))
+    start = max(0, int(offset or 0))
+    sort_order = {
+        "newest": "c.created_at DESC, c.id DESC",
+        "oldest": "CASE WHEN trim(c.created_at)='' THEN 1 ELSE 0 END, c.created_at ASC, c.id ASC",
+        "members_desc": "c.member_count DESC, c.id DESC",
+        "members_asc": "CASE WHEN c.member_count IS NULL THEN 1 ELSE 0 END, c.member_count ASC, c.id DESC",
+        "creator": "lower(i.name) ASC, c.id DESC",
+    }.get(str(sort or "newest").strip().lower(), "c.created_at DESC, c.id DESC")
+    con = _connect()
+    try:
+        total = int(con.execute(
+            f"SELECT COUNT(*) AS n FROM channels c JOIN influencers i ON i.id=c.influencer_id{where}",
+            params,
+        ).fetchone()["n"])
+        rows = con.execute(
+            "SELECT c.*, i.name AS influencer_name, i.added_by AS creator_added_by, "
+            "i.created_at AS creator_created_at, "
+            "COALESCE(NULLIF(c.categories,''), i.categories, '') AS effective_categories, "
+            "COALESCE(NULLIF(c.allowed_sources,''), i.allowed_sources, '') AS effective_sources "
+            "FROM channels c JOIN influencers i ON i.id=c.influencer_id"
+            + where
+            + " ORDER BY CASE lower(c.admin_approval_status) WHEN 'pending' THEN 0 "
+              "WHEN 'rejected' THEN 1 ELSE 2 END, " + sort_order + " LIMIT ? OFFSET ?",
+            [*params, size, start],
+        ).fetchall()
+        return [dict(row) for row in rows], total
+    finally:
+        con.close()
+
+
+def request_channel_approval(channel_id: int, requester: str) -> None:
+    """Mark a new team-submitted destination as blocked pending owner review."""
+    con = _connect()
+    try:
+        con.execute(
+            "UPDATE channels SET admin_approval_status='pending', "
+            "status=CASE WHEN platform='telegram' THEN 'pending_approval' ELSE 'pending' END, "
+            "approval_requested_by=?, approval_reviewed_by='', approval_reviewed_at='' WHERE id=?",
+            (str(requester or "")[:60], int(channel_id)),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def review_channel_approval(channel_id: int, decision: str, reviewer: str) -> dict | None:
+    """Admin approval gate for team-submitted channels; never auto-activate WA."""
+    choice = str(decision or "").strip().lower()
+    if choice not in {"approved", "rejected"}:
+        raise ValueError("decision must be approved or rejected")
+    con = _connect()
+    try:
+        row = con.execute("SELECT * FROM channels WHERE id=?", (int(channel_id),)).fetchone()
+        if not row:
+            return None
+        channel = dict(row)
+        if choice == "approved":
+            new_status = "pending" if channel["platform"] in {"whatsapp_group", "whatsapp_channel"} else "ready"
+        else:
+            new_status = "rejected"
+        reviewed_at = _now()
+        con.execute(
+            "UPDATE channels SET admin_approval_status=?, approval_reviewed_by=?, "
+            "approval_reviewed_at=?, status=? WHERE id=?",
+            (choice, str(reviewer or "")[:60], reviewed_at, new_status, int(channel_id)),
+        )
+        con.commit()
+        channel.update({
+            "admin_approval_status": choice,
+            "approval_reviewed_by": str(reviewer or "")[:60],
+            "approval_reviewed_at": reviewed_at,
+            "status": new_status,
+        })
+        return channel
+    finally:
+        con.close()
+
+
+def record_channel_member_count(channel_id: int, count: int | None, error: str = "") -> None:
+    """Cache a verified platform count and its refresh time/error."""
+    clean_count = None if count is None else max(0, int(count))
+    con = _connect()
+    try:
+        message = str(error or "")[:240]
+        if message:
+            # Keep the last known-good count/time visible when a transient
+            # platform error prevents this refresh; never turn an outage into 0.
+            con.execute(
+                "UPDATE channels SET member_count_error=? WHERE id=?",
+                (message, int(channel_id)),
+            )
+        elif clean_count is not None:
+            con.execute(
+                "UPDATE channels SET member_count=?, member_count_checked_at=?, "
+                "member_count_error='' WHERE id=?",
+                (clean_count, _now(), int(channel_id)),
+            )
+        else:
+            con.execute(
+                "UPDATE channels SET member_count=NULL, member_count_checked_at=?, "
+                "member_count_error='' WHERE id=?",
+                (_now(), int(channel_id)),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
 def list_channels(influencer_id: Optional[int] = None) -> list[dict]:
     con = _connect()
     try:
@@ -1167,8 +1362,8 @@ def claim_next_poll_delivery() -> dict | None:
             "p.question, p.options_json, p.allow_multiple, "
             "c.influencer_id AS channel_influencer_id, c.platform AS channel_platform, "
             "c.identifier AS channel_identifier, c.role AS channel_role, "
-            "c.status AS channel_status, c.wa_session_key, "
-            "c.posting_schedule AS channel_posting_schedule, "
+            "c.status AS channel_status, c.admin_approval_status AS channel_admin_approval_status, "
+            "c.wa_session_key, c.posting_schedule AS channel_posting_schedule, "
             "i.active AS influencer_active, i.telegram_enabled AS influencer_telegram_enabled, "
             "i.whatsapp_enabled AS influencer_whatsapp_enabled, "
             "i.posting_schedule AS influencer_posting_schedule "

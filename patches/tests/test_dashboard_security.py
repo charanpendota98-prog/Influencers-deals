@@ -42,15 +42,21 @@ def test_production_requires_stable_secret_and_strong_admin_password(monkeypatch
     # A weak password is never enough in production.
     durable_key = tmp_path / "dashboard.key"
     durable_key.write_text("persistent-secret-key", encoding="utf-8")
+    durable_key.chmod(0o600)
     monkeypatch.setattr(config, "DASHBOARD_SECRET_KEY_FILE", str(durable_key))
     monkeypatch.setattr(config, "DASHBOARD_ADMIN_PASSWORD", "short-password")
     assert client.get("/login").status_code == 503
 
     monkeypatch.setattr(config, "DASHBOARD_ADMIN_PASSWORD", "strong-admin-password-123")
+    assert client.get("/login").status_code == 503  # a short signing key is not production-ready
+    durable_key.write_text("persistent-signing-key-at-least-32-characters", encoding="utf-8")
+    durable_key.chmod(0o600)
     assert client.get("/login").status_code == 200
 
     monkeypatch.setattr(config, "DASHBOARD_SECRET_KEY", "env-secret-key")
     monkeypatch.setattr(config, "DASHBOARD_SECRET_KEY_FILE", str(tmp_path / "absent.key"))
+    assert client.get("/login").status_code == 503
+    monkeypatch.setattr(config, "DASHBOARD_SECRET_KEY", "env-signing-key-at-least-32-characters")
     assert client.get("/login").status_code == 200
 
 
