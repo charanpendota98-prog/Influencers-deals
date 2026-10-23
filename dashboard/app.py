@@ -4228,6 +4228,7 @@ def _easy_setup_defaults() -> dict:
     values = presets.resolved()
     values.update({
         "name": "",
+        "phone_number": "",
         "amazon_tag": config.AMAZON_ASSOCIATE_TAG,
         "approval": "",
         "main": "",
@@ -4243,6 +4244,7 @@ def _easy_setup_form_values() -> dict:
     values = _easy_setup_defaults()
     values.update({
         "name": request.form.get("name", "").strip(),
+        "phone_number": request.form.get("phone_number", "").strip(),
         "amazon_tag": request.form.get("amazon_tag", "").strip() or config.AMAZON_ASSOCIATE_TAG,
         "approval": request.form.get("approval_channel", "").strip(),
         "main": request.form.get("main_channel", "").strip(),
@@ -4864,7 +4866,7 @@ def easy_setup():
     # thousand profiles the strip stays a strip (search + paging above it).
     pill_q = (request.args.get("pill_q") or "").strip()
     pill_offset = max(0, request.args.get("pill_offset", 0, type=int) or 0)
-    pill_size = max(6, min(120, request.args.get("pill_size", 40, type=int) or 40))
+    pill_size = max(6, min(120, request.args.get("pill_size", 8, type=int) or 8))
     if creators:
         try:
             # The focused creator always has to be in the payload, even when the
@@ -4904,6 +4906,11 @@ def easy_setup():
         profile = db.get_influencer(focus_id)
         if profile:
             example_link = readiness.example_tagged_link(profile)
+            # Reuse the saved creator contact number in the QR/code pairing step;
+            # the operator can edit it before requesting a WhatsApp login code.
+            wa_pairing["phone"] = wa_pairing["phone"] or str(
+                profile.get("phone_number") or ""
+            )
 
     easy_source_rows = _source_rows()
     source_selection_display = values.get("allowed_sources")
@@ -4920,6 +4927,7 @@ def easy_setup():
     return render_template(
         "easy_setup.html",
         values=values,
+        default_amazon_tag=config.AMAZON_ASSOCIATE_TAG,
         easy_source_rows=easy_source_rows,
         easy_source_picked=easy_source_picked,
         easy_source_all=easy_source_all,
@@ -4976,6 +4984,7 @@ def _easy_setup_values_from_profile(profile: dict) -> dict:
     values = _easy_setup_defaults()
     values.update({
         "name": str(profile.get("name") or ""),
+        "phone_number": str(profile.get("phone_number") or ""),
         "amazon_tag": str(profile.get("amazon_tag") or config.AMAZON_ASSOCIATE_TAG),
         "approval": _identifier("approval"),
         "main": _identifier("broadcast"),

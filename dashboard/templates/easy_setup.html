@@ -5,7 +5,7 @@
   <div>
     <p class="eyebrow">MOST EASY SETUP · ONE SCREEN</p>
     <h1>⚡ Easy Setup</h1>
-    <p class="hint">One screen for creator details, channels, source selection and routing. Saving records the setup; delivery is shown as ready only after its real prerequisites check out.</p>
+    <p class="hint">Simple flow: enter the creator’s name, phone and own Amazon tag; add their channels; choose sources and categories; save once. Telegram starts automatically when its destination is usable. WhatsApp starts after QR/code pairing and one successful test post. Amazon deals without that creator’s own tag stay safely held.</p>
   </div>
   <div style="display:flex; gap:10px; flex-wrap:wrap;">
     {% if focus_id or result %}<a class="btn btn-primary" href="{{ url_for('easy_setup') }}">➕ New creator</a>{% endif %}
@@ -275,15 +275,25 @@
         <small>An existing creator with the same name is updated, never duplicated.</small>
       </label>
       <label class="easy-field">
-        <span>Amazon Associate tag *</span>
-        <input name="amazon_tag" value="{{ values.amazon_tag }}" placeholder="ravi-21" required autocomplete="off" />
-        <small>Every Amazon link gets this tag — it is the creator's own earnings.</small>
+        <span>Creator phone (WhatsApp)</span>
+        <input name="phone_number" type="tel" inputmode="tel" autocomplete="tel"
+               value="{{ values.phone_number }}" placeholder="+91 98765 43210" />
+        <small>Saved on the profile and prefilled for QR or phone-code pairing.</small>
+      </label>
+      <label class="easy-field">
+        <span>Creator’s own Amazon Associates tag *</span>
+        <input name="amazon_tag" value="{{ values.amazon_tag }}" placeholder="creator-21" required autocomplete="off" />
+        {% if values.amazon_tag == default_amazon_tag %}
+          <small class="routing-note is-warn">This is the hub-wide fallback, not proof of this creator’s own tag. Replace it with the creator’s real Associates tag; their Amazon deals stay held until then.</small>
+        {% else %}
+          <small>Use this creator’s own Associates tag. It signs their Amazon links and keeps commission with them.</small>
+        {% endif %}
       </label>
     </div>
   </section>
 
   <section class="easy-card">
-    <h2>2️⃣ Channels</h2>
+      <h2>2️⃣ Channels &amp; deal sources</h2>
     <div class="easy-field-grid">
       <label class="easy-field">
         <span>🛡️ Approval channel</span>
@@ -308,7 +318,7 @@
       {% include "_source_picker.html" %}
     {% endwith %}
     <fieldset class="easy-category-picker" style="margin:16px 0 0;padding:14px;border:1px solid var(--border,#334155);border-radius:12px;">
-      <legend><strong>🎯 Product categories for these channels</strong></legend>
+      <legend><strong>3️⃣ 🎯 Product categories for these channels</strong></legend>
       <input type="hidden" name="categories_present" value="1" />
       <p class="hint">Choose the product types this creator wants. The same selection is saved on the creator and the channels added here. “All categories” or no selection means unrestricted; source selection above is saved separately.</p>
       <div style="display:flex;flex-wrap:wrap;gap:12px;">
@@ -321,8 +331,10 @@
     </fieldset>
   </section>
 
+  <details class="easy-advanced">
+    <summary>⚙️ Optional posting rules and link preview</summary>
   <section class="easy-card">
-    <h2>4️⃣ What gets posted — three switches</h2>
+    <h2>Optional · What gets posted</h2>
     <div class="easy-switches">
       {% for switch in switches %}
         <label class="easy-switch" for="switch-{{ switch.name }}">
@@ -361,13 +373,14 @@
   </section>
 
   <section class="easy-card">
-    <h2>5️⃣ This is exactly what will be posted</h2>
+    <h2>Link preview</h2>
     <div id="routing-preview">{% include "_routing_preview.html" %}</div>
   </section>
+  </details>
 
   <div class="easy-actions">
-    <button type="submit" class="btn btn-primary">💾 Save &amp; start posting</button>
-    <span class="hint">Easy Setup saves immediately — no password. Only removals (delete a channel, a creator or a deal source) ask for the password, once per unlock window.</span>
+    <button type="submit" class="btn btn-primary">💾 Save &amp; start eligible posts</button>
+    <span class="hint">Your one admin sign-in is enough; saving asks for no extra password. Ready Telegram destinations start automatically. Amazon requires the creator’s own tag. WhatsApp starts after QR/code pairing and one successful test post.</span>
   </div>
 </form>
 <script>
@@ -392,8 +405,10 @@
   {% include "_category_preview.html" %}
 </section>
 
-<section class="easy-card" id="bulk-setup" style="border-color:#7c3aed;">
-  <h2>📦 Setting up 1000+ creators? One paste, done</h2>
+<details class="easy-advanced" id="bulk-setup">
+  <summary>📦 Bulk setup for 1000+ creators</summary>
+<section class="easy-card" style="border-color:#7c3aed;">
+  <h2>One paste, set up many creators</h2>
   <p class="hint">
     One creator per line — <code>name, amazon tag, main channel, approval channel, whatsapp</code>.
     Separators can be comma, tab, <code>|</code> or <code>;</code>; a header row
@@ -440,9 +455,12 @@
     </div>
   </form>
 </section>
+</details>
 
 {% if flow %}
-<section class="easy-card" id="deal-flow">
+<details class="easy-advanced" id="deal-flow">
+  <summary>🔎 Advanced diagnostics: source and delivery status</summary>
+<section class="easy-card">
   <h2>🔄 Deal flow — sources → posts</h2>
   <p class="hint">A Test Alert only proves the destination can receive a message; it does not test source reading, creator filters, or affiliate safety. The per-source rows below show what the worker actually read and the latest skip/failure reason.</p>
   <p class="hint">
@@ -541,5 +559,6 @@
     <p class="hint">Machine-readable: <code>/api/flow</code> (add <code>?stall_seconds=</code> or <code>?window_hours=</code>).</p>
   </details>
 </section>
+</details>
 {% endif %}
 {% endblock %}
