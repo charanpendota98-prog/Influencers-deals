@@ -408,6 +408,39 @@ def test_easy_setup_offers_sources_when_none_are_configured(hub):
     assert "seed_default_sources" in page or "recommended sources" in page
 
 
+def test_easy_setup_warns_when_only_the_shared_fallback_tag_is_prefilled(hub):
+    client, _session = hub
+    page = client.get("/easy-setup").get_data(as_text=True)
+
+    assert "Creator’s own Amazon Associates tag" in page
+    assert "hub-wide fallback, not proof of this creator’s own tag" in page
+    assert "their Amazon deals stay held until then" in page
+
+
+def test_easy_setup_saves_creator_phone_and_prefills_whatsapp_pairing(hub):
+    client, session = hub
+    _setup(client, session.token, phone_number="+91 98765 43210")
+    creator = db.list_influencers()[0]
+
+    assert creator["phone_number"] == "+91 98765 43210"
+    page = client.get(f"/easy-setup?creator={creator['id']}").get_data(as_text=True)
+    assert 'name="phone_number"' in page
+    assert 'value="+91 98765 43210"' in page
+    assert 'name="pairing_phone" value="+91 98765 43210"' in page
+
+
+def test_easy_setup_keeps_advanced_bulk_and_flow_sections_collapsed(hub):
+    client, _session = hub
+    page = client.get("/easy-setup").get_data(as_text=True)
+    assert "Bulk setup for 1000+ creators" in page
+    assert "Advanced diagnostics: source and delivery status" in page
+    assert "Choose deal networks" in page
+    assert "Preview the exact links that will be posted" in page
+    assert '<details class="easy-advanced" id="bulk-setup">' in page
+    assert '<details class="easy-advanced" id="deal-flow">' in page
+    assert "Save &amp; start eligible posts" in page
+
+
 def test_easy_setup_reports_how_many_sources_will_feed_the_creator(hub):
     client, session = hub
     db.add_source("Loot Source One", "@loot_source_one")

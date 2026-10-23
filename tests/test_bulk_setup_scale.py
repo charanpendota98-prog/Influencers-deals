@@ -152,12 +152,12 @@ def test_the_easy_setup_creator_strip_pages_and_searches(client):
 
     first = client.get("/easy-setup").get_data(as_text=True)
     assert first.count("creator-pill") <= 45        # one page of pills
-    assert "Showing 1–40 of 60" in first
-    assert "Next 40 →" in first
+    assert "Showing 1–8 of 60" in first
+    assert "Next 8 →" in first
 
-    second = client.get("/easy-setup?pill_offset=40").get_data(as_text=True)
+    second = client.get("/easy-setup?pill_offset=8").get_data(as_text=True)
     strip = re.search(r'<div class="creator-strip">(.*?)</div>', second, re.S).group(1)
-    assert "Strip 0040" in strip
+    assert "Strip 0008" in strip
     assert "Strip 0000" not in strip
     assert "← Previous" in second
 
