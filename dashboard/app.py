@@ -2188,15 +2188,32 @@ def _source_selection_from_form(*, use_default_when_empty: bool = False) -> str 
     Returns ``None`` when the form carried none of those fields at all, so a
     partial form (a rename, a flag change) never rewrites a creator's sources.
     """
-    present = {"sources", "sources_text", "sources_all", "allowed_sources"}.intersection(
-        request.form.keys())
+    present = {
+        "sources", "sources_text", "sources_all", "allowed_sources",
+        "source_sheets_present", "source_sheet_ids",
+    }.intersection(request.form.keys())
     if not present:
         return None
     if _form_flag("sources_all", default=False):
         return ""      # the explicit "every source in the hub"
     picked = [token.strip() for token in request.form.getlist("sources") if token.strip()]
     typed = str(request.form.get("sources_text") or "").strip()
-    raw = ", ".join(picked + ([typed] if typed else [])) \
+    sheet_ids = []
+    for raw_id in request.form.getlist("source_sheet_ids"):
+        try:
+            sheet_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    sheet_rows = db.list_source_sheet_sources(sheet_ids) if sheet_ids else {}
+    sheet_tokens: list[str] = []
+    seen_sheet_tokens: set[str] = set()
+    for members in sheet_rows.values():
+        for member in members:
+            token = sources.token_from_source_row(member)
+            if token and token.casefold() not in seen_sheet_tokens:
+                seen_sheet_tokens.add(token.casefold())
+                sheet_tokens.append(token)
+    raw = ", ".join(picked + sheet_tokens + ([typed] if typed else [])) \
         or str(request.form.get("allowed_sources") or "").strip()
     if not raw:
         return sources.default_token() if use_default_when_empty else ""
@@ -4277,6 +4294,11 @@ def _easy_setup_form_values() -> dict:
             else str(values.get("categories") or "").strip()
         ),
         "_sync_channel_categories": request.form.get("categories_present") == "1",
+        "_source_sheets_managed": request.form.get("source_sheets_present") == "1",
+        "source_sheet_ids": [
+            int(raw_id) for raw_id in request.form.getlist("source_sheet_ids")
+            if str(raw_id).isdigit() and int(raw_id) > 0
+        ],
         "posting_schedule": str(values.get("posting_schedule") or "").strip(),
         "price_filter": str(values.get("price_filter") or "all").strip() or "all",
     })
@@ -4744,6 +4766,80 @@ def _setup_page_context() -> dict:
     }
 
 
+@app.route("/easy-setup/source-sheets/import", methods=["POST"])
+def import_easy_source_workbook():
+    """Load every worksheet as a named set of Telegram deal-source channels."""
+    from influencer_hub import source_workbook
+
+    upload = request.files.get("source_workbook")
+    filename = str(getattr(upload, "filename", "") or "").strip()
+    if not upload or not filename:
+        flash("Choose an .xlsx or .xlsm workbook first.", "warning")
+        return redirect(url_for("easy_setup"))
+    if Path(filename).suffix.casefold() not in {".xlsx", ".xlsm"}:
+        flash("Please upload an Excel .xlsx or .xlsm workbook (not CSV or .xls).", "error")
+        return redirect(url_for("easy_setup"))
+    try:
+        payload = upload.stream.read(source_workbook.MAX_WORKBOOK_BYTES + 1)
+        parsed = source_workbook.parse_workbook(payload)
+    except ValueError as exc:
+        flash("Excel import stopped: " + str(exc), "error")
+        return redirect(url_for("easy_setup"))
+    except Exception as exc:  # pragma: no cover - defensive upload boundary
+        app.logger.warning("source workbook import failed (%s)", type(exc).__name__)
+        flash("Excel import failed to read the workbook. Check the file and try again.", "error")
+        return redirect(url_for("easy_setup"))
+
+    if not parsed.get("source_count"):
+        flash(
+            "No Telegram source links were found. Put one Telegram source link per row "
+            "under a Channel/Source/Telegram column, then upload again.",
+            "warning",
+        )
+        return redirect(url_for("easy_setup"))
+    try:
+        imported = db.import_source_sheets(filename, parsed["sheets"])
+    except Exception as exc:  # pragma: no cover - defensive transaction boundary
+        app.logger.exception("source workbook database import failed: %s", type(exc).__name__)
+        flash("The workbook could not be saved; no source-sheet import was applied.", "error")
+        return redirect(url_for("easy_setup"))
+
+    security.audit(
+        _session_actor(), _session_role(), "source_workbook_imported",
+        target=imported["workbook_name"],
+        detail=f"{imported['sheet_count']} sheets · {imported['source_count']} source memberships · "
+               f"{imported['new_sources']} new source(s)",
+        ip=_client_ip(),
+    )
+    sheet_summary = ", ".join(
+        f"{row['sheet_name']} ({row['source_count']})" for row in imported["sheets"][:12]
+    )
+    more = f"; {len(imported['sheets']) - 12} more sheet(s)" if len(imported["sheets"]) > 12 else ""
+    flash(
+        f"✅ Loaded {imported['sheet_count']} sheet(s), {imported['source_count']} source membership(s) "
+        f"({imported['new_sources']} new Telegram source(s)): {sheet_summary}{more}. "
+        "Select one or more sheet names in Easy Setup for each creator.",
+        "success",
+    )
+    invalid_count = int(parsed.get("invalid_count") or 0)
+    duplicate_count = int(parsed.get("duplicate_count") or 0)
+    if invalid_count or duplicate_count:
+        row_notes = []
+        for sheet in parsed.get("sheets", []):
+            rows = sheet.get("invalid_rows") or []
+            if rows:
+                row_notes.append(f"{sheet['sheet_name']}: {', '.join(map(str, rows[:8]))}")
+            if len(row_notes) >= 5:
+                break
+        detail = (" Rows: " + "; ".join(row_notes) + ".") if row_notes else ""
+        flash(
+            f"Import note: {invalid_count} invalid row(s) were skipped and "
+            f"{duplicate_count} duplicate row(s) were deduplicated.{detail}",
+            "warning",
+        )
+    return redirect(url_for("easy_setup"))
+
+
 @app.route("/easy-setup", methods=["GET", "POST"])
 def easy_setup():
     """One screen: creator + channels + deal-source scope + routing switches."""
@@ -4913,6 +5009,34 @@ def easy_setup():
             )
 
     easy_source_rows = _source_rows()
+    source_sheets = db.list_source_sheets()
+    source_sheet_members = db.list_source_sheet_sources()
+    existing_source_tokens = {
+        token.casefold() for token in sources.selection_tokens(values.get("allowed_sources") or "")
+    }
+    source_sheets_picked = []
+    if focus_id:
+        saved_sheet_ids = db.get_influencer_source_sheets(focus_id)
+        if saved_sheet_ids is not None:
+            source_sheets_picked = saved_sheet_ids
+        else:
+            # Legacy creator profiles did not store worksheet IDs. Approximate
+            # their matching groups once, then persist the explicit selection
+            # the next time Easy Setup is saved.
+            for sheet in source_sheets:
+                members = source_sheet_members.get(int(sheet["id"]), [])
+                member_tokens = {
+                    sources.token_from_source_row(member).casefold()
+                    for member in members if sources.token_from_source_row(member)
+                }
+                if member_tokens and member_tokens.issubset(existing_source_tokens):
+                    source_sheets_picked.append(int(sheet["id"]))
+    if request.method == "POST" and errors:
+        submitted_sources = _source_selection_from_form(use_default_when_empty=True)
+        if submitted_sources is not None:
+            values["allowed_sources"] = submitted_sources
+        if values.get("_source_sheets_managed"):
+            source_sheets_picked = values.get("source_sheet_ids") or []
     source_selection_display = values.get("allowed_sources")
     if source_selection_display is None:
         source_selection_display = sources.default_token()
@@ -4933,6 +5057,8 @@ def easy_setup():
         easy_source_all=easy_source_all,
         easy_source_line=sources.selection_line(source_selection_display),
         easy_source_default=sources.default_token(),
+        source_sheets=source_sheets,
+        source_sheets_picked=source_sheets_picked,
         preview=preview,
         result=result,
         errors=errors,
@@ -5058,8 +5184,18 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
         settings["allowed_sources"] = selected_sources
         source_settings["allowed_sources"] = selected_sources
     category_settings: dict[str, str] = {}
+    strict_category_preferences: str | None = None
     if values.get("_sync_channel_categories"):
-        category_settings["categories"] = str(values.get("categories") or "").strip()
+        category_spec = str(values.get("categories") or "").strip()
+        category_settings["categories"] = category_spec
+        from influencer_hub import category_preferences as category_preferences_module, categories as category_module
+        preferences = category_preferences_module.parse()
+        selected_categories = category_module.selected(category_spec) - category_module.UNRESTRICTED
+        # Explicit category picks are strict: known mismatches and unknown
+        # products stay held rather than leaking into the creator's channel.
+        # Empty/all means no category restriction and preserves legacy behavior.
+        preferences["mode"] = "strict" if selected_categories else "legacy"
+        strict_category_preferences = json.dumps(preferences, sort_keys=True)
     # Optional profile details a row may carry (phone, categories, hours, price
     # filter, notes). None of them is written as an empty value on an update, so
     # a paste that only mentions channels never wipes a saved field.
@@ -5073,6 +5209,7 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
     if existing:
         inf_id = int(existing["id"])
         db.update_influencer(inf_id, name=name, amazon_tag=values["amazon_tag"],
+                             category_preferences=strict_category_preferences,
                              **settings, **extras)
         action = "updated"
     else:
@@ -5087,7 +5224,11 @@ def _apply_creator(values: dict, approval_ident: str, main_ident: str,
             price_filter=str(values.get("price_filter") or "").strip() or "all",
             notes=str(values.get("notes") or "").strip(),
         )
+        if strict_category_preferences is not None:
+            db.update_influencer(inf_id, category_preferences=strict_category_preferences)
         action = "created"
+    if values.get("_source_sheets_managed"):
+        db.set_influencer_source_sheets(inf_id, values.get("source_sheet_ids") or [])
     if known_profiles is not None:
         known_profiles[key] = db.get_influencer(inf_id) or {"id": inf_id, "name": name}
     db.set_influencer_active(inf_id, True)

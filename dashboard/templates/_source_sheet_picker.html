@@ -1,0 +1,29 @@
+<fieldset class="card" style="border:1px solid #1e3a8a;padding:12px;">
+  <legend style="font-size:13px;font-weight:700;color:#a5b4fc;padding:0 6px;">📊 Choose source sheets for this creator</legend>
+  <input type="hidden" name="source_sheets_present" value="1" />
+  <p class="hint" style="margin-top:0;font-size:11px;">
+    Select one or more tabs. Every Telegram channel in the selected sheets becomes a deal source for this creator.
+    The channels you enter above remain the places this creator's posts are sent to.
+  </p>
+  {% if source_sheets %}
+    <div style="display:flex;gap:7px;flex-wrap:wrap;margin:6px 0 8px;">
+      <button type="button" class="btn btn-secondary" onclick="this.closest('fieldset').querySelectorAll('input[name=source_sheet_ids]:not(:disabled)').forEach(x=>x.checked=true);">☑ Select all sheets</button>
+      <button type="button" class="btn btn-secondary" onclick="this.closest('fieldset').querySelectorAll('input[name=source_sheet_ids]').forEach(x=>x.checked=false);">Clear sheets</button>
+      <input type="search" aria-label="Search source sheets" placeholder="Find a sheet…" oninput="const q=this.value.trim().toLowerCase(); this.closest('fieldset').querySelectorAll('[data-source-sheet]').forEach(x=>x.hidden=!!q&&!x.dataset.sourceSheet.includes(q));" />
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:6px 14px;max-height:250px;overflow:auto;">
+      {% for sheet in source_sheets %}
+        <label data-source-sheet="{{ (sheet.workbook_name ~ ' ' ~ sheet.sheet_name)|lower }}" style="display:flex;gap:8px;align-items:flex-start;padding:7px;border:1px solid #334155;border-radius:8px;{% if not sheet.source_count %}opacity:.6;{% endif %}">
+          <input type="checkbox" name="source_sheet_ids" value="{{ sheet.id }}"
+                 {% if sheet.id in source_sheets_picked %}checked{% endif %}
+                 {% if not sheet.source_count %}disabled{% endif %} />
+          <span><strong>{{ sheet.sheet_name }}</strong>
+            <small class="hint" style="display:block;">{{ sheet.workbook_name }} · {{ sheet.active_count }}/{{ sheet.source_count }} active sources</small>
+          </span>
+        </label>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="hint" style="margin:0;">No Excel tabs loaded yet. Use “Import Telegram sources from Excel” above, then return here to select the tabs.</p>
+  {% endif %}
+</fieldset>

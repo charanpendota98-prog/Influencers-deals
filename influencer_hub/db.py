@@ -88,6 +88,35 @@ CREATE TABLE IF NOT EXISTS sources (
     active  INTEGER NOT NULL DEFAULT 1
 );
 
+-- Excel worksheet groups are reusable named sets of source channels. Creator
+-- profiles store their selected source tokens, while the group membership is
+-- retained here for future edits and auditability.
+CREATE TABLE IF NOT EXISTS source_sheets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbook_key TEXT NOT NULL,
+    workbook_name TEXT NOT NULL,
+    sheet_name   TEXT NOT NULL COLLATE NOCASE,
+    imported_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(workbook_key, sheet_name)
+);
+
+CREATE TABLE IF NOT EXISTS source_sheet_sources (
+    sheet_id  INTEGER NOT NULL REFERENCES source_sheets(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    PRIMARY KEY(sheet_id, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS influencer_source_sheet_selection_state (
+    influencer_id INTEGER PRIMARY KEY REFERENCES influencers(id) ON DELETE CASCADE,
+    managed_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS influencer_source_sheets (
+    influencer_id INTEGER NOT NULL REFERENCES influencers(id) ON DELETE CASCADE,
+    sheet_id      INTEGER NOT NULL REFERENCES source_sheets(id) ON DELETE CASCADE,
+    PRIMARY KEY(influencer_id, sheet_id)
+);
+
 CREATE TABLE IF NOT EXISTS posts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     influencer_id INTEGER NOT NULL REFERENCES influencers(id) ON DELETE CASCADE,
@@ -1678,6 +1707,177 @@ def add_source(name: str, spec: str, kind: str = "production", active: bool = Tr
             (name.strip(), clean_spec, kind.strip(), 1 if _as_bool(active) else 0))
         con.commit()
         return int(cur.lastrowid)
+    finally:
+        con.close()
+
+
+def import_source_sheets(workbook_name: str, sheets: list[dict]) -> dict:
+    """Atomically register a workbook's named source sets and channel rows.
+
+    Re-importing the same filename updates membership for matching sheet names;
+    source rows already used by other creators are never deleted or paused.
+    """
+    from . import sources as source_catalog
+
+    safe_name = os.path.basename(str(workbook_name or "")).strip()[:160] or "sources.xlsx"
+    workbook_key = re.sub(r"\\s+", " ", safe_name).casefold()
+    con = _connect()
+    imported: list[dict] = []
+    added_sources = 0
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        source_rows = con.execute("SELECT id, name, spec, active FROM sources").fetchall()
+        source_ids = {
+            source_catalog.selector_key(str(row["spec"] or "")): int(row["id"])
+            for row in source_rows
+            if source_catalog.selector_key(str(row["spec"] or ""))
+        }
+        for sheet in sheets or []:
+            sheet_name = str(sheet.get("sheet_name") or "Sheet").strip()[:120] or "Sheet"
+            con.execute(
+                "INSERT INTO source_sheets (workbook_key, workbook_name, sheet_name) "
+                "VALUES (?,?,?) ON CONFLICT(workbook_key, sheet_name) DO UPDATE SET "
+                "workbook_name=excluded.workbook_name, imported_at=datetime('now')",
+                (workbook_key, safe_name, sheet_name),
+            )
+            group = con.execute(
+                "SELECT id FROM source_sheets WHERE workbook_key=? AND sheet_name=? COLLATE NOCASE",
+                (workbook_key, sheet_name),
+            ).fetchone()
+            sheet_id = int(group["id"])
+            con.execute("DELETE FROM source_sheet_sources WHERE sheet_id=?", (sheet_id,))
+            sheet_added = 0
+            for record in sheet.get("sources") or []:
+                spec = str(record.get("spec") or "").strip()[:512]
+                selector = source_catalog.selector_key(spec)
+                if not spec or not selector:
+                    continue
+                source_id = source_ids.get(selector)
+                if source_id is None:
+                    name = str(record.get("name") or source_catalog.token_for(spec) or spec).strip()[:160]
+                    cur = con.execute(
+                        "INSERT INTO sources (name, kind, spec, active) VALUES (?,?,?,1)",
+                        (name or spec, "production", spec),
+                    )
+                    source_id = int(cur.lastrowid)
+                    source_ids[selector] = source_id
+                    sheet_added += 1
+                    added_sources += 1
+                con.execute(
+                    "INSERT OR IGNORE INTO source_sheet_sources (sheet_id, source_id) VALUES (?,?)",
+                    (sheet_id, source_id),
+                )
+            count = int(con.execute(
+                "SELECT COUNT(*) FROM source_sheet_sources WHERE sheet_id=?", (sheet_id,)
+            ).fetchone()[0])
+            imported.append({"sheet_name": sheet_name, "source_count": count,
+                             "new_sources": sheet_added, "sheet_id": sheet_id})
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    return {"workbook_name": safe_name, "sheets": imported,
+            "sheet_count": len(imported), "source_count": sum(row["source_count"] for row in imported),
+            "new_sources": added_sources}
+
+
+def list_source_sheets() -> list[dict]:
+    """Every imported Excel tab and how many configured source rows it contains."""
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT sh.id, sh.workbook_name, sh.sheet_name, sh.imported_at, "
+            "COUNT(DISTINCT m.source_id) AS source_count, "
+            "COALESCE(SUM(CASE WHEN s.active=1 THEN 1 ELSE 0 END),0) AS active_count "
+            "FROM source_sheets sh LEFT JOIN source_sheet_sources m ON m.sheet_id=sh.id "
+            "LEFT JOIN sources s ON s.id=m.source_id "
+            "GROUP BY sh.id ORDER BY sh.workbook_name COLLATE NOCASE, sh.sheet_name COLLATE NOCASE"
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        con.close()
+
+
+def list_source_sheet_sources(sheet_ids: Iterable[int] | None = None) -> dict[int, list[dict]]:
+    """Source rows grouped by worksheet ID, for selection and creator assignment."""
+    con = _connect()
+    try:
+        params: list[Any] = []
+        sql = (
+            "SELECT m.sheet_id, s.id AS source_id, s.name, s.kind, s.spec, s.active "
+            "FROM source_sheet_sources m JOIN sources s ON s.id=m.source_id"
+        )
+        if sheet_ids is not None:
+            ids = [int(value) for value in sheet_ids if str(value).isdigit()]
+            if not ids:
+                return {}
+            sql += " WHERE m.sheet_id IN (" + ",".join("?" for _ in ids) + ")"
+            params.extend(ids)
+        sql += " ORDER BY m.sheet_id, s.name COLLATE NOCASE, s.id"
+        grouped: dict[int, list[dict]] = {}
+        for row in con.execute(sql, params).fetchall():
+            payload = dict(row)
+            sheet_id = int(payload.pop("sheet_id"))
+            grouped.setdefault(sheet_id, []).append(payload)
+        return grouped
+    finally:
+        con.close()
+
+
+def set_influencer_source_sheets(influencer_id: int, sheet_ids: Iterable[int]) -> list[int]:
+    """Persist the exact workbook tabs selected for a creator, including none."""
+    ids: list[int] = []
+    for value in sheet_ids or []:
+        try:
+            sheet_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if sheet_id > 0 and sheet_id not in ids:
+            ids.append(sheet_id)
+    con = _connect()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute(
+            "INSERT INTO influencer_source_sheet_selection_state (influencer_id) VALUES (?) "
+            "ON CONFLICT(influencer_id) DO UPDATE SET managed_at=datetime('now')",
+            (int(influencer_id),),
+        )
+        con.execute("DELETE FROM influencer_source_sheets WHERE influencer_id=?", (int(influencer_id),))
+        valid_ids: list[int] = []
+        for sheet_id in ids:
+            exists = con.execute("SELECT 1 FROM source_sheets WHERE id=?", (sheet_id,)).fetchone()
+            if not exists:
+                continue
+            con.execute(
+                "INSERT INTO influencer_source_sheets (influencer_id, sheet_id) VALUES (?,?)",
+                (int(influencer_id), sheet_id),
+            )
+            valid_ids.append(sheet_id)
+        con.commit()
+        return valid_ids
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def get_influencer_source_sheets(influencer_id: int) -> list[int] | None:
+    """Return explicit sheet selections; ``None`` means this creator is legacy/unmanaged."""
+    con = _connect()
+    try:
+        managed = con.execute(
+            "SELECT 1 FROM influencer_source_sheet_selection_state WHERE influencer_id=?",
+            (int(influencer_id),),
+        ).fetchone()
+        if not managed:
+            return None
+        return [int(row[0]) for row in con.execute(
+            "SELECT sheet_id FROM influencer_source_sheets WHERE influencer_id=? ORDER BY sheet_id",
+            (int(influencer_id),),
+        ).fetchall()]
     finally:
         con.close()
 

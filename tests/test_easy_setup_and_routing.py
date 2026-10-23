@@ -434,7 +434,8 @@ def test_easy_setup_keeps_advanced_bulk_and_flow_sections_collapsed(hub):
     page = client.get("/easy-setup").get_data(as_text=True)
     assert "Bulk setup for 1000+ creators" in page
     assert "Advanced diagnostics: source and delivery status" in page
-    assert "Optional posting rules and link preview" in page
+    assert "Choose deal networks" in page
+    assert "Preview the exact links that will be posted" in page
     assert '<details class="easy-advanced" id="bulk-setup">' in page
     assert '<details class="easy-advanced" id="deal-flow">' in page
     assert "Save &amp; start eligible posts" in page
